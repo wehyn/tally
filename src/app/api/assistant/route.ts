@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { assertSameOrigin, HttpError, requestJson, requireUser, respondError } from "@/lib/api";
 import { getStore } from "@/lib/db";
-import { todayInManila, isDateOnly, monthToDateRange } from "@/lib/dates";
+import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } from "@/lib/dates";
 import { formatPHP, parsePHPToMinor } from "@/lib/money";
 import type { Account, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
@@ -128,6 +128,17 @@ function priorDateHint(messages: { content: string; createdAt?: string }[]): { d
   }
   return { mentioned: false };
 }
+function timeHintFromMessages(messages: string[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const matches = [...messages[index].matchAll(/\b(?:(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*([ap])\.?m\.?|([01]?\d|2[0-3]):([0-5]\d))\b/gi)];
+    if (!matches.length) continue;
+    if (matches.length > 1) return undefined;
+    const [, hour12, minute12, meridiem, hour24, minute24] = matches[0];
+    const hour = hour12 ? Number(hour12) % 12 + (meridiem.toLowerCase() === "p" ? 12 : 0) : Number(hour24);
+    return `${String(hour).padStart(2, "0")}:${minute12 ?? minute24 ?? "00"}`;
+  }
+  return undefined;
+}
 function directCategoryCapture(prompt: string, categories: AssistantCategory[]): { name: string; args: Record<string, unknown> } | null {
   const text = prompt.trim().replace(/[.!]+$/, "");
   if (text.includes("?")) return null;
@@ -193,6 +204,8 @@ export async function POST(request: Request) {
         const dateHint = priorDateHint(userMessages);
         const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
         const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
+        const timeHint = timeHintFromMessages(userMessageText);
+        const time = timeHint && isTime(timeHint) ? timeHint : timeInManila();
         const explicitKind = explicitTransactionKind(userContext);
         const promptCategory = findCategoryInText(userContext, categories, explicitKind);
         const promptCategoryAmbiguous = promptCategory === null;
@@ -218,9 +231,9 @@ export async function POST(request: Request) {
         }
         else {
           const amountMinor = parsePHPToMinor(amount);
-          const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: resolvedCategory.id, date, source: "assistant" });
+          const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: resolvedCategory.id, date, time, source: "assistant" });
           transaction = saved; undoUntil = saved.undoUntil;
-          answer = `Saved ${formatPHP(saved.amountMinor)}${saved.description ? ` for ${saved.description}` : ""} in ${saved.categoryName} · ${saved.accountName} · ${saved.date}.`;
+          answer = `Saved ${formatPHP(saved.amountMinor)}${saved.description ? ` for ${saved.description}` : ""} in ${saved.categoryName} · ${saved.accountName} · ${saved.date} ${saved.time}.`;
         }
       }
     } else answer = "I couldn't complete that request. Please rephrase it.";

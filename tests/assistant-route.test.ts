@@ -43,14 +43,14 @@ afterEach(() => {
 });
 
 describe("assistant transaction capture", () => {
-  it("records a natural one-line expense with the current Manila date", async () => {
+  it("uses the current Manila time when the provider supplies an unstated time", async () => {
     let providerRequest: { messages: { role: string; content: string }[] } | undefined;
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       providerRequest = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
         choices: [{ message: { tool_calls: [{ function: {
           name: "log_transaction",
-          arguments: JSON.stringify({ amount: "500", description: "transportation", date: "2026-02-20" }),
+          arguments: JSON.stringify({ amount: "500", description: "transportation", date: "2026-02-20", time: "14:35" }),
         } }] } }],
       }), { headers: { "content-type": "application/json" } });
     }));
@@ -58,7 +58,7 @@ describe("assistant transaction capture", () => {
     const response = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",
       headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "transportation 500" }),
+      body: JSON.stringify({ prompt: "I spent 500 on transportation" }),
     }));
     const result = await response.json();
 
@@ -69,6 +69,7 @@ describe("assistant transaction capture", () => {
       description: "transportation",
       categoryName: "Transport",
       date: todayInManila(),
+      time: "16:00",
     });
     expect(providerRequest?.messages[0].content).toContain(todayInManila());
   });
@@ -91,22 +92,48 @@ describe("assistant transaction capture", () => {
     expect(result.transaction.date).toBe(todayInManila());
   });
 
-  it("keeps an explicitly stated transaction date", async () => {
+  it("keeps explicitly stated transaction date and time", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       choices: [{ message: { tool_calls: [{ function: {
         name: "log_transaction",
-        arguments: JSON.stringify({ kind: "expense", amount: "500", description: "transportation", date: "2026-02-20" }),
+          arguments: JSON.stringify({ kind: "expense", amount: "500", description: "transportation", date: "2026-02-20", time: "14:35" }),
       } }] } }],
     }), { headers: { "content-type": "application/json" } })));
 
     const response = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",
       headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "transportation 500 on 2026-02-20" }),
+      body: JSON.stringify({ prompt: "transportation 500 at 2:35 PM on 2026-02-20" }),
     }));
     const result = await response.json();
 
     expect(result.transaction.date).toBe("2026-02-20");
+    expect(result.transaction.time).toBe("14:35");
+  });
+
+  it("keeps an explicitly stated time from the active follow-up context", async () => {
+    const providerResponse = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }],
+    }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerResponse("ask_clarification", { question: "What amount should I use?" }))
+      .mockResolvedValueOnce(providerResponse("log_transaction", {
+        kind: "expense", amount: "500", description: "transportation", category: "Transport", time: "09:00",
+      })));
+
+    const initialResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Log transportation at 2:35 PM" }),
+    }));
+    const { conversationId } = await initialResponse.json();
+    const followUpResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "500", conversationId }),
+    }));
+
+    expect((await followUpResponse.json()).transaction.time).toBe("14:35");
   });
 
   it("keeps explicit spending as an expense even when income is mentioned", async () => {

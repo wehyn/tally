@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { isDateOnly } from "./dates";
+import { isDateOnly, isTime, timeInManila } from "./dates";
 
 export const STARTER_CATEGORIES = {
   income: ["Salary", "Other income"],
@@ -14,8 +14,8 @@ export type AccountType = "cash" | "bank";
 export type Account = { id: string; name: string; type: AccountType; openingMinor: number; balanceMinor: number; isDefault: boolean };
 export type Category = { id: string; name: string; type: "income" | "expense" };
 export type TransactionKind = "income" | "expense" | "transfer";
-export type TransactionInput = { kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; description: string; date: string; source?: "manual" | "assistant" };
-export type Transaction = TransactionInput & { id: string; categoryName: string | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
+export type TransactionInput = { kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; description: string; date: string; time?: string | null; source?: "manual" | "assistant" };
+export type Transaction = Omit<TransactionInput, "time"> & { time: string | null; id: string; categoryName: string | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
 
 const stamp = () => new Date().toISOString();
 const publicUser = (row: Record<string, unknown>): PublicUser => ({
@@ -60,7 +60,7 @@ export function createStore(db: Database.Database) {
         account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         destination_account_id TEXT REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
-        description TEXT NOT NULL, date TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','assistant')),
+        description TEXT NOT NULL, date TEXT NOT NULL, time TEXT, source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','assistant')),
         undo_until TEXT, created_at TEXT NOT NULL,
         CHECK((kind = 'transfer' AND destination_account_id IS NOT NULL AND category_id IS NULL) OR (kind != 'transfer' AND destination_account_id IS NULL AND category_id IS NOT NULL)),
         CHECK(destination_account_id IS NULL OR destination_account_id != account_id)
@@ -100,6 +100,8 @@ export function createStore(db: Database.Database) {
       );
       CREATE INDEX IF NOT EXISTS contributions_goal ON goal_contributions(goal_id, date DESC);
     `);
+    const transactionColumns = db.pragma("table_info(transactions)") as { name: string }[];
+    if (!transactionColumns.some((column) => column.name === "time")) db.exec("ALTER TABLE transactions ADD COLUMN time TEXT");
     const messageColumns = db.pragma("table_info(assistant_messages)") as { name: string }[];
     if (!messageColumns.some((column) => column.name === "transaction_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL");
     if (!messageColumns.some((column) => column.name === "needs_followup")) db.exec("ALTER TABLE assistant_messages ADD COLUMN needs_followup INTEGER NOT NULL DEFAULT 0");
@@ -254,6 +256,7 @@ export function createStore(db: Database.Database) {
     if (!validMoney(input.amountMinor)) throw new Error("Transaction amount must be a positive PHP value.");
     if (input.description.trim().length > 180) throw new Error("Description must be 180 characters or fewer.");
     if (!isDateOnly(input.date)) throw new Error("Enter a valid transaction date.");
+    if (input.time != null && !isTime(input.time)) throw new Error("Enter a valid transaction time in 24-hour HH:mm format.");
     if (!(["income", "expense", "transfer"] as string[]).includes(input.kind)) throw new Error("Choose income, expense, or transfer.");
     const account = db.prepare("SELECT id FROM financial_accounts WHERE id=? AND user_id=?").get(input.accountId, userId);
     if (!account) throw new Error("Source account is not owned by this user.");
@@ -267,14 +270,16 @@ export function createStore(db: Database.Database) {
   }
   function createTransaction(userId: string, input: TransactionInput): Transaction {
     return db.transaction(() => {
-      assertTransactionInput(userId, input);
+      const time = input.time ?? timeInManila();
+      const transactionInput = { ...input, time };
+      assertTransactionInput(userId, transactionInput);
       const id = randomUUID();
       const source = input.source ?? "manual";
       const undoUntil = source === "assistant" ? new Date(Date.now() + 10_000).toISOString() : null;
       const description = input.description.trim();
-      db.prepare(`INSERT INTO transactions(id,user_id,kind,amount_minor,account_id,destination_account_id,category_id,description,date,source,undo_until,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, input.kind, input.amountMinor, input.accountId, input.destinationAccountId ?? null,
-        input.categoryId ?? null, description, input.date, source, undoUntil, stamp());
+      db.prepare(`INSERT INTO transactions(id,user_id,kind,amount_minor,account_id,destination_account_id,category_id,description,date,time,source,undo_until,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, input.kind, input.amountMinor, input.accountId, input.destinationAccountId ?? null,
+        input.categoryId ?? null, description, input.date, time, source, undoUntil, stamp());
       assertLedgerTotalsSafe(userId);
       return getTransaction(userId, id)!;
     }).immediate();
@@ -290,7 +295,7 @@ export function createStore(db: Database.Database) {
     return {
       id: String(row.id), kind: row.kind as TransactionKind, amountMinor: Number(row.amount_minor), accountId: String(row.account_id),
       destinationAccountId: row.destination_account_id ? String(row.destination_account_id) : undefined,
-      categoryId: row.category_id ? String(row.category_id) : undefined, description: String(row.description), date: String(row.date),
+      categoryId: row.category_id ? String(row.category_id) : undefined, description: String(row.description), date: String(row.date), time: row.time ? String(row.time) : null,
       source: row.source as "manual" | "assistant", undoUntil: row.undo_until ? String(row.undo_until) : null,
       categoryName: row.category_name ? String(row.category_name) : null, accountName: String(row.account_name),
       destinationAccountName: row.destination_account_name ? String(row.destination_account_name) : null,
@@ -306,14 +311,18 @@ export function createStore(db: Database.Database) {
       FROM transactions t JOIN financial_accounts a ON a.id=t.account_id LEFT JOIN categories c ON c.id=t.category_id
       LEFT JOIN financial_accounts d ON d.id=t.destination_account_id
       WHERE t.user_id=? AND t.date BETWEEN ? AND ? AND (? IS NULL OR t.kind=?)
-      ORDER BY t.date DESC,t.created_at DESC LIMIT ? OFFSET ?`).all(userId, start, end, kind, kind, boundedLimit, offset) as Record<string, unknown>[]).map(mapTransaction);
+      ORDER BY t.date DESC,COALESCE(t.time,'00:00') DESC,t.created_at DESC LIMIT ? OFFSET ?`).all(userId, start, end, kind, kind, boundedLimit, offset) as Record<string, unknown>[]).map(mapTransaction);
   }
   function updateTransaction(userId: string, id: string, input: TransactionInput): Transaction {
     return db.transaction(() => {
-      assertTransactionInput(userId, input);
-      const result = db.prepare(`UPDATE transactions SET kind=?,amount_minor=?,account_id=?,destination_account_id=?,category_id=?,description=?,date=?
+      const existing = db.prepare("SELECT time FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { time: string | null } | undefined;
+      if (!existing) throw new Error("Transaction not found.");
+      const time = input.time === undefined ? existing.time : input.time;
+      const transactionInput = { ...input, time };
+      assertTransactionInput(userId, transactionInput);
+      const result = db.prepare(`UPDATE transactions SET kind=?,amount_minor=?,account_id=?,destination_account_id=?,category_id=?,description=?,date=?,time=?
         WHERE id=? AND user_id=?`).run(input.kind, input.amountMinor, input.accountId, input.destinationAccountId ?? null, input.categoryId ?? null,
-        input.description.trim(), input.date, id, userId);
+        input.description.trim(), input.date, time, id, userId);
       if (!result.changes) throw new Error("Transaction not found.");
       assertLedgerTotalsSafe(userId);
       return getTransaction(userId, id)!;

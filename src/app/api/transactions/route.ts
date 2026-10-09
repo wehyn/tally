@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { assertSameOrigin, requestJson, requireUser, respondError } from "@/lib/api";
 import { getStore } from "@/lib/db";
-import { todayInManila } from "@/lib/dates";
+import { todayInManila, timeInManila } from "@/lib/dates";
 import { parsePHPToMinor } from "@/lib/money";
 import type { TransactionKind } from "@/lib/store";
 
@@ -9,6 +9,7 @@ const schema = z.object({
   kind: z.enum(["income", "expense", "transfer"]), amount: z.string().max(24), accountId: z.string().uuid(),
   destinationAccountId: z.string().uuid().optional(), categoryId: z.string().uuid().optional(),
   description: z.string().trim().max(180).optional().default(""), date: z.string().optional(),
+  time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
 });
 export async function GET(request: Request) {
   try {
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
     const transaction = getStore().createTransaction(user.id, {
       kind: input.kind, amountMinor: parsePHPToMinor(input.amount), accountId: input.accountId,
       destinationAccountId: input.destinationAccountId, categoryId: input.categoryId,
-      description: input.description, date: input.date ?? todayInManila(), source: "manual",
+      description: input.description, date: input.date ?? todayInManila(), time: input.time ?? timeInManila(), source: "manual",
     });
     return Response.json({ transaction }, { status: 201 });
   } catch (error) { return respondError(error); }
