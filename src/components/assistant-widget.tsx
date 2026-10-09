@@ -3,22 +3,27 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import Link from "next/link";
-import { Bot, Send, Sparkles, Undo2, X } from "lucide-react";
-import { formatPHP } from "@/lib/money";
-import { isUndoAvailable } from "@/lib/dates";
+import { Bot, ChevronDown, Send, Sparkles, Undo2, X } from "lucide-react";
+import { formatPHP, minorToInput } from "@/lib/money";
+import { isUndoAvailable, todayInManila } from "@/lib/dates";
 import { ASSISTANT_SETTINGS_UPDATED_EVENT, LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 
 type AssistantTransaction = {
   id: string;
-  kind: string;
+  kind: "income" | "expense";
   amountMinor: number;
+  accountId: string;
   description: string;
   date: string;
   time: string | null;
+  categoryId: string;
   categoryName: string | null;
   accountName: string;
   undoUntil: string | null;
 };
+type AssistantAccount = { id: string; name: string };
+type AssistantCategory = { id: string; name: string; type: "income" | "expense" };
+type TransactionEdit = Partial<Pick<AssistantTransaction, "accountId" | "categoryId" | "date">>;
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -45,6 +50,8 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   const [assistantConfigured, setAssistantConfigured] = useState(configured);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [transactionOptions, setTransactionOptions] = useState<{ accounts: AssistantAccount[]; categories: AssistantCategory[] } | null>(null);
+  const [savingTransactionId, setSavingTransactionId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -52,6 +59,8 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   const bottom = useRef<HTMLDivElement>(null);
   const promptField = useRef<HTMLTextAreaElement>(null);
   const panelOpen = mode === "chat" || (!assistantEnabled && mode === "composing");
+  const transactionIds = messages.flatMap((message) => message.transaction ? [message.transaction.id] : []).join(",");
+  const hasTransaction = Boolean(transactionIds);
 
   useEffect(() => {
     if (mode === "closed") return;
@@ -87,6 +96,22 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
     window.addEventListener(ASSISTANT_SETTINGS_UPDATED_EVENT, refreshAssistantStatus);
     return () => window.removeEventListener(ASSISTANT_SETTINGS_UPDATED_EVENT, refreshAssistantStatus);
   }, []);
+
+  useEffect(() => {
+    if (!hasTransaction || transactionOptions) return;
+    let cancelled = false;
+    void Promise.all([fetch("/api/accounts", { cache: "no-store" }), fetch("/api/categories", { cache: "no-store" })])
+      .then(async ([accountsResponse, categoriesResponse]) => {
+        if (!accountsResponse.ok || !categoriesResponse.ok) throw new Error("Could not load transaction options.");
+        const [accountResult, categoryResult] = await Promise.all([accountsResponse.json(), categoriesResponse.json()]) as [
+          { accounts: AssistantAccount[] },
+          { categories: AssistantCategory[] },
+        ];
+        if (!cancelled) setTransactionOptions({ accounts: accountResult.accounts, categories: categoryResult.categories });
+      })
+      .catch(() => { if (!cancelled) setNotice("Could not load categories and accounts for editing."); });
+    return () => { cancelled = true; };
+  }, [hasTransaction, transactionIds, transactionOptions]);
 
   useEffect(() => {
     if (mode !== "chat") return;
@@ -155,11 +180,51 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
         setNotice(result.error ?? "Undo is no longer available.");
         return;
       }
-      setMessages((previous) => previous.map((message) => message.transaction?.id === transactionId ? { ...message, transaction: null } : message));
+      setMessages((previous) => previous.filter((message) => message.transaction?.id !== transactionId));
       setNotice("Transaction undone.");
       window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Undo is no longer available.");
+    }
+  }
+
+  async function updateTransaction(transaction: AssistantTransaction, changes: TransactionEdit) {
+    if (savingTransactionId) return;
+    const accountId = changes.accountId ?? transaction.accountId;
+    const categoryId = changes.categoryId ?? transaction.categoryId;
+    const account = transactionOptions?.accounts.find((item) => item.id === accountId);
+    const category = transactionOptions?.categories.find((item) => item.id === categoryId && item.type === transaction.kind);
+    if (!account || !category) {
+      setNotice("Choose a valid category and account.");
+      return;
+    }
+    const optimistic = { ...transaction, ...changes, accountId, accountName: account.name, categoryId, categoryName: category.name };
+    setSavingTransactionId(transaction.id);
+    setNotice("");
+    setMessages((previous) => previous.map((message) => message.transaction?.id === transaction.id ? { ...message, transaction: optimistic } : message));
+    try {
+      const response = await fetch(`/api/transactions/${transaction.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: transaction.kind,
+          amount: minorToInput(transaction.amountMinor),
+          accountId,
+          categoryId,
+          description: transaction.description,
+          date: changes.date ?? transaction.date,
+          time: transaction.time,
+        }),
+      });
+      const result = await response.json() as { error?: string; transaction?: AssistantTransaction };
+      if (!response.ok || !result.transaction) throw new Error(result.error ?? "Could not update transaction.");
+      setMessages((previous) => previous.map((message) => message.transaction?.id === transaction.id ? { ...message, transaction: result.transaction! } : message));
+      window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
+    } catch (error) {
+      setMessages((previous) => previous.map((message) => message.transaction?.id === transaction.id ? { ...message, transaction } : message));
+      setNotice(error instanceof Error ? error.message : "Could not update transaction.");
+    } finally {
+      setSavingTransactionId(null);
     }
   }
 
@@ -182,14 +247,33 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
       </header>
       {assistantEnabled ? <>
         <div className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
-          {messages.length ? messages.map((message) => <div className={`chat-bubble ${message.role}`} key={message.id}>
-            {message.content}
-            {message.transaction && <div className="chat-transaction">
-              <strong>{formatPHP(message.transaction.amountMinor)} · {message.transaction.description || message.transaction.categoryName || message.transaction.kind}</strong>
-              <span>{message.transaction.categoryName ?? message.transaction.kind} · {message.transaction.accountName} · {message.transaction.date}{message.transaction.time ? ` ${message.transaction.time}` : ""}</span>
-              {message.transaction.undoUntil && isUndoAvailable(message.transaction.undoUntil, now) && <button type="button" className="undo-link" onClick={() => void undo(message.transaction!.id)}><Undo2 size={12} style={{ verticalAlign: "-2px" }}/> Undo · {Math.max(1, Math.ceil((Date.parse(message.transaction.undoUntil) - now) / 1000))}s</button>}
-            </div>}
-          </div>) : <div className="assistant-widget-empty"><span className="assistant-widget-mark"><Bot size={19}/></span><strong>What would you like to do?</strong><p>Ask about your recorded spending or describe a transaction.</p></div>}
+          {messages.length ? messages.map((message) => message.transaction ? <article className="chat-transaction-card" key={message.id} aria-label="Recorded transaction">
+            <strong className={`chat-transaction-amount ${message.transaction.kind === "income" ? "positive" : "negative"}`}>{formatPHP(message.transaction.amountMinor)}</strong>
+            <span className="chat-transaction-description">{message.transaction.description || "No description"}</span>
+            <div className="chat-transaction-fields">
+              <label className="chat-transaction-control">
+                <select aria-label="Category" value={message.transaction.categoryId} disabled={!transactionOptions || savingTransactionId !== null} onChange={(event) => void updateTransaction(message.transaction!, { categoryId: event.target.value })}>
+                  <option value={message.transaction.categoryId}>{message.transaction.categoryName ?? "Choose category"}</option>
+                  {transactionOptions?.categories.filter((category) => category.type === message.transaction!.kind && category.id !== message.transaction!.categoryId).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
+                <ChevronDown size={12} aria-hidden="true"/>
+              </label>
+              <label className="chat-transaction-control">
+                <select aria-label="Account" value={message.transaction.accountId} disabled={!transactionOptions || savingTransactionId !== null} onChange={(event) => void updateTransaction(message.transaction!, { accountId: event.target.value })}>
+                  <option value={message.transaction.accountId}>{message.transaction.accountName}</option>
+                  {transactionOptions?.accounts.filter((account) => account.id !== message.transaction!.accountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                </select>
+                <ChevronDown size={12} aria-hidden="true"/>
+              </label>
+              <label className="chat-transaction-control chat-transaction-date">
+                <span>{message.transaction.date === todayInManila() ? "Today" : message.transaction.date}</span>
+                <ChevronDown size={12} aria-hidden="true"/>
+                <input type="date" aria-label="Transaction date" value={message.transaction.date} disabled={!transactionOptions || savingTransactionId !== null} onChange={(event) => void updateTransaction(message.transaction!, { date: event.target.value })}/>
+              </label>
+            </div>
+            {savingTransactionId === message.transaction.id && <span className="chat-transaction-saving" role="status">Updating…</span>}
+            {message.transaction.undoUntil && isUndoAvailable(message.transaction.undoUntil, now) && <button type="button" className="undo-link" disabled={savingTransactionId === message.transaction.id} onClick={() => void undo(message.transaction!.id)}><Undo2 size={12} style={{ verticalAlign: "-2px" }}/> Undo · {Math.max(1, Math.ceil((Date.parse(message.transaction.undoUntil) - now) / 1000))}s</button>}
+          </article> : <div className={`chat-bubble ${message.role}`} key={message.id}>{message.content}</div>) : <div className="assistant-widget-empty"><span className="assistant-widget-mark"><Bot size={19}/></span><strong>What would you like to do?</strong><p>Ask about your recorded spending or describe a transaction.</p></div>}
           {busy && <div className="chat-bubble assistant">Checking your request…</div>}
           {notice && <p className="assistant-widget-notice" role="status">{notice}</p>}
           <div ref={bottom}/>

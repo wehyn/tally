@@ -190,7 +190,7 @@ export async function POST(request: Request) {
     } else if (call.name === "log_transaction") {
       const kindHint = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;
       const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
-      const description = typeof call.args.description === "string" ? call.args.description.trim().slice(0, 180) : "";
+      const description = typeof call.args.description === "string" ? call.args.description.trim().replace(/\p{L}/u, (letter) => letter.toUpperCase()).slice(0, 180) : "";
       if (!amount) { answer = safeClarification("What amount should I use?"); needsFollowup = true; }
       else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; needsFollowup = true; }
       else {
