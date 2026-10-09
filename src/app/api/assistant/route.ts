@@ -32,11 +32,9 @@ function categoryNameMatches(name: string, categories: AssistantCategory[]): Ass
 }
 function findCategory(name: string, categories: AssistantCategory[], preferredType?: AssistantCategory["type"]): AssistantCategory | null | undefined {
   const matches = categoryNameMatches(name, categories);
-  if (preferredType) {
-    const preferred = matches.find((category) => category.type === preferredType);
-    if (preferred) return preferred;
-  }
-  return matches.length === 1 ? matches[0] : matches.length > 1 ? null : undefined;
+  if (matches.length === 1) return matches[0];
+  if (!matches.length) return undefined;
+  return preferredType ? matches.find((category) => category.type === preferredType) ?? null : null;
 }
 function findCategoryInText(text: string, categories: AssistantCategory[], preferredType?: AssistantCategory["type"]): AssistantCategory | null | undefined {
   const normalizedText = normalizeWords(text);
@@ -44,29 +42,22 @@ function findCategoryInText(text: string, categories: AssistantCategory[], prefe
     const name = normalizeWords(category.name);
     return name.length > 0 && ` ${source} `.includes(` ${name} `);
   };
-  const resolveMatches = (matches: AssistantCategory[]): AssistantCategory | null | undefined => {
-    if (preferredType) {
-      const preferred = matches.find((category) => category.type === preferredType);
-      if (preferred) return preferred;
-    }
-    return matches.length === 1 ? matches[0] : matches.length > 1 ? null : undefined;
-  };
   const byLength = [...categories].sort((a, b) => b.name.length - a.name.length);
   const exactMentions = byLength.filter((category) => containsName(category, normalizedText));
-  if (exactMentions.length) {
-    const longest = exactMentions[0].name.length;
-    return resolveMatches(exactMentions.filter((category) => category.name.length === longest));
-  }
   const aliasedText = normalizedText.replace(/\btranspor(?:tation|attion)\b/g, "transport");
   const aliasMatches = byLength.filter((category) => containsName(category, aliasedText));
-  if (!aliasMatches.length) return undefined;
-  const longest = aliasMatches[0].name.length;
-  return resolveMatches(aliasMatches.filter((category) => category.name.length === longest));
+  const matches = [...new Map([...exactMentions, ...aliasMatches].map((category) => [category.id, category])).values()];
+  if (!matches.length) return undefined;
+  const longest = Math.max(...matches.map((category) => category.name.length));
+  const longestMatches = matches.filter((category) => category.name.length === longest);
+  if (longestMatches.length === 1) return longestMatches[0];
+  if (preferredType) return longestMatches.find((category) => category.type === preferredType) ?? null;
+  return null;
 }
 function guessCategory(text: string, categories: AssistantCategory[]): AssistantCategory | undefined {
   const rules: [RegExp, string, AssistantCategory["type"]][] = [
     [/\b(food|lunch|dinner|breakfast|coffee|restaurant|jollibee|meal|grocer)\b/i, "Food", "expense"],
-    [/\b(transport|transpor(?:tation|attion)|bus|train|taxi|grab|jeep|fare|fuel|gasoline)\b/i, "Transport", "expense"],
+    [/\b(transport|transpor(?:tation|attion)|commut(?:e|ing)|transit|bus|train|taxi|grab|jeep|fare|fuel|gasoline)\b/i, "Transport", "expense"],
     [/\b(rent|mortgage|condo)\b/i, "Housing", "expense"], [/\b(electric|water|internet|utility)\b/i, "Utilities", "expense"],
     [/\b(doctor|medicine|pharmacy|clinic|hospital)\b/i, "Health", "expense"], [/\b(school|tuition|book|course)\b/i, "Education", "expense"],
     [/\b(movie|concert|game|stream)\b/i, "Entertainment", "expense"], [/\b(flight|hotel|vacation|travel)\b/i, "Travel", "expense"],
@@ -79,6 +70,14 @@ function explicitTransactionKind(text: string): AssistantCategory["type"] | unde
   const mentionsExpense = /\b(expense|spent|spend|paid|purchase|bought|buy|cost|charged|charge)\b/i.test(text);
   const mentionsIncome = /\b(income|earned|earn|received|receive|deposit|paycheck)\b/i.test(text);
   return mentionsExpense === mentionsIncome ? undefined : mentionsExpense ? "expense" : "income";
+}
+function transactionKind(value: unknown, userText: string): AssistantCategory["type"] {
+  if (value === "income" || value === "expense") return value;
+  const receivedMoney = /\b(?:salary|payroll|paycheck|wages?|income|earned|received|deposit|refund|reimbursement|commission|bonus|cashback|sold|got paid|was paid|paid me)\b/i.test(userText);
+  const spentMoney = /\b(?:spent|spend|paid|bought|purchased?|purchase|cost|expense|bill)\b/i.test(userText)
+    && !/\b(?:got|was|been)\s+paid\b|\bpaid me\b/i.test(userText);
+  if (spentMoney) return "expense";
+  return receivedMoney ? "income" : "expense";
 }
 function fallbackCategory(kind: AssistantCategory["type"], categories: AssistantCategory[]): AssistantCategory | undefined {
   const fallbackName = kind === "income" ? "Other income" : "Other";
@@ -137,7 +136,7 @@ function directCategoryCapture(prompt: string, categories: AssistantCategory[]):
   const label = match[1].trim();
   const category = findCategory(label, categories) ?? findCategoryInText(label, categories);
   if (!category) return null;
-  return { name: "log_transaction", args: { kind: category.type, category: category.name, amount: match[2], description: "" } };
+  return { name: "log_transaction", args: { kind: category.type, category: category.name, amount: match[2], description: label } };
 }
 
 export async function POST(request: Request) {
@@ -154,9 +153,15 @@ export async function POST(request: Request) {
     } else conversationId = store.createConversation(user.id, input.prompt.slice(0, 80));
     const history = minimalFollowUpContext(store.getConversation(user.id, conversationId)?.messages ?? []);
     const promptCreatedAt = new Date().toISOString();
+    const userMessages = [
+      ...history.filter((message) => message.role === "user").map((message) => ({ content: message.content, createdAt: message.createdAt })),
+      { content: input.prompt, createdAt: promptCreatedAt },
+    ];
+    const userMessageText = userMessages.map((message) => message.content);
     store.addMessage(user.id, conversationId, "user", input.prompt);
     const directCapture = history.length ? null : directCategoryCapture(input.prompt, categories);
-    const call = directCapture ?? await askProvider({ prompt: input.prompt, history, categories });
+    const providerCall = await askProvider({ prompt: input.prompt, history, categories });
+    const call = directCapture ?? providerCall;
     if (!call) throw new Error("Assistant provider returned no action.");
 
     let answer: string; let transaction: Transaction | null = null; let undoUntil: string | null = null; let needsFollowup = false;
@@ -178,11 +183,6 @@ export async function POST(request: Request) {
       if (!amount) { answer = safeClarification("What amount should I use?"); needsFollowup = true; }
       else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; needsFollowup = true; }
       else {
-        const userMessages = [
-          ...history.filter((message) => message.role === "user").map((message) => ({ content: message.content, createdAt: message.createdAt })),
-          { content: input.prompt, createdAt: promptCreatedAt },
-        ];
-        const userMessageText = userMessages.map((message) => message.content);
         const userContext = userMessageText.join(" ");
         const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
         const accountHint = accountHintFromMessages(userMessageText, accounts);
@@ -192,31 +192,33 @@ export async function POST(request: Request) {
           : accountHint.mentioned ? accountHint.account ?? defaultAccount : defaultAccount;
         const dateHint = priorDateHint(userMessages);
         const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-        const date = dateHint.date ?? (requestedDate && isDateOnly(requestedDate) ? requestedDate : dateHint.mentioned || requestedDate ? "" : todayInManila());
+        const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
         const explicitKind = explicitTransactionKind(userContext);
         const promptCategory = findCategoryInText(userContext, categories, explicitKind);
         const promptCategoryAmbiguous = promptCategory === null;
+        const providerPreferredType = explicitKind ?? (!promptCategoryAmbiguous && !promptCategory ? kindHint ?? undefined : undefined);
         const requestedCategory = typeof call.args.category === "string"
-          ? findCategory(call.args.category, categories, explicitKind ?? (!promptCategoryAmbiguous ? kindHint ?? undefined : undefined))
+          ? findCategory(call.args.category, categories, providerPreferredType)
           : undefined;
         const categoryText = `${userContext} ${description}`;
-        const textCategory = findCategoryInText(categoryText, categories, explicitKind ?? (!promptCategoryAmbiguous ? kindHint ?? undefined : undefined));
+        const textCategory = findCategoryInText(categoryText, categories, providerPreferredType);
         const categoryAmbiguous = promptCategoryAmbiguous || requestedCategory === null || textCategory === null;
-        const category = (requestedCategory && requestedCategory !== null ? requestedCategory : undefined)
+        const category = (promptCategory && promptCategory !== null ? promptCategory : undefined)
+          ?? (requestedCategory && requestedCategory !== null ? requestedCategory : undefined)
           ?? (textCategory && textCategory !== null ? textCategory : undefined)
-          ?? (!categoryAmbiguous ? guessCategory(categoryText, categories) : undefined)
-          ?? (!categoryAmbiguous && kindHint ? fallbackCategory(kindHint, categories) : undefined);
-        const kind = category?.type ?? (!categoryAmbiguous ? kindHint : null);
+          ?? (!categoryAmbiguous ? guessCategory(categoryText, categories) : undefined);
+        const kind = category?.type ?? (!categoryAmbiguous ? transactionKind(kindHint, categoryText) : null);
+        const resolvedCategory = category ?? (!categoryAmbiguous && kind ? fallbackCategory(kind, categories) : undefined);
         if (!account) { answer = requestedAccount ? `I couldn't find the account “${requestedAccount}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording a transaction."; needsFollowup = true; }
         else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
-        else if (!category || !kind) {
+        else if (!resolvedCategory || !kind) {
           const ambiguousCategory = typeof call.args.category === "string" ? `“${call.args.category.trim()}”` : "That category name";
           answer = categoryAmbiguous ? `${ambiguousCategory} appears under both income and expense. Which category type did you mean?` : "Which category should I use?";
           needsFollowup = true;
         }
         else {
           const amountMinor = parsePHPToMinor(amount);
-          const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, source: "assistant" });
+          const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: resolvedCategory.id, date, source: "assistant" });
           transaction = saved; undoUntil = saved.undoUntil;
           answer = `Saved ${formatPHP(saved.amountMinor)}${saved.description ? ` for ${saved.description}` : ""} in ${saved.categoryName} · ${saved.accountName} · ${saved.date}.`;
         }

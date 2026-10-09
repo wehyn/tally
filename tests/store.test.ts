@@ -37,6 +37,33 @@ describe("owner-scoped ledger", () => {
     expect(dashboard.accounts.map((account) => [account.name, account.balanceMinor])).toEqual([["Wallet", 12000], ["Savings", 6000]]);
   });
 
+  it("keeps recent activity global while period analytics stay date-scoped", () => {
+    const user = store.registerUser("recent_activity", "hash");
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+
+    store.createTransaction(user.id, {
+      kind: "expense", amountMinor: 7000, accountId: wallet.id, categoryId: food.id,
+      description: "November lunch", date: "2025-11-18", source: "assistant",
+    });
+    store.createTransaction(user.id, {
+      kind: "expense", amountMinor: 8000, accountId: wallet.id, categoryId: food.id,
+      description: "February lunch", date: "2026-02-20", source: "assistant",
+    });
+    store.createTransaction(user.id, {
+      kind: "expense", amountMinor: 25000, accountId: wallet.id, categoryId: food.id,
+      description: "Current lunch", date: "2026-10-09",
+    });
+
+    const dashboard = store.getDashboard(user.id, "2026-10-01", "2026-10-09");
+
+    expect(dashboard.spendingMinor).toBe(25000);
+    expect(dashboard.categorySpending).toEqual([{ id: food.id, name: "Food", amountMinor: 25000 }]);
+    expect(dashboard.transactions.map((transaction) => transaction.description)).toEqual([
+      "Current lunch", "February lunch", "November lunch",
+    ]);
+  });
+
   it("requires matching provider disclosure consent before hosted assistant access", () => {
     const user = store.registerUser("consent_user", "hash");
     expect(store.getAssistantOptIn(user.id, "current-disclosure")).toBe(false);

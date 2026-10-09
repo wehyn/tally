@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Plus, Pencil, Trash2, X, Search, FolderPlus } from "lucide-react";
 import type { Account, Category, Transaction } from "@/lib/store";
 import { formatPHP, minorToInput } from "@/lib/money";
@@ -9,6 +10,7 @@ import { isUndoAvailable, todayInManila } from "@/lib/dates";
 type Draft = { amount: string; description: string; accountId: string; categoryId: string; date: string };
 const blank = (accounts: Account[]): Draft => ({amount:"",description:"",accountId:accounts.find(a=>a.isDefault)?.id??accounts[0]?.id??"",categoryId:"",date:todayInManila()});
 export function TransactionsView({initial,initialAccounts,initialCategories}:{initial:Transaction[];initialAccounts:Account[];initialCategories:Category[]}){
+  const router=useRouter();
   const [transactions,setTransactions]=useState(initial);const [accounts,setAccounts]=useState(initialAccounts);const [categories,setCategories]=useState(initialCategories);
   const [search,setSearch]=useState("");const [open,setOpen]=useState(false);const [editing,setEditing]=useState<Transaction|null>(null);const [draft,setDraft]=useState<Draft>(blank(initialAccounts));const [error,setError]=useState("");const [busy,setBusy]=useState(false);
   const [categoryName,setCategoryName]=useState("");const [categoryType,setCategoryType]=useState<"income"|"expense">("expense");const [categoryNotice,setCategoryNotice]=useState("");
@@ -16,7 +18,7 @@ export function TransactionsView({initial,initialAccounts,initialCategories}:{in
   useEffect(()=>{const update=()=>setNow(Date.now());update();const id=window.setInterval(update,1000);return()=>window.clearInterval(id);},[]);
   async function refresh(){const [t,a,c]=await Promise.all([fetch("/api/transactions").then(r=>r.json()),fetch("/api/accounts").then(r=>r.json()),fetch("/api/categories").then(r=>r.json())]);if(t.transactions)setTransactions(t.transactions);if(a.accounts)setAccounts(a.accounts);if(c.categories)setCategories(c.categories);}
   function startNew(){setEditing(null);setDraft(blank(accounts));setError("");setOpen(true);}
-  function startEdit(tx:Transaction){if(tx.kind==="transfer"){window.location.assign("/accounts");return;}setEditing(tx);setDraft({amount:minorToInput(tx.amountMinor),description:tx.description,accountId:tx.accountId,categoryId:tx.categoryId??"",date:tx.date});setError("");setOpen(true);}
+  function startEdit(tx:Transaction){if(tx.kind==="transfer"){router.push("/accounts");return;}setEditing(tx);setDraft({amount:minorToInput(tx.amountMinor),description:tx.description,accountId:tx.accountId,categoryId:tx.categoryId??"",date:tx.date});setError("");setOpen(true);}
   async function save(e:React.FormEvent){e.preventDefault();const category=categories.find(item=>item.id===draft.categoryId);if(!category){setError("Choose a category.");return;}setBusy(true);setError("");try{const payload={kind:category.type,amount:draft.amount,description:draft.description,accountId:draft.accountId,categoryId:category.id,date:draft.date};const response=await fetch(editing?`/api/transactions/${editing.id}`:"/api/transactions",{method:editing?"PATCH":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.error??"Could not save transaction.");setOpen(false);await refresh();}catch(err){setError(err instanceof Error?err.message:"Could not save transaction.");}finally{setBusy(false);}}
   async function remove(tx:Transaction,undo=false){if(!undo&&!window.confirm(`Permanently delete “${tx.description||tx.categoryName||tx.kind}”? This cannot be recovered in Tally.`))return;const response=await fetch(`/api/transactions/${tx.id}${undo?"?undo=1":""}`,{method:"DELETE"});const result=await response.json();if(!response.ok){setError(result.error??"Could not delete.");return;}await refresh();}
   async function addCategory(e:React.FormEvent){e.preventDefault();setCategoryNotice("");try{const response=await fetch("/api/categories",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:categoryName,type:categoryType})});const result=await response.json();if(!response.ok)throw new Error(result.error);setCategoryName("");setCategoryNotice("Category added.");await refresh();}catch(err){setCategoryNotice(err instanceof Error?err.message:"Could not add category.");}}

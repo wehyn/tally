@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { todayInManila } from "@/lib/dates";
 
 const sensitive = (value: string) => value.replace(/[\r\n\t]/g, " ").trim();
 export type ProviderConfig = { baseUrl: string; endpoint: string; model: string; apiKey: string; disclosure: string };
@@ -34,7 +35,7 @@ function transactionTool(categories: { name: string; type: "income" | "expense" 
     type: "function",
     function: {
       name: "log_transaction",
-      description: "Create one personal income or expense. The chosen category determines whether it is income or expense, so do not ask for a transaction type when a category is clear. A description is optional. Use an available category and account when the user names one.",
+      description: "Create one personal income or expense. The chosen category determines whether it is income or expense, so do not ask for a transaction type when a category is clear. Include kind only to disambiguate identical category names with different types. A description is optional. Use an available category and account when the user names one.",
       parameters: {
         type: "object", additionalProperties: false,
         properties: {
@@ -117,7 +118,12 @@ async function readProviderJson(response: Response, maxBytes: number): Promise<u
 export async function askProvider(input: { prompt: string; history?: { role: "user" | "assistant"; content: string }[]; categories?: { name: string; type: "income" | "expense" }[] }): Promise<{ name: string; args: Record<string, unknown> } | null> {
   const config = providerConfig();
   if (!config) throw new Error("Codex-LB is not fully configured. Ask the operator to configure the provider and its privacy disclosure.");
-  const system = `You are Tally, a concise finance assistant. The user's timezone is Asia/Manila and currency is PHP. Use exactly one tool for each request. For complete income or expense capture, call log_transaction immediately; do not ask confirmation. A category's type determines whether the transaction is income or expense: use the category and never ask the user to choose a type when the category is clear. If identical category names exist for both types, use the user's wording to disambiguate and include kind; ask only if the wording is not enough. A description is optional. The app validates category and account names against the user's private settings; omitted account and date use the default account and Manila-local today. Ask only for information that is truly required and cannot be inferred. For finance questions, call finance_question with requested inclusive dates or month-to-date by default; the app computes the answer. Never invent amounts or give unsupported recommendations. If the request is unclear or missing required information, call ask_clarification with one concise question.`;
+  const now = new Date();
+  const today = todayInManila(now);
+  const currentDateTime = new Intl.DateTimeFormat("en-PH", {
+    dateStyle: "full", timeStyle: "short", timeZone: "Asia/Manila",
+  }).format(now);
+  const system = `You are Tally, a concise finance assistant. The user's currency is PHP. Current date and time in Asia/Manila: ${currentDateTime}. Today's date is ${today}. Use exactly one tool for each request. For a transaction with a clear amount and category, call log_transaction immediately; do not ask confirmation. A category's type determines whether the transaction is income or expense. Never ask for a transaction type when its category is clear. If identical category names exist for both types, use the user's wording to disambiguate and include kind; ask only if the wording is not enough. If no category determines type and kind is omitted, default to expense unless the message clearly describes incoming money. Descriptions are optional. The app validates category and account names against the user's private settings; omitted account uses the default. Never ask for a transaction date: when the user gives no different date, use ${today}; “today” always means ${today}. Use another date only when the user explicitly states one. Preserve transaction details from the active follow-up context. Ask only for information that is truly required and cannot be inferred. For finance questions, call finance_question with requested inclusive dates or month-to-date by default; the app computes the answer. Never invent amounts or give unsupported recommendations. If a request is otherwise unclear, call ask_clarification with one concise question.`;
   const response = await fetch(config.endpoint, {
     method: "POST", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: config.model, messages: [
