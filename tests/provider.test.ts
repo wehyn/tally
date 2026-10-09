@@ -1,6 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { askProvider, minimalFollowUpContext } from "../src/lib/provider";
+import { askProvider, minimalFollowUpContext, providerConfig } from "../src/lib/provider";
 import { todayInManila } from "../src/lib/dates";
+
+describe("Docker host provider URL", () => {
+  it("requires an explicit exception for local HTTP", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("CODEX_LB_BASE_URL", "http://host.docker.internal:2455/v1");
+    vi.stubEnv("CODEX_LB_MODEL", "test-model");
+    vi.stubEnv("CODEX_LB_API_KEY", "test-key");
+    vi.stubEnv("CODEX_LB_PRIVACY_DISCLOSURE", "Test disclosure");
+    vi.stubEnv("CODEX_LB_ALLOW_HTTP", "false");
+    expect(providerConfig()).toBeNull();
+    vi.stubEnv("CODEX_LB_ALLOW_HTTP", "true");
+    expect(providerConfig()?.endpoint).toBe("http://host.docker.internal:2455/v1/chat/completions");
+    vi.stubEnv("CODEX_LB_BASE_URL", "http://provider.example/v1");
+    expect(providerConfig()).toBeNull();
+  });
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();

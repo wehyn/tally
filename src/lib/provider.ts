@@ -14,7 +14,7 @@ export function providerConfig(): ProviderConfig | null {
   try {
     const url = new URL(raw);
     if (url.username || url.password || url.search || url.hash) return null;
-    if (url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && ["localhost", "127.0.0.1"].includes(url.hostname))) return null;
+    if (url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && ["localhost", "127.0.0.1"].includes(url.hostname)) && !(process.env.CODEX_LB_ALLOW_HTTP === "true" && url.protocol === "http:" && url.hostname === "host.docker.internal")) return null;
     const baseUrl = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
     return { baseUrl, endpoint: baseUrl.endsWith("/chat/completions") ? baseUrl : `${baseUrl}/chat/completions`, model: sensitive(model), apiKey, disclosure: sensitive(disclosure) };
   } catch { return null; }
