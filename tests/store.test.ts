@@ -37,6 +37,23 @@ describe("owner-scoped ledger", () => {
     expect(dashboard.accounts.map((account) => [account.name, account.balanceMinor])).toEqual([["Wallet", 12000], ["Savings", 6000]]);
   });
 
+  it("adds a nullable time column to legacy transactions without inventing event times", () => {
+    const user = store.registerUser("legacy_transaction", "hash");
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const transaction = store.createTransaction(user.id, {
+      kind: "expense", amountMinor: 25000, accountId: wallet.id, categoryId: food.id,
+      description: "Lunch", date: "2026-10-09", time: "12:15",
+    });
+
+    database.exec("ALTER TABLE transactions DROP COLUMN time");
+    store.migrate();
+
+    const columns = database.pragma("table_info(transactions)") as { name: string }[];
+    expect(columns.some((column) => column.name === "time")).toBe(true);
+    expect(store.getTransaction(user.id, transaction.id)).toMatchObject({ description: "Lunch", date: "2026-10-09", time: null });
+  });
+
   it("keeps recent activity global while period analytics stay date-scoped", () => {
     const user = store.registerUser("recent_activity", "hash");
     const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });

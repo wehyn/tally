@@ -65,7 +65,7 @@ describe("assistant data minimization", () => {
 
     let requestBody: {
       messages: { role: string; content: string }[];
-      tools: { function: { name: string; parameters: { required?: string[] } } }[];
+      tools: { function: { name: string; parameters: { required?: string[]; properties?: Record<string, { type?: string; pattern?: string }> } } }[];
     } | undefined;
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body));
@@ -84,8 +84,13 @@ describe("assistant data minimization", () => {
     expect(system).toContain(todayInManila());
     expect(system).toContain("Current date and time in Asia/Manila");
     expect(system.toLowerCase()).toContain("never ask for a transaction date");
+    expect(system.toLowerCase()).toContain("never ask the user for a time");
+    expect(system.toLowerCase()).toContain("current manila-local time");
     expect(system.toLowerCase()).toContain("default to expense");
     expect(transactionTool?.function.parameters.required).toEqual(["amount"]);
+    expect(transactionTool?.function.parameters.properties?.time).toMatchObject({
+      type: "string", pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+    });
   });
 
   it("rejects chunked provider responses that exceed 1 MB", async () => {

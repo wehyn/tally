@@ -12,6 +12,15 @@ export function todayInManila(now: Date = new Date()): string {
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
+export function timeInManila(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: MANILA,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(now);
+}
+
 function shiftDate(date: string, days: number): string {
   const [year, month, day] = date.split("-").map(Number);
   const shifted = new Date(Date.UTC(year, month - 1, day + days));
@@ -34,6 +43,10 @@ export function isDateOnly(value: string): boolean {
   const [year, month, day] = value.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+export function isTime(value: string): boolean {
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
 export function isUndoAvailable(undoUntil: string | null | undefined, now: number): boolean {
