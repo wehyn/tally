@@ -66,7 +66,7 @@ describe("assistant transaction capture", () => {
     expect(result.transaction).toMatchObject({
       kind: "expense",
       amountMinor: 50000,
-      description: "transportation",
+      description: "Transportation",
       categoryName: "Transport",
       date: todayInManila(),
       time: "16:00",
