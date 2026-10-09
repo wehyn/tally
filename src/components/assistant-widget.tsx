@@ -56,7 +56,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(0);
-  const bottom = useRef<HTMLDivElement>(null);
+  const messageList = useRef<HTMLDivElement>(null);
   const promptField = useRef<HTMLTextAreaElement>(null);
   const panelOpen = mode === "chat" || (!assistantEnabled && mode === "composing");
   const transactionIds = messages.flatMap((message) => message.transaction ? [message.transaction.id] : []).join(",");
@@ -114,8 +114,9 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   }, [hasTransaction, transactionIds, transactionOptions]);
 
   useEffect(() => {
-    if (mode !== "chat") return;
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const list = messageList.current;
+    if (mode !== "chat" || !list) return;
+    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
   }, [mode, messages, busy]);
 
   useEffect(() => {
@@ -135,7 +136,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
 
   function openAssistant() {
     if (!assistantEnabled) setMode("chat");
-    else setMode(messages.length ? "chat" : "composing");
+    else setMode(messages.length || window.matchMedia("(max-width: 900px)").matches ? "chat" : "composing");
   }
 
   async function send(event?: FormEvent) {
@@ -246,7 +247,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
         <button type="button" className="assistant-widget-icon" aria-label="Close assistant" title="Close" onClick={() => setMode("closed")}><X size={16}/></button>
       </header>
       {assistantEnabled ? <>
-        <div className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
+        <div ref={messageList} className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
           {messages.length ? messages.map((message) => message.transaction ? <article className="chat-transaction-card" key={message.id} aria-label="Recorded transaction">
             <strong className={`chat-transaction-amount ${message.transaction.kind === "income" ? "positive" : "negative"}`}>{formatPHP(message.transaction.amountMinor)}</strong>
             <span className="chat-transaction-description">{message.transaction.description || "No description"}</span>
@@ -276,7 +277,6 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
           </article> : <div className={`chat-bubble ${message.role}`} key={message.id}>{message.content}</div>) : <div className="assistant-widget-empty"><span className="assistant-widget-mark"><Bot size={19}/></span><strong>What would you like to do?</strong><p>Ask about your recorded spending or describe a transaction.</p></div>}
           {busy && <div className="chat-bubble assistant">Checking your request…</div>}
           {notice && <p className="assistant-widget-notice" role="status">{notice}</p>}
-          <div ref={bottom}/>
         </div>
       </> : <>
         <div className="assistant-widget-disabled">
