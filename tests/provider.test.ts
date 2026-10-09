@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { askProvider, minimalFollowUpContext } from "../src/lib/provider";
+import { todayInManila } from "../src/lib/dates";
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 describe("assistant data minimization", () => {
@@ -23,6 +25,69 @@ describe("assistant data minimization", () => {
     ]);
   });
 
+  it("retains the original transaction details through a multi-turn follow-up", async () => {
+    vi.stubEnv("CODEX_LB_BASE_URL", "https://provider.example/v1");
+    vi.stubEnv("CODEX_LB_MODEL", "test-model");
+    vi.stubEnv("CODEX_LB_API_KEY", "test-api-key");
+    vi.stubEnv("CODEX_LB_PRIVACY_DISCLOSURE", "Test-only disclosure");
+
+    let requestBody: { messages: { role: string; content: string }[] } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        choices: [{ message: { tool_calls: [{ function: {
+          name: "ask_clarification", arguments: JSON.stringify({ question: "Which amount?" }),
+        } }] } }],
+      }), { headers: { "content-type": "application/json" } });
+    }));
+
+    const pendingMessages = [
+      { role: "user" as const, content: "transportation 500" },
+      { role: "assistant" as const, content: "Was this an expense or income?", needsFollowup: true },
+      { role: "user" as const, content: "expense" },
+      { role: "assistant" as const, content: "What date should I use?", needsFollowup: true },
+    ];
+    await askProvider({ prompt: "today", history: minimalFollowUpContext(pendingMessages) });
+
+    expect(requestBody?.messages.slice(1)).toEqual([
+      ...pendingMessages.map(({ role, content }) => ({ role, content })),
+      { role: "user", content: "today" },
+    ]);
+  });
+
+  it("supplies the current Manila date and lets complete one-line expenses skip follow-up", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-09T08:00:00.000Z"));
+    vi.stubEnv("CODEX_LB_BASE_URL", "https://provider.example/v1");
+    vi.stubEnv("CODEX_LB_MODEL", "test-model");
+    vi.stubEnv("CODEX_LB_API_KEY", "test-api-key");
+    vi.stubEnv("CODEX_LB_PRIVACY_DISCLOSURE", "Test-only disclosure");
+
+    let requestBody: {
+      messages: { role: string; content: string }[];
+      tools: { function: { name: string; parameters: { required?: string[] } } }[];
+    } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        choices: [{ message: { tool_calls: [{ function: {
+          name: "log_transaction",
+          arguments: JSON.stringify({ kind: "expense", amount: "500", description: "transportation" }),
+        } }] } }],
+      }), { headers: { "content-type": "application/json" } });
+    }));
+
+    await askProvider({ prompt: "transportation 500" });
+    const system = requestBody?.messages[0].content ?? "";
+    const transactionTool = requestBody?.tools.find(({ function: fn }) => fn.name === "log_transaction");
+
+    expect(system).toContain(todayInManila());
+    expect(system).toContain("Current date and time in Asia/Manila");
+    expect(system.toLowerCase()).toContain("never ask for a transaction date");
+    expect(system.toLowerCase()).toContain("default to expense");
+    expect(transactionTool?.function.parameters.required).toEqual(["amount", "description"]);
+  });
+
   it("rejects chunked provider responses that exceed 1 MB", async () => {
     vi.stubEnv("CODEX_LB_BASE_URL", "https://provider.example/backend-api/codex");
     vi.stubEnv("CODEX_LB_MODEL", "test-model");
@@ -40,7 +105,7 @@ describe("assistant data minimization", () => {
     await expect(askProvider({ prompt: "What did I spend?" })).rejects.toThrow(/response was too large/i);
   });
 
-  it("uses Codex-LB Chat Completions with only the two most recent context messages", async () => {
+  it("uses Codex-LB Chat Completions with the active follow-up context", async () => {
     vi.stubEnv("CODEX_LB_BASE_URL", "https://provider.example/v1");
     vi.stubEnv("CODEX_LB_MODEL", "test-model");
     vi.stubEnv("CODEX_LB_API_KEY", "test-api-key");

@@ -21,13 +21,33 @@ function guessCategory(description: string, categories: { id: string; name: stri
   const text = description.toLowerCase();
   const rules: [RegExp, string][] = [
     [/food|lunch|dinner|breakfast|coffee|restaurant|jollibee|meal|grocer/, "Food"],
-    [/bus|train|taxi|grab|jeep|fare|fuel|gasoline/, "Transport"],
+    [/transport(?:ation)?|commut(?:e|ing)|transit|bus|train|taxi|grab|jeep|fare|fuel|gasoline/, "Transport"],
     [/rent|mortgage|condo/, "Housing"], [/electric|water|internet|utility/, "Utilities"],
     [/doctor|medicine|pharmacy|clinic|hospital/, "Health"], [/school|tuition|book|course/, "Education"],
     [/movie|concert|game|stream/, "Entertainment"], [/flight|hotel|vacation|travel/, "Travel"], [/salary|payroll|payday/, "Salary"],
   ];
   const name = rules.find(([pattern]) => pattern.test(text))?.[1] ?? (kind === "income" ? "Other income" : "Other");
   return categories.find((category) => category.type === kind && category.name.toLowerCase() === name.toLowerCase()) ?? categories.find((category) => category.type === kind && category.name.toLowerCase() === (kind === "income" ? "other income" : "other"));
+}
+const monthPattern = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+const calendarDatePattern = new RegExp(
+  String.raw`\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{1,2}\.\d{1,2}\.\d{2,4}|${monthPattern}\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|\d{1,2}(?:st|nd|rd|th)?\s+${monthPattern})\b`,
+  "i",
+);
+const relativeDatePattern = /\b(?:yesterday|tomorrow|(?:last|this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i;
+function transactionDate(value: unknown, userText: string) {
+  const today = todayInManila();
+  if (/\btoday\b/i.test(userText) && !calendarDatePattern.test(userText)) return today;
+  if (!calendarDatePattern.test(userText) && !relativeDatePattern.test(userText)) return today;
+  return typeof value === "string" && isDateOnly(value) ? value : "";
+}
+function transactionKind(value: unknown, userText: string): "income" | "expense" {
+  if (value === "income" || value === "expense") return value;
+  const receivedMoney = /\b(?:salary|payroll|paycheck|wages?|income|earned|received|deposit|refund|reimbursement|commission|bonus|cashback|sold|got paid|was paid|paid me)\b/i.test(userText);
+  const spentMoney = /\b(?:spent|spend|paid|bought|purchased?|purchase|cost|expense|bill)\b/i.test(userText)
+    && !/\b(?:got|was|been)\s+paid\b|\bpaid me\b/i.test(userText);
+  if (spentMoney) return "expense";
+  return receivedMoney ? "income" : "expense";
 }
 
 export async function POST(request: Request) {
@@ -43,6 +63,7 @@ export async function POST(request: Request) {
       if (!store.getConversation(user.id, conversationId)) throw new HttpError(404, "Conversation not found.");
     } else conversationId = store.createConversation(user.id, input.prompt.slice(0, 80));
     const history = minimalFollowUpContext(store.getConversation(user.id, conversationId)?.messages ?? []);
+    const userText = [...history.filter((message) => message.role === "user").map((message) => message.content), input.prompt].join("\n");
     store.addMessage(user.id, conversationId, "user", input.prompt);
     const call = await askProvider({ prompt: input.prompt, history });
     if (!call) throw new Error("Assistant provider returned no action.");
@@ -60,15 +81,15 @@ export async function POST(request: Request) {
         answer = answerForFacts(facts);
       }
     } else if (call.name === "log_transaction") {
-      const kind = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;
       const amount = typeof call.args.amount === "string" ? call.args.amount : "";
       const description = typeof call.args.description === "string" ? call.args.description.trim().slice(0, 180) : "";
-      if (!kind || !amount || !description) { answer = safeClarification("What transaction type, amount, or description should I use?"); needsFollowup = true; }
+      const kind = transactionKind(call.args.kind, `${userText} ${description}`);
+      if (!amount || !description) { answer = safeClarification("What transaction amount or description should I use?"); needsFollowup = true; }
       else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; needsFollowup = true; }
       else {
         const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
         const account = requestedAccount ? accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase()) : accounts.find((candidate) => candidate.isDefault);
-        const date = typeof call.args.date === "string" && isDateOnly(call.args.date) ? call.args.date : call.args.date === undefined ? todayInManila() : "";
+        const date = transactionDate(call.args.date, userText);
         const guessed = guessCategory(description, categories, kind);
         const requestedCategory = typeof call.args.category === "string" ? categories.find((candidate) => candidate.type === kind && candidate.name.toLowerCase() === call.args.category!.toString().toLowerCase()) : undefined;
         const category = requestedCategory ?? guessed;
