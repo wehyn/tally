@@ -8,7 +8,7 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 - The first registered user becomes the **admin**. Registration must establish this role atomically so simultaneous first registrations cannot create multiple admins.
 - The **admin** manages instance settings and user access, including disabling or re-enabling accounts and issuing a one-time password reset that the user must consume to choose a new password. Admin status does not grant access to a user's financial accounts, transactions, categories, goals, or assistant conversations.
 - Personal finance records and assistant conversations are private to their owner. Sharing a goal exposes that goal and its member contribution history only.
-- Users may delete their own account and private data. Shared-goal contributions remain in the goal history under **Former member**. If the deleted user created a goal, management passes to the next user invited to that goal.
+- Users may delete their own account and private data. Shared-goal contributions remain in the goal history under **Former member**. If the deleted user created a goal, management passes to the first currently active accepted invitee; if none exists, the goal is archived with its history preserved. An admin who deletes their account while other enabled users remain must explicitly hand off admin access to one of them.
 
 ## Money and dates
 
@@ -24,7 +24,8 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 - An **expense** subtracts from one financial account and counts as spending.
 - A **transfer** moves money between two financial accounts owned by the same user. It updates both balances together, appears in account history, and is excluded from income and spending totals.
 - Transactions belong to one user and include an amount, date, description, financial account, and category.
-- Common starter categories are available. Users may add or rename categories for their own ledger. The exact starter list is a product detail that should not be guessed in shared code.
+- New users receive these starter categories: income **Salary**, **Other income**; expenses **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, **Other**. Users may add or rename categories for their own ledger.
+- Users may edit or permanently delete their own transactions at any time. Assistant Undo is a separate ten-second action; after it expires, deleting a transaction has no recovery path in the app.
 - Dashboard and assistant totals describe recorded actuals for a clear date range. The dashboard starts with month-to-date. Recommendations are deferred until enough history exists to support them; the threshold is not yet defined.
 
 ## In-app assistant
@@ -37,14 +38,14 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 
 ## Shared goals
 
-- A **shared goal** has a PHP target, an optional deadline, and an explicit membership list. The goal manager invites a registered user; the invitee must accept before joining. The creator manages the goal unless they delete their account, in which case management passes to the next user invited to that goal.
+- A **shared goal** has a PHP target, an optional deadline, and an explicit membership list. The goal manager invites a registered user; the invitee must accept before joining. When a manager leaves, is removed, or deletes their account, management passes to the first currently active accepted invitee; if no accepted invitee remains, the goal is archived and its history is preserved.
 - A **contribution** is a manual goal record attributed to a member. It is separate from personal transactions and does not change any financial account balance.
-- Members can see combined progress and how much each member contributed. A member may edit or delete only their own contributions. Past contributions remain in goal history when membership ends.
+- Members can see combined progress and how much each member contributed. A member may edit or delete only their own contributions. Past contributions remain in goal history when membership ends and retain that member's username. Account deletion changes only that user's contribution display name to exactly **Former member**.
 - A goal reaches its completed state when contributions meet its target. Its manager can raise the target to continue it.
 
 ## Runtime and v1 boundaries
 
 - The application uses Next.js and SQLite and is intended to run as a single app instance in Docker on a home server. SQLite data must live in persistent mounted storage. The operator configures Docker Compose and network exposure manually.
-- Create nightly SQLite backups on the same home server and document retention and restore steps; v1 does not require an external backup service.
+- Create SQLite backups nightly at 02:00 Asia/Manila on the same home server and retain the latest 30 valid snapshots. A restore may reintroduce private data deleted after the selected snapshot; show a clear warning before replacing the live database. V1 does not require an external backup service.
 - V1 includes manual ledger entry, the in-app assistant, actuals-focused analytics, and shared goals.
 - CLI and Hermes messaging integrations, receipt scanning/OCR, bill tracking, credit-card accounts, budgets, local AI processing, multiple currencies, and automated recommendations are outside the initial release.

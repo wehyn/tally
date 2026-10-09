@@ -1,0 +1,42 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      TALLY_DATA_DIR: /data
+      TALLY_DB_PATH: /data/tally.sqlite
+      TALLY_BACKUP_DIR: /data/backups
+      TALLY_TRUST_PROXY: ${TALLY_TRUST_PROXY:-false}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      CODEX_LB_BASE_URL: ${CODEX_LB_BASE_URL:-}
+      CODEX_LB_MODEL: ${CODEX_LB_MODEL:-}
+      CODEX_LB_API_KEY: ${CODEX_LB_API_KEY:-}
+      CODEX_LB_PRIVACY_DISCLOSURE: ${CODEX_LB_PRIVACY_DISCLOSURE:-}
+    ports:
+      - "${TALLY_PORT:-3000}:3000"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  backup:
+    build: .
+    restart: unless-stopped
+    command: ["node", "scripts/backup.mjs"]
+    environment:
+      NODE_ENV: production
+      TALLY_DATA_DIR: /data
+      TALLY_DB_PATH: /data/tally.sqlite
+      TALLY_BACKUP_DIR: /data/backups
+    volumes:
+      - ./data:/data
+    depends_on:
+      app:
+        condition: service_healthy
