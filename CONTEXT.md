@@ -1,6 +1,6 @@
 # Tally domain context
 
-Tally is a self-hosted personal finance tracker for people using the same home-server instance. This document defines the product's domain terms and rules for v1. Feature scope and acceptance criteria live in GitHub Issues; architectural choices belong in `docs/adr/`.
+Tally is a self-hosted personal finance tracker for people using the same home-server instance. This document defines the product's domain terms and rules for v1. Architectural choices belong in `docs/adr/`.
 
 ## People and privacy
 

@@ -6,9 +6,7 @@ Before changing the project, read:
 
 1. `AGENTS.md` for repository-specific instructions.
 2. `CONTEXT.md` for product language and domain rules.
-3. The relevant GitHub issue and any related architecture decision records in `docs/adr/`.
-
-Feature specifications and work requests live in GitHub Issues. Use the `gh` CLI and follow [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md). Use the label mappings in [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md); do not treat pull requests as a triage queue.
+3. Any related architecture decision records in `docs/adr/`.
 
 ## Scope and implementation
 
