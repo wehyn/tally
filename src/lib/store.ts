@@ -339,7 +339,7 @@ export function createStore(db: Database.Database) {
       COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor
       FROM transactions WHERE user_id=? AND date BETWEEN ? AND ? AND kind!='transfer' GROUP BY date ORDER BY date`)
       .all(userId, start, end) as { date: string; income_minor: number; spending_minor: number }[];
-    const transactions = listTransactions(userId, { start, end }, 8);
+    const transactions = listTransactions(userId, undefined, 8);
     const goals = listGoals(userId);
     const accounts = listAccounts(userId);
     assertSafeMinorTotal(accounts.reduce((sum, account) => sum + BigInt(account.balanceMinor), 0n), "Combined account balance");

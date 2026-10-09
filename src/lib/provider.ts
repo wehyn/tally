@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { todayInManila } from "./dates";
 
 const sensitive = (value: string) => value.replace(/[\r\n\t]/g, " ").trim();
 export type ProviderConfig = { baseUrl: string; endpoint: string; model: string; apiKey: string; disclosure: string };
@@ -32,13 +33,13 @@ const transactionTool = {
   type: "function",
   function: {
     name: "log_transaction",
-    description: "Create one complete personal income or expense. Ask a clarification instead if amount, kind, or description is missing. Use an available category and account when the user names one.",
+    description: "Create one personal income or expense as soon as its amount and description are clear. Infer income from clearly incoming money; otherwise default to expense. Use an available category and account when the user names one.",
     parameters: {
       type: "object", additionalProperties: false,
       properties: {
-        kind: { type: "string", enum: ["income", "expense"] }, amount: { type: "string", description: "Positive PHP amount as a decimal string, e.g. 250 or 250.50" },
-        description: { type: "string" }, category: { type: "string" }, account: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD or use the user's Manila-local today" },
-      }, required: ["kind", "amount", "description"],
+        kind: { type: "string", enum: ["income", "expense"], description: "Infer from the message; default to expense unless it clearly describes incoming money." }, amount: { type: "string", description: "Positive PHP amount as a decimal string, e.g. 250 or 250.50" },
+        description: { type: "string" }, category: { type: "string" }, account: { type: "string" }, date: { type: "string", description: "Optional YYYY-MM-DD only when the user specifies a different date; otherwise use the current Manila date supplied in the system message." },
+      }, required: ["amount", "description"],
     },
   },
 } as const;
@@ -61,7 +62,7 @@ const clarificationTool = {
   type: "function",
   function: {
     name: "ask_clarification",
-    description: "Ask only for information required to complete the user's request that cannot be inferred.",
+    description: "Ask only for an amount or description that genuinely cannot be inferred from the user's message and active follow-up. Never ask for transaction kind or date; default kind to expense unless money is clearly incoming, and use current Manila-local today.",
     parameters: { type: "object", additionalProperties: false, properties: { question: { type: "string" } }, required: ["question"] },
   },
 } as const;
@@ -70,7 +71,16 @@ export type AssistantContextMessage = { role: "user" | "assistant"; content: str
 export function minimalFollowUpContext(messages: AssistantContextMessage[]): { role: "user" | "assistant"; content: string }[] {
   const last = messages.at(-1);
   if (last?.role !== "assistant" || !last.needsFollowup) return [];
-  return messages.slice(-2).map(({ role, content }) => ({ role, content: content.slice(0, 4000) }));
+  let lastCompletedAssistant = -1;
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant" && !message.needsFollowup) {
+      lastCompletedAssistant = index;
+      break;
+    }
+  }
+  return messages.slice(lastCompletedAssistant + 1).slice(-8)
+    .map(({ role, content }) => ({ role, content: content.slice(0, 4000) }));
 }
 
 async function readProviderJson(response: Response, maxBytes: number): Promise<unknown> {
@@ -104,12 +114,17 @@ async function readProviderJson(response: Response, maxBytes: number): Promise<u
 export async function askProvider(input: { prompt: string; history?: { role: "user" | "assistant"; content: string }[] }): Promise<{ name: string; args: Record<string, unknown> } | null> {
   const config = providerConfig();
   if (!config) throw new Error("Codex-LB is not fully configured. Ask the operator to configure the provider and its privacy disclosure.");
-  const system = `You are Tally, a concise finance assistant. The user's timezone is Asia/Manila and currency is PHP. Use exactly one tool for each request. For complete income or expense capture, call log_transaction immediately; do not ask confirmation. Copy an account or category name only when the user explicitly provides it; the app validates it against that user's private settings and chooses defaults when omitted. The user may omit account, category, or date (the app uses Manila-local today). Ask only for truly missing kind, amount, or description. For finance questions, call finance_question with requested inclusive dates or month-to-date by default; the app computes the answer. Never invent amounts or give unsupported recommendations. If the request is unclear or missing required information, call ask_clarification with one concise question.`;
+  const now = new Date();
+  const today = todayInManila(now);
+  const currentDateTime = new Intl.DateTimeFormat("en-PH", {
+    dateStyle: "full", timeStyle: "short", timeZone: "Asia/Manila",
+  }).format(now);
+  const system = `You are Tally, a concise finance assistant. The user's currency is PHP. Current date and time in Asia/Manila: ${currentDateTime}. Today's date is ${today}. Use exactly one tool for each request. For a transaction with a clear amount and description, call log_transaction immediately; no confirmation. If kind is omitted or unclear, default to expense unless the message clearly describes incoming money (such as salary, money received, or earnings). Never ask for a transaction date: when the user gives no different date, use ${today}; “today” always means ${today}. Use another date only when the user explicitly states one. Infer the most fitting category from the description (for example, transportation is Transport) and use the default account/category when omitted. Preserve transaction details from the active follow-up context. Ask only if the amount or description truly cannot be inferred. For finance questions, call finance_question with requested inclusive dates or month-to-date by default; the app computes the answer. Never invent amounts or give unsupported recommendations. If a request is otherwise unclear, call ask_clarification with one concise question.`;
   const response = await fetch(config.endpoint, {
     method: "POST", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: config.model, messages: [
       { role: "system", content: system },
-      ...(input.history ?? []).slice(-2).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
+      ...(input.history ?? []).slice(-8).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
       { role: "user", content: input.prompt },
     ], tools: [transactionTool, questionTool, clarificationTool], tool_choice: "required" }),
     signal: AbortSignal.timeout(30_000), cache: "no-store",
