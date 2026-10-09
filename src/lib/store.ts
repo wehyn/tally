@@ -252,7 +252,7 @@ export function createStore(db: Database.Database) {
 
   function assertTransactionInput(userId: string, input: TransactionInput) {
     if (!validMoney(input.amountMinor)) throw new Error("Transaction amount must be a positive PHP value.");
-    if (!input.description.trim() || input.description.trim().length > 180) throw new Error("Description must be 1–180 characters.");
+    if (input.description.trim().length > 180) throw new Error("Description must be 180 characters or fewer.");
     if (!isDateOnly(input.date)) throw new Error("Enter a valid transaction date.");
     if (!(["income", "expense", "transfer"] as string[]).includes(input.kind)) throw new Error("Choose income, expense, or transfer.");
     const account = db.prepare("SELECT id FROM financial_accounts WHERE id=? AND user_id=?").get(input.accountId, userId);
@@ -296,13 +296,17 @@ export function createStore(db: Database.Database) {
       destinationAccountName: row.destination_account_name ? String(row.destination_account_name) : null,
     };
   }
-  function listTransactions(userId: string, range?: { start: string; end: string }, limit = 100): Transaction[] {
+  function listTransactions(userId: string, range?: { start: string; end: string }, limit = 100, options?: { kind?: TransactionKind; offset?: number }): Transaction[] {
     const start = range?.start && isDateOnly(range.start) ? range.start : "0000-01-01";
     const end = range?.end && isDateOnly(range.end) ? range.end : "9999-12-31";
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 501) : 100;
+    const offset = Number.isSafeInteger(options?.offset) ? Math.max(options?.offset ?? 0, 0) : 0;
+    const kind = options?.kind ?? null;
     return (db.prepare(`SELECT t.*,c.name AS category_name,a.name AS account_name,d.name AS destination_account_name
       FROM transactions t JOIN financial_accounts a ON a.id=t.account_id LEFT JOIN categories c ON c.id=t.category_id
       LEFT JOIN financial_accounts d ON d.id=t.destination_account_id
-      WHERE t.user_id=? AND t.date BETWEEN ? AND ? ORDER BY t.date DESC,t.created_at DESC LIMIT ?`).all(userId, start, end, Math.min(Math.max(limit, 1), 500)) as Record<string, unknown>[]).map(mapTransaction);
+      WHERE t.user_id=? AND t.date BETWEEN ? AND ? AND (? IS NULL OR t.kind=?)
+      ORDER BY t.date DESC,t.created_at DESC LIMIT ? OFFSET ?`).all(userId, start, end, kind, kind, boundedLimit, offset) as Record<string, unknown>[]).map(mapTransaction);
   }
   function updateTransaction(userId: string, id: string, input: TransactionInput): Transaction {
     return db.transaction(() => {

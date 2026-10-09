@@ -85,7 +85,7 @@ describe("assistant data minimization", () => {
     expect(system).toContain("Current date and time in Asia/Manila");
     expect(system.toLowerCase()).toContain("never ask for a transaction date");
     expect(system.toLowerCase()).toContain("default to expense");
-    expect(transactionTool?.function.parameters.required).toEqual(["amount", "description"]);
+    expect(transactionTool?.function.parameters.required).toEqual(["amount"]);
   });
 
   it("rejects chunked provider responses that exceed 1 MB", async () => {
