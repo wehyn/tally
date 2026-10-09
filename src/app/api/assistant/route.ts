@@ -129,7 +129,7 @@ function priorDateHint(messages: { content: string; createdAt?: string }[]): { d
   }
   return { mentioned: false };
 }
-function directCategoryCapture(prompt: string, categories: AssistantCategory[]) {
+function directCategoryCapture(prompt: string, categories: AssistantCategory[]): { name: string; args: Record<string, unknown> } | null {
   const text = prompt.trim().replace(/[.!]+$/, "");
   if (text.includes("?")) return null;
   const match = /^(.+?)\s+((?:₱\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)$/.exec(text);
