@@ -23,7 +23,7 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 - An **income** adds to one financial account and counts as income.
 - An **expense** subtracts from one financial account and counts as spending.
 - A **transfer** moves money between two financial accounts owned by the same user. It updates both balances together, appears in account history, and is excluded from income and spending totals.
-- Transactions belong to one user and include an amount, date, description, financial account, and category.
+- Income and expense records belong to one user and include an amount, date, financial account, category, and optional description. Transfers have a source account, destination account, amount, date, and optional description. The selected category determines whether a record is income or expense; transfers are managed from Accounts.
 - New users receive these starter categories: income **Salary**, **Other income**; expenses **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, **Other**. Users may add or rename categories for their own ledger.
 - Users may edit or permanently delete their own transactions at any time. Assistant Undo is a separate ten-second action; after it expires, deleting a transaction has no recovery path in the app.
 - Dashboard and assistant totals describe recorded actuals for a clear date range. The dashboard starts with month-to-date. Recommendations are deferred until enough history exists to support them; the threshold is not yet defined.
@@ -31,7 +31,7 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 ## In-app assistant
 
 - The assistant is optional and uses the hosted Codex-LB API only after the user opts in. Explain what prompts and finance data are sent, and send only the minimum relevant data. Provider credentials stay on the server. Assistant actions must use app-calculated data and user-scoped operations, not direct database access.
-- For a complete prompt such as “Jollibee lunch 250,” save the transaction immediately, then show what was saved: amount, description, category, financial account, and date. Use the user's default account unless the prompt names another account. Use a best-guess category when omitted, and let the user correct it.
+- For a complete prompt such as “Jollibee lunch 250,” save the transaction immediately, then show what was saved: amount, category, financial account, and date, plus the description when provided. Infer income or expense from the category and never ask the user to choose a type when the category is clear. Use the user's default account unless the prompt names another account. Use a best-guess category when omitted, and let the user correct it.
 - Ask only for information needed to save a complete record that cannot be inferred from the prompt or user settings. A short Undo action is available after assistant logging; the owner can also edit or delete the transaction later.
 - Answer finance questions from the owner's recorded actuals and state the applicable date range. Do not invent totals or present unsupported recommendations.
 - Assistant conversation history is private to its owner and can be deleted separately from finance records.

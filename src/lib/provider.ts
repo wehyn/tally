@@ -28,20 +28,26 @@ export function providerDisclosureHash(): string | null {
   return config ? createHash("sha256").update(`${config.baseUrl}\\n${config.model}\\n${config.disclosure}`).digest("hex") : null;
 }
 
-const transactionTool = {
-  type: "function",
-  function: {
-    name: "log_transaction",
-    description: "Create one complete personal income or expense. Ask a clarification instead if amount, kind, or description is missing. Use an available category and account when the user names one.",
-    parameters: {
-      type: "object", additionalProperties: false,
-      properties: {
-        kind: { type: "string", enum: ["income", "expense"] }, amount: { type: "string", description: "Positive PHP amount as a decimal string, e.g. 250 or 250.50" },
-        description: { type: "string" }, category: { type: "string" }, account: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD or use the user's Manila-local today" },
-      }, required: ["kind", "amount", "description"],
+function transactionTool(categories: { name: string; type: "income" | "expense" }[]) {
+  const availableCategories = categories.map((category) => `${category.name} (${category.type})`).join(", ");
+  return {
+    type: "function",
+    function: {
+      name: "log_transaction",
+      description: "Create one personal income or expense. The chosen category determines whether it is income or expense, so do not ask for a transaction type when a category is clear. A description is optional. Use an available category and account when the user names one.",
+      parameters: {
+        type: "object", additionalProperties: false,
+        properties: {
+          kind: { type: "string", enum: ["income", "expense"], description: "Usually omit this because the category determines type. Include it only to disambiguate identically named income and expense categories." },
+          amount: { type: "string", description: "Positive PHP amount as a decimal string, e.g. 250 or 250.50" },
+          description: { type: "string", maxLength: 180, description: "Optional short description. Omit when the user only names a category." },
+          category: { type: "string", enum: categories.map((category) => category.name), description: `Choose an available category. Its type determines income or expense: ${availableCategories}.` },
+          account: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD or omit to use the user's Manila-local today" },
+        }, required: ["amount"],
+      },
     },
-  },
-} as const;
+  };
+}
 const questionTool = {
   type: "function",
   function: {
@@ -66,11 +72,18 @@ const clarificationTool = {
   },
 } as const;
 export type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
-export type AssistantContextMessage = { role: "user" | "assistant"; content: string; needsFollowup?: boolean };
-export function minimalFollowUpContext(messages: AssistantContextMessage[]): { role: "user" | "assistant"; content: string }[] {
+export type AssistantContextMessage = { role: "user" | "assistant"; content: string; createdAt?: string; needsFollowup?: boolean };
+export function minimalFollowUpContext(messages: AssistantContextMessage[]): { role: "user" | "assistant"; content: string; createdAt?: string }[] {
   const last = messages.at(-1);
   if (last?.role !== "assistant" || !last.needsFollowup) return [];
-  return messages.slice(-2).map(({ role, content }) => ({ role, content: content.slice(0, 4000) }));
+  let lastCompletedReply = -1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role === "assistant" && !messages[index].needsFollowup) {
+      lastCompletedReply = index;
+      break;
+    }
+  }
+  return messages.slice(lastCompletedReply + 1).slice(-12).map(({ role, content, createdAt }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}) }));
 }
 
 async function readProviderJson(response: Response, maxBytes: number): Promise<unknown> {
@@ -101,17 +114,17 @@ async function readProviderJson(response: Response, maxBytes: number): Promise<u
   }
 }
 
-export async function askProvider(input: { prompt: string; history?: { role: "user" | "assistant"; content: string }[] }): Promise<{ name: string; args: Record<string, unknown> } | null> {
+export async function askProvider(input: { prompt: string; history?: { role: "user" | "assistant"; content: string }[]; categories?: { name: string; type: "income" | "expense" }[] }): Promise<{ name: string; args: Record<string, unknown> } | null> {
   const config = providerConfig();
   if (!config) throw new Error("Codex-LB is not fully configured. Ask the operator to configure the provider and its privacy disclosure.");
-  const system = `You are Tally, a concise finance assistant. The user's timezone is Asia/Manila and currency is PHP. Use exactly one tool for each request. For complete income or expense capture, call log_transaction immediately; do not ask confirmation. Copy an account or category name only when the user explicitly provides it; the app validates it against that user's private settings and chooses defaults when omitted. The user may omit account, category, or date (the app uses Manila-local today). Ask only for truly missing kind, amount, or description. For finance questions, call finance_question with requested inclusive dates or month-to-date by default; the app computes the answer. Never invent amounts or give unsupported recommendations. If the request is unclear or missing required information, call ask_clarification with one concise question.`;
+  const system = `You are Tally, a concise finance assistant. The user's timezone is Asia/Manila and currency is PHP. Use exactly one tool for each request. For complete income or expense capture, call log_transaction immediately; do not ask confirmation. A category's type determines whether the transaction is income or expense: use the category and never ask the user to choose a type when the category is clear. If identical category names exist for both types, use the user's wording to disambiguate and include kind; ask only if the wording is not enough. A description is optional. The app validates category and account names against the user's private settings; omitted account and date use the default account and Manila-local today. Ask only for information that is truly required and cannot be inferred. For finance questions, call finance_question with requested inclusive dates or month-to-date by default; the app computes the answer. Never invent amounts or give unsupported recommendations. If the request is unclear or missing required information, call ask_clarification with one concise question.`;
   const response = await fetch(config.endpoint, {
     method: "POST", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: config.model, messages: [
       { role: "system", content: system },
-      ...(input.history ?? []).slice(-2).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
+      ...(input.history ?? []).slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
       { role: "user", content: input.prompt },
-    ], tools: [transactionTool, questionTool, clarificationTool], tool_choice: "required" }),
+    ], tools: [transactionTool(input.categories ?? []), questionTool, clarificationTool], tool_choice: "required" }),
     signal: AbortSignal.timeout(30_000), cache: "no-store",
   });
   if (!response.ok) throw new Error(`Assistant provider returned HTTP ${response.status}.`);

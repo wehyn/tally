@@ -3,7 +3,7 @@ import { assertSameOrigin, requestJson, requireUser, respondError } from "@/lib/
 import { getStore } from "@/lib/db";
 import { todayInManila } from "@/lib/dates";
 import { parsePHPToMinor } from "@/lib/money";
-const schema = z.object({ kind: z.enum(["income", "expense", "transfer"]), amount: z.string().max(24), accountId: z.string().uuid(), destinationAccountId: z.string().uuid().optional(), categoryId: z.string().uuid().optional(), description: z.string().trim().min(1).max(180), date: z.string().optional() });
+const schema = z.object({ kind: z.enum(["income", "expense", "transfer"]), amount: z.string().max(24), accountId: z.string().uuid(), destinationAccountId: z.string().uuid().optional(), categoryId: z.string().uuid().optional(), description: z.string().trim().max(180).optional().default(""), date: z.string().optional() });
 type Context = { params: Promise<{ id: string }> };
 export async function PATCH(request: Request, { params }: Context) {
   try {

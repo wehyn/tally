@@ -49,7 +49,7 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 - V1 supports PHP only. Store and calculate money using precise minor-unit arithmetic; do not use floating-point arithmetic for financial totals.
 - Income adds money to one owned account. Expenses subtract money from one owned account. Both appear in account history and relevant analytics.
 - Transfers move money between two accounts owned by the same user. Update both account balances as one operation. Show the transfer in account history, but exclude it from income and spending totals.
-- Users can manually create, view, edit, and delete their own income, expense, and transfer records. Income and expense records have an amount, date, description, account, and category. Transfers identify source and destination accounts.
+- Users can manually create, view, edit, and delete their own income, expense, and transfer records. Income and expense records have an amount, date, account, category, and optional description. The selected category determines whether a record is income or expense. Transfers identify source and destination accounts and are managed from Accounts.
 - Seed every user with income categories **Salary** and **Other income**, and expense categories **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, and **Other**. Users can add and rename categories for their own ledger.
 - Accounts, categories, and transactions are private to their owner, including when another user is the admin.
 
@@ -78,11 +78,11 @@ Use Asia/Manila for relative dates, the current day, and month boundaries. Openi
 #### Transaction capture
 
 - Provide a quick-entry surface on the dashboard and an assistant chat UI.
-- For a complete income or expense prompt, such as “Jollibee lunch 250,” save the transaction immediately without a separate confirmation step.
+- For a complete income or expense prompt, such as “Jollibee lunch 250,” save the transaction immediately without a separate confirmation step. A category determines whether the record is income or expense, and a description is optional.
 - Use the user's default account when none is named, and use a best-guess category when none is named. The user can edit the category on the result card or later.
 - Respect an explicitly named account and date. Interpret relative dates in Asia/Manila; when no date is specified, use today in that timezone.
 - If required information cannot be inferred from the prompt or user settings, ask only for the missing information. Do not save an incomplete transaction.
-- After saving, show a transaction card with amount, description, category, account, and date. Provide an approximately 10-second Undo action for that entry.
+- After saving, show a transaction card with amount, category, account, and date, plus a description when provided. Provide an approximately 10-second Undo action for that entry.
 - Users can edit their own saved records after the Undo period. Deletion after the approximately 10-second assistant Undo window is permanent in the app. Manual entry remains available to users who do not opt in to AI.
 
 #### Factual questions and conversation history
@@ -135,7 +135,7 @@ V1 is acceptable when the following outcomes work for multiple independent users
 2. **Ledger isolation:** Each user can create private accounts, categories, and records. A user or admin cannot read or change another user's personal finance records through the app.
 3. **Accounting behavior:** Opening balances affect balances without appearing as transactions or income. Income and expenses change balances and analytics correctly. Transfers update two owned accounts together and never inflate income or spending totals.
 4. **Dashboard:** The user sees their current balances, month-to-date income and spending, category spending, trends, recent transactions, and active goals. Period totals state their Asia/Manila date range.
-5. **Assistant capture:** A user who opts in can save a complete natural-language income or expense using the default account and a best-guess category, see the saved fields, undo it promptly, and later edit or delete it. An incomplete entry is not saved until required information is supplied. Users who do not opt in can maintain their ledger manually.
+5. **Assistant capture:** A user who opts in can save a complete natural-language income or expense using the default account and a best-guess category, with the category determining the transaction type and no required description. They can see the saved fields, undo the entry promptly, and later edit or delete it. An incomplete entry is not saved until required information is supplied. Users who do not opt in can maintain their ledger manually.
 6. **Assistant privacy and answers:** Hosted processing happens only after opt-in, with the configured provider path disclosed. Questions use only the signed-in user's records, provide a date range, and do not invent totals. Conversation deletion leaves finance records intact.
 7. **Shared goals:** A user can create a goal, invite another registered user, and require acceptance. Members can see goal progress and contributions, add their own contribution, and edit or delete only their own entries. Contributions do not alter personal balances.
 8. **Deletion:** Account deletion removes private finance and chat data while preserving goal contributions under “Former member” and preserving group progress. Goal management passes to the next invited user when its manager deletes their account.
