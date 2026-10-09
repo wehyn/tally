@@ -98,13 +98,15 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   }, [mode, assistantEnabled]);
 
   useEffect(() => {
-    const hasAvailableUndo = messages.some((message) => message.transaction?.undoUntil && isUndoAvailable(message.transaction.undoUntil, now || Date.now()));
-    if (!hasAvailableUndo) return;
-    const update = () => setNow(Date.now());
-    update();
-    const timer = window.setInterval(update, 1000);
+    const undoDeadlines = messages.flatMap((message) => message.transaction?.undoUntil ? [message.transaction.undoUntil] : []);
+    if (!undoDeadlines.some((deadline) => isUndoAvailable(deadline, Date.now()))) return;
+    const timer = window.setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      if (!undoDeadlines.some((deadline) => isUndoAvailable(deadline, current))) window.clearInterval(timer);
+    }, 1000);
     return () => window.clearInterval(timer);
-  }, [messages, now]);
+  }, [messages]);
 
   function openAssistant() {
     if (!assistantEnabled) setMode("chat");
