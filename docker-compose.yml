@@ -10,13 +10,17 @@ services:
       TALLY_DB_PATH: /data/tally.sqlite
       TALLY_BACKUP_DIR: /data/backups
       TALLY_TRUST_PROXY: ${TALLY_TRUST_PROXY:-false}
+      TALLY_COOKIE_SECURE: ${TALLY_COOKIE_SECURE:-true}
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
       CODEX_LB_BASE_URL: ${CODEX_LB_BASE_URL:-}
+      CODEX_LB_ALLOW_HTTP: ${CODEX_LB_ALLOW_HTTP:-false}
       CODEX_LB_MODEL: ${CODEX_LB_MODEL:-}
       CODEX_LB_API_KEY: ${CODEX_LB_API_KEY:-}
       CODEX_LB_PRIVACY_DISCLOSURE: ${CODEX_LB_PRIVACY_DISCLOSURE:-}
     ports:
-      - "${TALLY_PORT:-3000}:3000"
+      - "${TALLY_PORT:-43871}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
     healthcheck:
