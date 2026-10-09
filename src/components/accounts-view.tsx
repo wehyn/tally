@@ -1,18 +1,20 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Landmark, Pencil, Plus, Star, Trash2, Wallet, X } from "lucide-react";
 import type { Account, Transaction } from "@/lib/store";
-import { todayInManila } from "@/lib/dates";
+import { todayInManila, timeInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
+import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 
 type AccountDraft = { name: string; type: "cash" | "bank"; openingBalance: string };
-type TransferDraft = { amount: string; description: string; accountId: string; destinationAccountId: string; date: string };
+type TransferDraft = { amount: string; description: string; accountId: string; destinationAccountId: string; date: string; time: string };
 const blankTransfer = (accounts: Account[]): TransferDraft => ({
   amount: "",
   description: "",
   accountId: accounts.find((account) => account.isDefault)?.id ?? accounts[0]?.id ?? "",
   destinationAccountId: accounts.find((account) => account.id !== (accounts.find((entry) => entry.isDefault)?.id ?? accounts[0]?.id))?.id ?? "",
   date: todayInManila(),
+  time: timeInManila(),
 });
 
 export function AccountsView({ initial, initialTransfers, initialHasMoreTransfers }: { initial: Account[]; initialTransfers: Transaction[]; initialHasMoreTransfers: boolean }) {
@@ -31,7 +33,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
   const [transferError, setTransferError] = useState("");
   const [transferBusy, setTransferBusy] = useState(false);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     const [accountResult, transactionResult] = await Promise.all([
       fetch("/api/accounts").then((response) => response.json()),
       fetch("/api/transactions?kind=transfer&limit=100&offset=0").then((response) => response.json()),
@@ -39,7 +41,13 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
     if (accountResult.accounts) setAccounts(accountResult.accounts);
     if (transactionResult.transactions) setTransfers(transactionResult.transactions);
     setHasMoreTransfers(Boolean(transactionResult.hasMore));
-  }
+  }, []);
+
+  useEffect(() => {
+    const refreshAfterAssistantTransaction = () => { void refresh().catch(() => undefined); };
+    window.addEventListener(LEDGER_UPDATED_EVENT, refreshAfterAssistantTransaction);
+    return () => window.removeEventListener(LEDGER_UPDATED_EVENT, refreshAfterAssistantTransaction);
+  }, [refresh]);
 
   function create() {
     setEditing(null);
@@ -106,6 +114,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
       accountId: transfer.accountId,
       destinationAccountId: transfer.destinationAccountId ?? "",
       date: transfer.date,
+      time: transfer.time ?? "",
     });
     setTransferError("");
     setTransferOpen(true);
@@ -119,7 +128,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
       const response = await fetch(editingTransfer ? `/api/transactions/${editingTransfer.id}` : "/api/transactions", {
         method: editingTransfer ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...transferDraft, kind: "transfer" }),
+        body: JSON.stringify({ ...transferDraft, time: transferDraft.time || null, kind: "transfer" }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save transfer.");
@@ -177,7 +186,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
     <article className="panel"><div className="panel-heading"><div><h2>Transfers between accounts</h2><p>Move money without changing income or spending totals.</p></div>{accounts.length >= 2 && <button className="button button-small" onClick={createTransfer}><ArrowLeftRight size={14}/> New transfer</button>}</div>
       <div className="activity-list">{transfers.map((transfer) => <div className="activity-row" key={transfer.id}>
         <div className="activity-icon transfer"><ArrowLeftRight size={17}/></div>
-        <div className="activity-copy"><strong>{transfer.accountName} → {transfer.destinationAccountName}</strong><span>{transfer.description || "Transfer"} · {transfer.date}</span></div>
+        <div className="activity-copy"><strong>{transfer.accountName} → {transfer.destinationAccountName}</strong><span>{transfer.description || "Transfer"} · {transfer.date}{transfer.time ? ` · ${transfer.time}` : ""}</span></div>
         <strong>{formatPHP(transfer.amountMinor)}</strong>
         <button className="icon-button" aria-label="Edit transfer" onClick={() => editTransfer(transfer)}><Pencil size={15}/></button>
         <button className="icon-button" aria-label="Delete transfer" onClick={() => removeTransfer(transfer)}><Trash2 size={15}/></button>
@@ -202,6 +211,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
       <div className="modal-heading"><div><h2 id="transfer-title">{editingTransfer ? "Edit transfer" : "Transfer between accounts"}</h2><p>Balances update together. Transfers are excluded from income and spending.</p></div><button className="modal-close" aria-label="Close" onClick={() => setTransferOpen(false)}><X size={16}/></button></div>
       <form onSubmit={saveTransfer}><div className="form-grid"><label className="field-label">Amount in PHP<input autoFocus required inputMode="decimal" value={transferDraft.amount} onChange={(e) => setTransferDraft({ ...transferDraft, amount: e.target.value })} placeholder="250.00"/></label>
         <label className="field-label">Date<input type="date" required value={transferDraft.date} onChange={(e) => setTransferDraft({ ...transferDraft, date: e.target.value })}/></label>
+        <label className="field-label">Time · Asia/Manila<input type="time" required={!editingTransfer || Boolean(transferDraft.time)} value={transferDraft.time} onChange={(e) => setTransferDraft({ ...transferDraft, time: e.target.value })}/></label>
         <label className="field-label">From account<select required value={transferDraft.accountId} onChange={(e) => setTransferDraft({ ...transferDraft, accountId: e.target.value, destinationAccountId: e.target.value === transferDraft.destinationAccountId ? "" : transferDraft.destinationAccountId })}><option value="">Choose account</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}{account.isDefault ? " · default" : ""}</option>)}</select></label>
         <label className="field-label">To account<select required value={transferDraft.destinationAccountId} onChange={(e) => setTransferDraft({ ...transferDraft, destinationAccountId: e.target.value })}><option value="">Choose account</option>{accounts.filter((account) => account.id !== transferDraft.accountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
         <label className="field-label span-2">Description (optional)<input maxLength={180} value={transferDraft.description} onChange={(e) => setTransferDraft({ ...transferDraft, description: e.target.value })} placeholder="Add a note"/></label>

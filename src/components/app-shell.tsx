@@ -1,20 +1,20 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowLeftRight, LayoutDashboard, MessageCircle, Settings, Shield, Target, Wallet } from "lucide-react";
+import { ArrowLeftRight, LayoutDashboard, Settings, Shield, Target, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import type { PublicUser } from "@/lib/store";
 import { SignOutButton } from "./sign-out-button";
+import { AssistantWidget } from "./assistant-widget";
 
 const navigation = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
   { href: "/accounts", label: "Accounts", icon: Wallet },
   { href: "/goals", label: "Shared goals", icon: Target },
-  { href: "/assistant", label: "Assistant", icon: MessageCircle },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
-export function AppShell({ user, children }: { user: PublicUser; children: ReactNode }) {
+export function AppShell({ user, children, assistantEnabled, assistantConfigured }: { user: PublicUser; children: ReactNode; assistantEnabled: boolean; assistantConfigured: boolean }) {
   const active = usePathname();
   const entries = user.role === "admin" ? [...navigation, { href: "/admin", label: "Administration", icon: Shield }] : navigation;
   return <div className="app-frame">
@@ -22,7 +22,7 @@ export function AppShell({ user, children }: { user: PublicUser; children: React
       <Link href="/dashboard" className="brand"><span className="brand-mark">t</span><span>Tally</span></Link>
       <div className="nav-label">WORKSPACE</div>
       <nav className="side-nav" aria-label="Main navigation">
-        {entries.map(({ href, label, icon: Icon }) => <Link href={href} className={`nav-item ${active === href ? "active" : ""}`} key={href} aria-current={active === href ? "page" : undefined}><Icon size={18} strokeWidth={1.8}/><span>{label}</span>{label === "Assistant" && <span className="nav-soft-dot"/>}</Link>)}
+        {entries.map(({ href, label, icon: Icon }) => <Link href={href} className={`nav-item ${active === href ? "active" : ""}`} key={href} aria-current={active === href ? "page" : undefined}><Icon size={18} strokeWidth={1.8}/><span>{label}</span></Link>)}
       </nav>
       <div className="sidebar-spacer"/>
       <div className="sidebar-note"><span className="privacy-dot"/>Private by default</div>
@@ -33,5 +33,6 @@ export function AppShell({ user, children }: { user: PublicUser; children: React
       <main className="page-content">{children}</main>
     </div>
     <nav className="mobile-nav" aria-label="Mobile navigation">{entries.slice(0,5).map(({href,label,icon:Icon})=><Link key={href} href={href} className={active===href?"selected":""} aria-label={label}><Icon size={20}/><span>{label === "Overview" ? "Home" : label === "Transactions" ? "Ledger" : label === "Shared goals" ? "Goals" : label}</span></Link>)}</nav>
+    <AssistantWidget enabled={assistantEnabled} configured={assistantConfigured} />
   </div>;
 }
