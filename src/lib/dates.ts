@@ -1,5 +1,6 @@
 const MANILA = "Asia/Manila";
 type DateRange = { start: string; end: string };
+export type BillFrequency = "weekly" | "monthly" | "yearly";
 
 export function todayInManila(now: Date = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -43,6 +44,21 @@ export function isDateOnly(value: string): boolean {
   const [year, month, day] = value.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+export function advanceBillDate(date: string, frequency: BillFrequency, anchorDay: number, anchorMonth: number): string {
+  if (!isDateOnly(date)) throw new Error("Choose a valid bill date.");
+  if (!(frequency === "weekly" || frequency === "monthly" || frequency === "yearly")) throw new Error("Choose a valid bill frequency.");
+  if (!Number.isInteger(anchorDay) || anchorDay < 1 || anchorDay > 31 || !Number.isInteger(anchorMonth) || anchorMonth < 1 || anchorMonth > 12) {
+    throw new Error("Bill calendar anchor is invalid.");
+  }
+  const [year, month] = date.split("-").map(Number);
+  if (frequency === "weekly") return shiftDate(date, 7);
+  const targetYear = frequency === "yearly" ? year + 1 : month === 12 ? year + 1 : year;
+  const nextMonth = frequency === "yearly" ? anchorMonth : month === 12 ? 1 : month + 1;
+  const lastDay = new Date(Date.UTC(targetYear, nextMonth, 0)).getUTCDate();
+  const targetDay = Math.min(anchorDay, lastDay);
+  return `${targetYear}-${String(nextMonth).padStart(2, "0")}-${String(targetDay).padStart(2, "0")}`;
 }
 
 export function isTime(value: string): boolean {

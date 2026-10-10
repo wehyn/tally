@@ -98,7 +98,7 @@ export async function requestJson<T>(request: Request, schema: { parse(value: un
 export function respondError(error: unknown): NextResponse {
   if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status });
   const message = error instanceof Error ? error.message : "Request failed.";
-  const status = /not found/i.test(message) ? 404 : /already taken|unique constraint/i.test(message) ? 409 : 400;
+  const status = /not found/i.test(message) ? 404 : /already taken|unique constraint|schedule changed/i.test(message) ? 409 : 400;
   return NextResponse.json({ error: message.slice(0, 240) }, { status });
 }
 export const limiter = (() => {

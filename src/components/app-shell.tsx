@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowLeftRight, HandCoins, LayoutDashboard, Settings, Shield, Target, Wallet } from "lucide-react";
+import { ArrowLeftRight, CalendarDays, HandCoins, LayoutDashboard, Settings, Shield, Target, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import type { PublicUser } from "@/lib/store";
 import { SignOutButton } from "./sign-out-button";
@@ -11,6 +11,7 @@ const navigation = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
   { href: "/accounts", label: "Accounts", icon: Wallet },
+  { href: "/bills", label: "Bills", icon: CalendarDays },
   { href: "/debts", label: "Debts", icon: HandCoins },
   { href: "/goals", label: "Shared goals", icon: Target },
   { href: "/settings", label: "Settings", icon: Settings },

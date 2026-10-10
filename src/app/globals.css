@@ -65,6 +65,13 @@
 .chat-transaction-date input::-webkit-calendar-picker-indicator{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
 .chat-transaction-saving{color:var(--muted);font-size:10px}
 .chat-transaction-card .undo-link{justify-self:start;padding-top:3px}
+.bill-icon-picker{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px}
+.bill-icon-choice{width:100%;min-width:0;min-height:50px;padding:5px;border:1px solid var(--line);border-radius:10px;background:#fff;color:#718078;display:grid;justify-items:center;align-content:center;gap:3px;cursor:pointer}
+.bill-icon-choice span{font-size:9px}
+.bill-icon-choice:hover{background:#f1f4ef}
+.bill-icon-choice[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-strong)}
+.bill-icon-choice:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:620px){.bill-icon-picker{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .chat-transaction-card .undo-link:disabled{opacity:.5;cursor:wait}
 
 /* Personal debt register */
@@ -207,3 +214,4 @@
 }
 @media(max-width:360px){.dashboard-period-stats{gap:7px}.asset-table-heading,.asset-account-row{grid-template-columns:minmax(0,1fr) minmax(82px,.65fr) minmax(77px,.48fr);gap:5px;padding-right:2px;padding-left:2px}.asset-account-mark{display:none}.category-tile-grid{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.asset-composition>span,.category-tile,.category-icon-option{transition:none}}
+@media(max-width:620px){.list-table{min-width:560px}}
