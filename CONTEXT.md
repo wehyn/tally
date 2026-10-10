@@ -4,11 +4,11 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 
 ## People and privacy
 
-- A **user** is one person with a private ledger and assistant history. Registration is open to anyone who can reach the instance.
+- A **user** is one person with a private ledger, debt register, and assistant history. Registration is open to anyone who can reach the instance.
 - The first registered user becomes the **admin**. Registration must establish this role atomically so simultaneous first registrations cannot create multiple admins.
-- The **admin** manages instance settings and user access, including disabling or re-enabling accounts and issuing a one-time password reset that the user must consume to choose a new password. Admin status does not grant access to a user's financial accounts, transactions, categories, goals, or assistant conversations.
-- Personal finance records and assistant conversations are private to their owner. Sharing a goal exposes that goal and its member contribution history only.
-- Users may delete their own account and private data. Shared-goal contributions remain in the goal history under **Former member**. If the deleted user created a goal, management passes to the first currently active accepted invitee; if none exists, the goal is archived with its history preserved. An admin who deletes their account while other enabled users remain must explicitly hand off admin access to one of them.
+- The **admin** manages instance settings and user access, including disabling or re-enabling accounts and issuing a one-time password reset that the user must consume to choose a new password. Admin status does not grant access to a user's financial accounts, transactions, categories, debt records, goals, or assistant conversations.
+- Personal finance records, debt records, and assistant conversations are private to their owner. Sharing a goal exposes that goal and its member contribution history only.
+- Users may delete their own account and private data, including their debt register. Shared-goal contributions remain in the goal history under **Former member**. If the deleted user created a goal, management passes to the first currently active accepted invitee; if none exists, the goal is archived with its history preserved. An admin who deletes their account while other enabled users remain must explicitly hand off admin access to one of them.
 
 ## Money and dates
 
@@ -27,6 +27,13 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 - New users receive these starter categories: income **Salary**, **Other income**; expenses **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, **Other**. Users may add or rename categories for their own ledger.
 - Users may edit or permanently delete their own transactions at any time. Assistant Undo is a separate ten-second action; after it expires, deleting a transaction has no recovery path in the app.
 - Dashboard and assistant totals describe recorded actuals for a clear date range. The dashboard starts with month-to-date. Recommendations are deferred until enough history exists to support them; the threshold is not yet defined.
+
+## Debt register
+
+- A **debt record** tracks a current amount either **owed to you** or **you owe**. It belongs to one user and includes a counterparty, positive PHP amount, optional due date and note, and an open or settled status.
+- Debt records are private to their owner and do not create or change financial accounts, transactions, balances, income, spending, or dashboard analytics.
+- The recorded amount is the current outstanding amount; Tally does not record a repayment schedule or payment history. When money is actually received or paid, record it separately as a transaction and update or settle the debt record manually.
+- Users may edit, reopen, settle, or permanently delete only their own debt records.
 
 ## In-app assistant
 
@@ -47,5 +54,5 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 
 - The application uses Next.js and SQLite and is intended to run as a single app instance in Docker on a home server. SQLite data must live in persistent mounted storage. The operator configures Docker Compose and network exposure manually.
 - Create SQLite backups nightly at 02:00 Asia/Manila on the same home server and retain the latest 30 valid snapshots. A restore may reintroduce private data deleted after the selected snapshot; show a clear warning before replacing the live database. V1 does not require an external backup service.
-- V1 includes manual ledger entry, the in-app assistant, actuals-focused analytics, and shared goals.
-- CLI and Hermes messaging integrations, receipt scanning/OCR, bill tracking, credit-card accounts, budgets, local AI processing, multiple currencies, and automated recommendations are outside the initial release.
+- V1 includes manual ledger entry, a private debt register, the in-app assistant, actuals-focused analytics, and shared goals.
+- CLI and Hermes messaging integrations, receipt scanning/OCR, recurring bill tracking and reminders, credit-card accounts, budgets, local AI processing, multiple currencies, and automated recommendations are outside the initial release.

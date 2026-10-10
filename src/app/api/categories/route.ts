@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { assertSameOrigin, requestJson, requireUser, respondError } from "@/lib/api";
+import { CATEGORY_ICON_IDS } from "@/lib/category-icons";
 import { getStore } from "@/lib/db";
-const schema = z.object({ name: z.string().trim().min(1).max(40), type: z.enum(["income", "expense"]) });
+const schema = z.object({ name: z.string().trim().min(1).max(40), type: z.enum(["income", "expense"]), icon: z.enum(CATEGORY_ICON_IDS).optional() });
 export async function GET() {
   try { const user = await requireUser(); return Response.json({ categories: getStore().listCategories(user.id) }); }
   catch (error) { return respondError(error); }

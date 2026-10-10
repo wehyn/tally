@@ -37,6 +37,42 @@ describe("owner-scoped ledger", () => {
     expect(dashboard.accounts.map((account) => [account.name, account.balanceMinor])).toEqual([["Wallet", 12000], ["Savings", 6000]]);
   });
 
+  it("calculates asset totals and weights from positive account balances", () => {
+    const user = store.registerUser("asset_weights", "hash");
+    const cash = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 6000 });
+    const bank = store.createAccount(user.id, { name: "Savings", type: "bank", openingMinor: 4000 });
+    const overdrawn = store.createAccount(user.id, { name: "Overdrawn", type: "bank", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    store.createTransaction(user.id, { kind: "expense", amountMinor: 1500, accountId: overdrawn.id, categoryId: food.id, description: "Fee", date: "2026-10-09" });
+
+    const dashboard = store.getDashboard(user.id, "2026-10-01", "2026-10-31") as unknown as {
+      assetTotalMinor?: string;
+      assetWeights?: Record<string, number>;
+    };
+    expect(dashboard.assetTotalMinor).toBe("10000");
+    expect(dashboard.assetWeights).toEqual({ [cash.id]: 6000, [bank.id]: 4000, [overdrawn.id]: 0 });
+  });
+
+  it("assigns category icons, persists edits, and includes the icon in recent transactions", () => {
+    const alice = store.registerUser("category_icons", "hash-a");
+    const bob = store.registerUser("category_other_owner", "hash-b");
+    const food = store.listCategories(alice.id).find((category) => category.name === "Food")!;
+    expect(food.icon).toBe("utensils");
+
+    const pets = store.createCategory(alice.id, { name: "Pet care", type: "expense", icon: "heart-pulse" });
+    expect(pets.icon).toBe("heart-pulse");
+    const updated = store.updateCategory(alice.id, pets.id, { name: "Pets", icon: "piggy-bank" });
+    expect(updated).toMatchObject({ id: pets.id, name: "Pets", type: "expense", icon: "piggy-bank" });
+    expect(() => store.updateCategory(bob.id, pets.id, { icon: "tag" })).toThrow(/not found/i);
+    expect(() => store.updateCategory(alice.id, pets.id, { icon: "not-an-icon" as never })).toThrow(/icon/i);
+
+    const wallet = store.createAccount(alice.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    store.createTransaction(alice.id, { kind: "expense", amountMinor: 2500, accountId: wallet.id, categoryId: pets.id, description: "Pet food", date: "2026-10-09" });
+    expect(store.getDashboard(alice.id, "2026-10-01", "2026-10-31").transactions[0]).toMatchObject({
+      categoryName: "Pets", categoryIcon: "piggy-bank",
+    });
+  });
+
   it("adds a nullable time column to legacy transactions without inventing event times", () => {
     const user = store.registerUser("legacy_transaction", "hash");
     const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
@@ -75,7 +111,7 @@ describe("owner-scoped ledger", () => {
     const dashboard = store.getDashboard(user.id, "2026-10-01", "2026-10-09");
 
     expect(dashboard.spendingMinor).toBe(25000);
-    expect(dashboard.categorySpending).toEqual([{ id: food.id, name: "Food", amountMinor: 25000 }]);
+    expect(dashboard).not.toHaveProperty("categorySpending");
     expect(dashboard.transactions.map((transaction) => transaction.description)).toEqual([
       "Current lunch", "February lunch", "November lunch",
     ]);
