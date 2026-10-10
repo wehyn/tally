@@ -38,9 +38,11 @@ describe("Manila bill scheduler", () => {
   it("shows posting pending for an active bill whose due date has passed", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-09T08:00:00.000Z"));
     const html = renderToStaticMarkup(createElement(BillsView, {
-      initialBills: [{ id: "bill-123", name: "Power", amountMinor: 100, frequency: "monthly", nextDueDate: "2026-10-08", anchorDay: 8, anchorMonth: 10, accountId: "account-1", categoryId: "category-1", accountName: "Wallet", categoryName: "Utilities", archivedAt: null, icon: "calendar" }],
+      initialBills: [{ id: "bill-123", name: "Power", amountMinor: 100, frequency: "monthly", nextDueDate: "2026-10-08", anchorDay: 8, anchorMonth: 10, accountId: "account-1", categoryId: "category-1", accountName: "Wallet", categoryName: "Utilities", archivedAt: null, icon: "netflix", iconEmoji: "🧾", iconForegroundColor: "#ffffff", iconBackgroundColor: "#e50914" }],
       accounts: [], categories: [],
     }));
     expect(html).toContain("Posting pending · due Oct 8, 2026");
+    expect(html).toContain("🧾");
+    expect(html).toContain("style=\"color:#ffffff;background-color:#e50914\"");
   });
 });
