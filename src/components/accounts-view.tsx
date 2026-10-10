@@ -188,22 +188,21 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
   }
 
   return <div className="page-stack">
-    <section className="page-heading-row">
-      <div><div className="eyebrow">YOUR MONEY</div><h1>Accounts</h1><p className="subtitle">Cash and bank balances, kept separately from your sign-in.</p></div>
+    <section className="page-heading-row page-heading-actions-only">
+      <h1 className="sr-only">Accounts</h1>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="button" disabled={accounts.length < 2} onClick={createTransfer}><ArrowLeftRight size={15}/> Transfer</button>
         <button className="button button-primary" onClick={create}><Plus size={16}/> New account</button>
       </div>
     </section>
     {accounts.length < 2 && <p className="page-note">Create two accounts to transfer money between them.</p>}
-    <div className="notice-box">Opening balances set a starting point. They change your current balance, but are not income and do not create a transaction.</div>
     {error && !open && <p className="error-text" role="alert">{error}</p>}
     {transferError && !transferOpen && <p className="error-text" role="alert">{transferError}</p>}
     {accounts.length ? <section className="account-grid">{accounts.map((account) => <article className="account-card" key={account.id}>
       <div className="account-card-top"><div><div className="account-type">{account.type === "cash" ? <Wallet size={14} style={{ display: "inline", marginRight: 5 }}/> : <Landmark size={14} style={{ display: "inline", marginRight: 5 }}/>}{account.type} account</div><h2 className="account-name">{account.name}</h2></div>{account.isDefault && <span className="badge badge-green">Default</span>}</div>
-      <div className="account-balance">{formatPHP(account.balanceMinor)}</div><div className="account-opening">Opening balance {formatPHP(account.openingMinor)}</div>
+      <div className="account-balance">{formatPHP(account.balanceMinor)}</div>
       <div className="account-actions">{!account.isDefault && <button className="button button-small button-secondary" onClick={() => setDefault(account)}><Star size={13}/> Make default</button>}<button className="icon-button" aria-label={`Edit ${account.name}`} onClick={() => edit(account)}><Pencil size={15}/></button><button className="icon-button" aria-label={`Delete ${account.name}`} onClick={() => requestRemoveAccount(account)}><Trash2 size={15}/></button></div>
-    </article>)}</section> : <article className="panel-empty"><div style={{ display: "grid", justifyItems: "center", gap: 8 }}><Wallet size={24}/><strong>Create your first financial account</strong><span>Start with cash or a bank account; its opening balance can be zero.</span><button className="button button-primary" onClick={create}><Plus size={15}/> Add account</button></div></article>}
+    </article>)}</section> : <article className="panel-empty"><div style={{ display: "grid", justifyItems: "center", gap: 8 }}><Wallet size={24}/><strong>Create your first financial account</strong><span>Start with cash or a bank account.</span><button className="button button-primary" onClick={create}><Plus size={15}/> Add account</button></div></article>}
 
     <article className="panel"><div className="panel-heading"><div><h2>Transfers between accounts</h2><p>Move money without changing income or spending totals.</p></div>{accounts.length >= 2 && <button className="button button-small" onClick={createTransfer}><ArrowLeftRight size={14}/> New transfer</button>}</div>
       <div className="activity-list">{transfers.map((transfer) => <div className="activity-row" key={transfer.id}>

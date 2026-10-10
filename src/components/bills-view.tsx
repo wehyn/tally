@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Archive, CalendarDays, CreditCard, Droplet, Home, Music2, Pencil, Plus, Smartphone, Tv, Wifi, X, Zap, type LucideIcon } from "lucide-react";
+import { Archive, CalendarDays, ChevronDown, CreditCard, Droplet, Home, Music2, Pencil, Plus, Smartphone, Tv, Wifi, X, Zap, type LucideIcon } from "lucide-react";
 import type { Account, Bill, BillIcon, Category } from "@/lib/store";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
@@ -84,12 +84,12 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
   }
 
   return <div className="page-stack">
-    <section className="page-heading-row"><div><div className="eyebrow">RECURRING EXPENSES</div><h1>Bills</h1><p className="subtitle">Track subscriptions and scheduled payments.</p></div><button className="button button-primary" onClick={create}><Plus size={16}/> Add a bill</button></section>
-    <div className="notice-box warning" role="note">Every bill due on or before today is automatically recorded as an expense, even if you have not confirmed payment. You can edit or delete the ledger transaction independently.</div>
+    <section className="page-heading-row page-heading-actions-only"><h1 className="sr-only">Bills</h1><button className="button button-primary" onClick={create}><Plus size={16}/> Add a bill</button></section>
+    <div className="notice-box warning" role="note">Bills due today or earlier are automatically recorded as expenses, even without payment confirmation.</div>
     {notice && <div className="notice-box warning" role="status">{notice}</div>}
     {error && !open && <p className="error-text" role="alert">{error}</p>}
     <section className="panel"><div className="panel-heading"><div><h2>Upcoming</h2><p>Active bills, ordered by next due date.</p></div></div>{list(active)}</section>
-    <section className="panel"><div className="panel-heading"><div><h2>Archived</h2><p>Archived bills stay visible and editable; they do not post.</p></div></div>{list(archived, true)}</section>
+    <details className="panel archived-disclosure"><summary className="panel-heading"><div><h2>Archived</h2><p>Archived bills stay visible and editable; they do not post.</p></div><ChevronDown className="archived-chevron" size={16} aria-hidden="true"/></summary>{list(archived, true)}</details>
     {open && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="bill-title">
       <div className="modal-heading"><div><h2 id="bill-title">{editing ? "Edit bill" : "Add a bill"}</h2><p>Set the next scheduled occurrence and saved expense details.</p></div><button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
       <form onSubmit={save}><div className="form-grid">

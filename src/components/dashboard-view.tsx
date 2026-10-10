@@ -43,7 +43,7 @@ export function DashboardView({ initial }: { initial: Dashboard }) {
   const totalBalanceMinor = Number(totalBalanceMinorBigInt);
 
   return <div className="page-stack">
-    <section className="page-heading-row"><div><div className="eyebrow">PERSONAL LEDGER</div><h1>Your money, in view.</h1><p className="subtitle">A clear picture of what came in, what went out, and what’s next.</p></div><Link className="button button-primary" href="/transactions"><Plus size={17}/> Add transaction</Link></section>
+    <section className="page-heading-row page-heading-actions-only"><h1 className="sr-only">Dashboard</h1><Link className="button button-primary" href="/transactions"><Plus size={17}/> Add transaction</Link></section>
     <section className="period-row"><div className="range-label"><CalendarDays size={16}/><span>Showing actuals</span><strong>{data.start} — {data.end}</strong></div><form className="date-range-form" onSubmit={(event) => { event.preventDefault(); void refresh(start, end); }}><label><span className="sr-only">Start date</span><input type="date" value={start} onChange={(event) => setStart(event.target.value)}/></label><span>to</span><label><span className="sr-only">End date</span><input type="date" value={end} onChange={(event) => setEnd(event.target.value)}/></label><button className="button button-small" type="submit">Apply</button><button className="button button-text button-small" type="button" onClick={() => { const range = monthToDateRange(); setStart(range.start); setEnd(range.end); void refresh(range.start, range.end); }}>Month to date</button></form></section>
 
     <section className="stat-grid dashboard-period-stats" aria-label="Period summary">
