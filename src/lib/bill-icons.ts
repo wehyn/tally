@@ -13,6 +13,10 @@ const BILL_ICON_EMOJI_MARK = /[\p{Extended_Pictographic}\p{Regional_Indicator}\u
 export const isBillIcon = (value: unknown): value is BillIcon => typeof value === "string" && BILL_ICONS.some((icon) => icon === value);
 export const isBillIconColor = (value: unknown): value is string => typeof value === "string" && /^#[\da-f]{6}$/i.test(value);
 
+export function selectBillIconPreset<T extends { icon: BillIcon; iconEmoji: string }>(draft: T, icon: BillIcon): Omit<T, "icon"> & { icon: BillIcon } {
+  return { ...draft, icon, iconEmoji: "" };
+}
+
 export function isBillIconEmoji(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 40 || !BILL_ICON_EMOJI_CHARACTERS.test(value) || !BILL_ICON_EMOJI_MARK.test(value)) return false;
   return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value)].length === 1;

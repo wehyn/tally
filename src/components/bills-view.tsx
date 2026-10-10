@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Archive, CalendarDays, CarFront, ChevronDown, Cloud, CreditCard, Droplet, Fuel, GraduationCap, Dumbbell, Home, Music2, Pencil, Plus, ShieldCheck, ShoppingBag, Smartphone, Stethoscope, Trash2, Tv, Wifi, X, Zap, type LucideIcon } from "lucide-react";
-import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, type BillIcon } from "@/lib/bill-icons";
+import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, selectBillIconPreset, type BillIcon } from "@/lib/bill-icons";
 import type { Account, Bill, Category } from "@/lib/store";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
@@ -120,7 +120,7 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
       <form onSubmit={save}><div className="form-grid">
         <label className="field-label span-2">Bill name<input required autoFocus maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Internet subscription"/></label>
         <div className="field-label span-2"><span>Bill icon</span><div className="bill-icon-picker" role="group" aria-label="Bill icon">
-          {billIcons.map(({ key, label }) => <button key={key} type="button" className="bill-icon-choice" aria-label={`Choose ${label} icon`} aria-pressed={draft.icon === key} onClick={() => setDraft({ ...draft, icon: key })} style={draft.icon === key ? { color: draft.iconForegroundColor, backgroundColor: draft.iconBackgroundColor } : defaultIconStyle}><BillIconGlyph icon={key}/></button>)}
+          {billIcons.map(({ key, label }) => <button key={key} type="button" className="bill-icon-choice" aria-label={`Choose ${label} icon`} aria-pressed={draft.icon === key} onClick={() => setDraft(selectBillIconPreset(draft, key))} style={draft.icon === key ? { color: draft.iconForegroundColor, backgroundColor: draft.iconBackgroundColor } : defaultIconStyle}><BillIconGlyph icon={key}/></button>)}
         </div></div>
         <div className="bill-icon-customize span-2">
           <div className="bill-icon-preview" role="img" aria-label="Selected bill icon" style={{ color: draft.iconForegroundColor, backgroundColor: draft.iconBackgroundColor }}><BillIconGlyph icon={draft.icon} emoji={draft.iconEmoji}/></div>
