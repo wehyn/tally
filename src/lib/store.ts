@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
+import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
+
+export { BILL_ICONS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji } from "./bill-icons";
+export type { BillIcon } from "./bill-icons";
 
 export const STARTER_CATEGORIES = {
   income: ["Salary", "Other income"],
@@ -20,10 +24,14 @@ export type Transaction = Omit<TransactionInput, "time"> & { time: string | null
 export type DebtDirection = "owed_to_you" | "you_owe";
 export type DebtStatus = "open" | "settled";
 export type Debt = { id: string; direction: DebtDirection; counterparty: string; amountMinor: number; note: string; dueDate: string | null; status: DebtStatus; createdAt: string; updatedAt: string };
-export const BILL_ICONS = ["calendar", "home", "wifi", "phone", "electricity", "water", "tv", "music", "card"] as const;
-export type BillIcon = typeof BILL_ICONS[number];
-export type BillInput = { name: string; amountMinor: number; frequency: BillFrequency; nextDueDate: string; accountId: string; categoryId: string; icon?: BillIcon };
-export type Bill = Omit<BillInput, "icon"> & { id: string; anchorDay: number; anchorMonth: number; accountName: string; categoryName: string; archivedAt: string | null; icon: BillIcon };
+export type BillInput = {
+  name: string; amountMinor: number; frequency: BillFrequency; nextDueDate: string; accountId: string; categoryId: string;
+  icon?: BillIcon; iconEmoji?: string | null; iconForegroundColor?: string; iconBackgroundColor?: string;
+};
+export type Bill = Omit<BillInput, "icon" | "iconEmoji" | "iconForegroundColor" | "iconBackgroundColor"> & {
+  id: string; anchorDay: number; anchorMonth: number; accountName: string; categoryName: string; archivedAt: string | null;
+  icon: BillIcon; iconEmoji: string | null; iconForegroundColor: string; iconBackgroundColor: string;
+};
 export type BillPostingFailure = { billId: string; dueDate: string; message: string };
 export type BillPostingResult = { processed: number; failures: BillPostingFailure[] };
 
@@ -90,6 +98,7 @@ export function createStore(db: Database.Database) {
         name TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
         frequency TEXT NOT NULL CHECK(frequency IN ('weekly','monthly','yearly')), next_due_date TEXT NOT NULL,
         icon TEXT NOT NULL DEFAULT 'calendar',
+        icon_emoji TEXT, icon_foreground_color TEXT NOT NULL DEFAULT '#5e9872', icon_background_color TEXT NOT NULL DEFAULT '#f0f5f0',
         anchor_day INTEGER NOT NULL CHECK(anchor_day BETWEEN 1 AND 31), anchor_month INTEGER NOT NULL CHECK(anchor_month BETWEEN 1 AND 12),
         account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE RESTRICT,
@@ -141,6 +150,9 @@ export function createStore(db: Database.Database) {
     }
     const billColumns = db.pragma("table_info(bills)") as { name: string }[];
     if (!billColumns.some((column) => column.name === "icon")) db.exec("ALTER TABLE bills ADD COLUMN icon TEXT NOT NULL DEFAULT 'calendar'");
+    if (!billColumns.some((column) => column.name === "icon_emoji")) db.exec("ALTER TABLE bills ADD COLUMN icon_emoji TEXT");
+    if (!billColumns.some((column) => column.name === "icon_foreground_color")) db.exec(`ALTER TABLE bills ADD COLUMN icon_foreground_color TEXT NOT NULL DEFAULT '${DEFAULT_BILL_ICON_FOREGROUND_COLOR}'`);
+    if (!billColumns.some((column) => column.name === "icon_background_color")) db.exec(`ALTER TABLE bills ADD COLUMN icon_background_color TEXT NOT NULL DEFAULT '${DEFAULT_BILL_ICON_BACKGROUND_COLOR}'`);
     const messageColumns = db.pragma("table_info(assistant_messages)") as { name: string }[];
     if (!messageColumns.some((column) => column.name === "transaction_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL");
     if (!messageColumns.some((column) => column.name === "needs_followup")) db.exec("ALTER TABLE assistant_messages ADD COLUMN needs_followup INTEGER NOT NULL DEFAULT 0");
@@ -370,7 +382,11 @@ export function createStore(db: Database.Database) {
     return {
       id: String(row.id), name: String(row.name), amountMinor: safeMinorNumber(row.amount_minor, "Bill amount"),
       frequency: row.frequency as BillFrequency, nextDueDate: String(row.next_due_date), anchorDay: Number(row.anchor_day), anchorMonth: Number(row.anchor_month),
-      accountId: String(row.account_id), categoryId: String(row.category_id), accountName: String(row.account_name), categoryName: String(row.category_name), icon: row.icon as BillIcon,
+      accountId: String(row.account_id), categoryId: String(row.category_id), accountName: String(row.account_name), categoryName: String(row.category_name),
+      icon: isBillIcon(row.icon) ? row.icon : "calendar",
+      iconEmoji: isBillIconEmoji(row.icon_emoji) ? row.icon_emoji : null,
+      iconForegroundColor: isBillIconColor(row.icon_foreground_color) ? row.icon_foreground_color : DEFAULT_BILL_ICON_FOREGROUND_COLOR,
+      iconBackgroundColor: isBillIconColor(row.icon_background_color) ? row.icon_background_color : DEFAULT_BILL_ICON_BACKGROUND_COLOR,
       archivedAt: row.archived_at ? String(row.archived_at) : null,
     };
   }
@@ -384,18 +400,26 @@ export function createStore(db: Database.Database) {
     if (!name || name.length > 100) throw new Error("Bill name must be 1–100 characters.");
     if (!validMoney(input.amountMinor)) throw new Error("Bill amount must be a positive PHP value.");
     if (!(input.frequency === "weekly" || input.frequency === "monthly" || input.frequency === "yearly")) throw new Error("Choose weekly, monthly, or yearly frequency.");
-    if (input.icon !== undefined && !BILL_ICONS.some((icon) => icon === input.icon)) throw new Error("Choose a valid bill icon.");
+    if (input.icon !== undefined && !isBillIcon(input.icon)) throw new Error("Choose a valid bill icon.");
+    if (input.iconEmoji !== undefined && input.iconEmoji !== null && !isBillIconEmoji(input.iconEmoji)) throw new Error("Choose one valid emoji for the bill icon.");
+    if (input.iconForegroundColor !== undefined && !isBillIconColor(input.iconForegroundColor)) throw new Error("Choose a valid bill icon foreground color.");
+    if (input.iconBackgroundColor !== undefined && !isBillIconColor(input.iconBackgroundColor)) throw new Error("Choose a valid bill icon background color.");
     if (!isDateOnly(input.nextDueDate) || (!allowOverdue && input.nextDueDate < todayInManila())) throw new Error("Bill due date must be today or later.");
     if (!db.prepare("SELECT 1 FROM financial_accounts WHERE id=? AND user_id=?").get(input.accountId, userId)) throw new Error("Financial account is not owned by this user.");
     if (!db.prepare("SELECT 1 FROM categories WHERE id=? AND user_id=? AND type='expense'").get(input.categoryId, userId)) throw new Error("Bill category must be an expense category owned by this user.");
   }
   function createBill(userId: string, input: BillInput): Bill {
-    const value = { ...input, name: input.name.trim(), icon: input.icon ?? "calendar" };
+    const value = {
+      ...input, name: input.name.trim(), icon: input.icon === undefined ? "calendar" : input.icon,
+      iconEmoji: input.iconEmoji === undefined ? null : input.iconEmoji,
+      iconForegroundColor: input.iconForegroundColor === undefined ? DEFAULT_BILL_ICON_FOREGROUND_COLOR : input.iconForegroundColor,
+      iconBackgroundColor: input.iconBackgroundColor === undefined ? DEFAULT_BILL_ICON_BACKGROUND_COLOR : input.iconBackgroundColor,
+    };
     validateBillInput(userId, value);
     const id = randomUUID(); const now = stamp();
     const anchorDay = Number(value.nextDueDate.slice(-2)); const anchorMonth = Number(value.nextDueDate.slice(5, 7));
-    db.prepare(`INSERT INTO bills(id,user_id,name,amount_minor,frequency,next_due_date,icon,anchor_day,anchor_month,account_id,category_id,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, value.name, value.amountMinor, value.frequency, value.nextDueDate, value.icon, anchorDay, anchorMonth, value.accountId, value.categoryId, now, now);
+    db.prepare(`INSERT INTO bills(id,user_id,name,amount_minor,frequency,next_due_date,icon,icon_emoji,icon_foreground_color,icon_background_color,anchor_day,anchor_month,account_id,category_id,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, value.name, value.amountMinor, value.frequency, value.nextDueDate, value.icon, value.iconEmoji, value.iconForegroundColor, value.iconBackgroundColor, anchorDay, anchorMonth, value.accountId, value.categoryId, now, now);
     return mapBill(db.prepare(`${billSelect} WHERE b.user_id=? AND b.id=?`).get(userId, id) as Record<string, unknown>);
   }
   function updateBill(userId: string, billId: string, input: Partial<BillInput>, expectedNextDueDate: string): Bill {
@@ -403,16 +427,25 @@ export function createStore(db: Database.Database) {
       const currentRow = db.prepare("SELECT * FROM bills WHERE id=? AND user_id=?").get(billId, userId) as Record<string, unknown> | undefined;
       if (!currentRow) throw new Error("Bill not found.");
       const current = { name: String(currentRow.name), amountMinor: Number(currentRow.amount_minor), frequency: currentRow.frequency as BillFrequency,
-        nextDueDate: String(currentRow.next_due_date), accountId: String(currentRow.account_id), categoryId: String(currentRow.category_id), icon: currentRow.icon as BillIcon };
+        nextDueDate: String(currentRow.next_due_date), accountId: String(currentRow.account_id), categoryId: String(currentRow.category_id),
+        icon: isBillIcon(currentRow.icon) ? currentRow.icon : "calendar", iconEmoji: isBillIconEmoji(currentRow.icon_emoji) ? currentRow.icon_emoji : null,
+        iconForegroundColor: isBillIconColor(currentRow.icon_foreground_color) ? currentRow.icon_foreground_color : DEFAULT_BILL_ICON_FOREGROUND_COLOR,
+        iconBackgroundColor: isBillIconColor(currentRow.icon_background_color) ? currentRow.icon_background_color : DEFAULT_BILL_ICON_BACKGROUND_COLOR };
       if (current.nextDueDate !== expectedNextDueDate) throw new Error("Bill schedule changed while editing. Refresh the Bills page before saving.");
-      const value = { ...current, ...input, name: (input.name ?? current.name).trim(), icon: input.icon ?? current.icon };
+      const value = {
+        ...current, ...input, name: (input.name ?? current.name).trim(),
+        icon: input.icon === undefined ? current.icon : input.icon,
+        iconEmoji: input.iconEmoji === undefined ? current.iconEmoji : input.iconEmoji,
+        iconForegroundColor: input.iconForegroundColor === undefined ? current.iconForegroundColor : input.iconForegroundColor,
+        iconBackgroundColor: input.iconBackgroundColor === undefined ? current.iconBackgroundColor : input.iconBackgroundColor,
+      };
       const dateUnchanged = value.nextDueDate === current.nextDueDate;
       validateBillInput(userId, value, dateUnchanged);
       const reanchor = value.frequency !== current.frequency || value.nextDueDate !== current.nextDueDate;
       const anchorDay = reanchor ? Number(value.nextDueDate.slice(-2)) : Number(currentRow.anchor_day);
       const anchorMonth = reanchor ? Number(value.nextDueDate.slice(5, 7)) : Number(currentRow.anchor_month);
-      db.prepare(`UPDATE bills SET name=?,amount_minor=?,frequency=?,next_due_date=?,icon=?,anchor_day=?,anchor_month=?,account_id=?,category_id=?,updated_at=?
-        WHERE id=? AND user_id=?`).run(value.name, value.amountMinor, value.frequency, value.nextDueDate, value.icon, anchorDay, anchorMonth, value.accountId, value.categoryId, stamp(), billId, userId);
+      db.prepare(`UPDATE bills SET name=?,amount_minor=?,frequency=?,next_due_date=?,icon=?,icon_emoji=?,icon_foreground_color=?,icon_background_color=?,anchor_day=?,anchor_month=?,account_id=?,category_id=?,updated_at=?
+        WHERE id=? AND user_id=?`).run(value.name, value.amountMinor, value.frequency, value.nextDueDate, value.icon, value.iconEmoji, value.iconForegroundColor, value.iconBackgroundColor, anchorDay, anchorMonth, value.accountId, value.categoryId, stamp(), billId, userId);
       return mapBill(db.prepare(`${billSelect} WHERE b.user_id=? AND b.id=?`).get(userId, billId) as Record<string, unknown>);
     }).immediate();
   }

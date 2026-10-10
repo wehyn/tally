@@ -1,23 +1,43 @@
 "use client";
 
 import { useState } from "react";
-import { Archive, CalendarDays, ChevronDown, CreditCard, Droplet, Home, Music2, Pencil, Plus, Smartphone, Tv, Wifi, X, Zap, type LucideIcon } from "lucide-react";
-import type { Account, Bill, BillIcon, Category } from "@/lib/store";
+import { Archive, CalendarDays, CarFront, ChevronDown, Cloud, CreditCard, Droplet, Fuel, GraduationCap, Dumbbell, Home, Music2, Pencil, Plus, ShieldCheck, ShoppingBag, Smartphone, Stethoscope, Trash2, Tv, Wifi, X, Zap, type LucideIcon } from "lucide-react";
+import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, type BillIcon } from "@/lib/bill-icons";
+import type { Account, Bill, Category } from "@/lib/store";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
 
-const billIcons: { key: BillIcon; label: string; Icon: LucideIcon }[] = [
+const billIcons: { key: BillIcon; label: string; Icon?: LucideIcon; mark?: string }[] = [
   { key: "calendar", label: "Calendar", Icon: CalendarDays }, { key: "home", label: "Home", Icon: Home },
   { key: "wifi", label: "Wi-Fi", Icon: Wifi }, { key: "phone", label: "Phone", Icon: Smartphone },
   { key: "electricity", label: "Electricity", Icon: Zap }, { key: "water", label: "Water", Icon: Droplet },
   { key: "tv", label: "TV", Icon: Tv }, { key: "music", label: "Music", Icon: Music2 },
-  { key: "card", label: "Card", Icon: CreditCard },
+  { key: "card", label: "Card", Icon: CreditCard }, { key: "netflix", label: "Netflix", mark: "N" },
+  { key: "shopee", label: "Shopee", mark: "S" }, { key: "pldt", label: "PLDT", mark: "P" },
+  { key: "gym", label: "Gym", Icon: Dumbbell }, { key: "streaming", label: "Streaming", Icon: Tv },
+  { key: "shopping", label: "Shopping", Icon: ShoppingBag }, { key: "transport", label: "Transport", Icon: CarFront },
+  { key: "insurance", label: "Insurance", Icon: ShieldCheck }, { key: "gas", label: "Gas", Icon: Fuel },
+  { key: "medical", label: "Medical", Icon: Stethoscope }, { key: "school", label: "School", Icon: GraduationCap },
+  { key: "cloud", label: "Cloud storage", Icon: Cloud }, { key: "trash", label: "Waste collection", Icon: Trash2 },
 ];
-type Draft = { name: string; amount: string; frequency: Bill["frequency"]; nextDueDate: string; accountId: string; categoryId: string; icon: BillIcon };
+type BillIconGlyphProps = { icon: BillIcon; emoji?: string | null; size?: number };
+function BillIconGlyph({ icon, emoji, size = 17 }: BillIconGlyphProps) {
+  if (emoji) return <span className="bill-icon-emoji" aria-hidden="true">{emoji}</span>;
+  const option = billIcons.find((entry) => entry.key === icon);
+  if (option?.mark) return <span className={`bill-icon-mark bill-icon-mark-${icon}`} aria-hidden="true">{option.mark}</span>;
+  const Icon = option?.Icon ?? CalendarDays;
+  return <Icon size={size} aria-hidden="true"/>;
+}
+const defaultIconStyle = { color: DEFAULT_BILL_ICON_FOREGROUND_COLOR, backgroundColor: DEFAULT_BILL_ICON_BACKGROUND_COLOR };
+type Draft = {
+  name: string; amount: string; frequency: Bill["frequency"]; nextDueDate: string; accountId: string; categoryId: string;
+  icon: BillIcon; iconEmoji: string; iconForegroundColor: string; iconBackgroundColor: string;
+};
 const billDateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
 const formatBillDate = (date: string) => billDateFormatter.format(new Date(`${date}T00:00:00Z`));
 const blank = (accounts: Account[], categories: Category[]): Draft => ({
-  name: "", amount: "", frequency: "monthly", nextDueDate: todayInManila(), accountId: accounts[0]?.id ?? "", categoryId: categories[0]?.id ?? "", icon: "calendar",
+  name: "", amount: "", frequency: "monthly", nextDueDate: todayInManila(), accountId: accounts[0]?.id ?? "", categoryId: categories[0]?.id ?? "",
+  icon: "calendar", iconEmoji: "", iconForegroundColor: DEFAULT_BILL_ICON_FOREGROUND_COLOR, iconBackgroundColor: DEFAULT_BILL_ICON_BACKGROUND_COLOR,
 });
 
 export function BillsView({ initialBills, accounts, categories }: { initialBills: Bill[]; accounts: Account[]; categories: Category[] }) {
@@ -41,14 +61,20 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
   function create() { setEditing(null); setDraft(blank(accounts, categories)); setError(""); setOpen(true); }
   function edit(bill: Bill) {
     setEditing(bill);
-    setDraft({ name: bill.name, amount: minorToInput(bill.amountMinor), frequency: bill.frequency, nextDueDate: bill.nextDueDate, accountId: bill.accountId, categoryId: bill.categoryId, icon: bill.icon });
+    setDraft({
+      name: bill.name, amount: minorToInput(bill.amountMinor), frequency: bill.frequency, nextDueDate: bill.nextDueDate,
+      accountId: bill.accountId, categoryId: bill.categoryId, icon: bill.icon, iconEmoji: bill.iconEmoji ?? "",
+      iconForegroundColor: bill.iconForegroundColor, iconBackgroundColor: bill.iconBackgroundColor,
+    });
     setError(""); setOpen(true);
   }
   async function save(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch(editing ? `/api/bills/${editing.id}` : "/api/bills", {
-        method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(editing ? { ...draft, expectedNextDueDate: editing.nextDueDate } : draft),
+        method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+          ...draft, iconEmoji: draft.iconEmoji || null, ...(editing ? { expectedNextDueDate: editing.nextDueDate } : {}),
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save bill.");
@@ -73,10 +99,9 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
   }
   function list(items: Bill[], isArchived = false) {
     return items.length ? <div className="activity-list">{items.map((bill) => {
-      const Icon = billIcons.find((option) => option.key === bill.icon)?.Icon ?? CalendarDays;
       const nextDueDate = formatBillDate(bill.nextDueDate);
       return <article className="activity-row" key={bill.id}>
-        <div className="activity-icon"><Icon size={16}/></div>
+        <div className="activity-icon bill-row-icon" style={{ color: bill.iconForegroundColor, backgroundColor: bill.iconBackgroundColor }}><BillIconGlyph icon={bill.icon} emoji={bill.iconEmoji} size={16}/></div>
         <div className="activity-copy"><strong>{bill.name}</strong><span>{bill.categoryName} · {bill.accountName}</span><span className={!isArchived && bill.nextDueDate <= today ? "badge badge-coral" : undefined}>{isArchived ? `Archived · next date was ${nextDueDate}` : bill.nextDueDate <= today ? `Posting pending · due ${nextDueDate}` : `Next due ${nextDueDate}`}</span></div>
         <div className="activity-right"><strong>{formatPHP(bill.amountMinor)}</strong><div className="table-actions"><button className="icon-button" aria-label={`Edit ${bill.name}`} onClick={() => edit(bill)}><Pencil size={14}/></button>{!isArchived && <button className="icon-button" aria-label={`Archive ${bill.name}`} onClick={() => void archive(bill)}><Archive size={14}/></button>}</div></div>
       </article>;
@@ -95,8 +120,14 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
       <form onSubmit={save}><div className="form-grid">
         <label className="field-label span-2">Bill name<input required autoFocus maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Internet subscription"/></label>
         <div className="field-label span-2"><span>Bill icon</span><div className="bill-icon-picker" role="group" aria-label="Bill icon">
-          {billIcons.map(({ key, label, Icon }) => <button key={key} type="button" className="bill-icon-choice" aria-label={`Choose ${label} icon`} aria-pressed={draft.icon === key} onClick={() => setDraft({ ...draft, icon: key })}><Icon size={17}/><span>{label}</span></button>)}
+          {billIcons.map(({ key, label }) => <button key={key} type="button" className="bill-icon-choice" aria-label={`Choose ${label} icon`} aria-pressed={draft.icon === key} onClick={() => setDraft({ ...draft, icon: key })} style={draft.icon === key ? { color: draft.iconForegroundColor, backgroundColor: draft.iconBackgroundColor } : defaultIconStyle}><BillIconGlyph icon={key}/></button>)}
         </div></div>
+        <div className="bill-icon-customize span-2">
+          <div className="bill-icon-preview" role="img" aria-label="Selected bill icon" style={{ color: draft.iconForegroundColor, backgroundColor: draft.iconBackgroundColor }}><BillIconGlyph icon={draft.icon} emoji={draft.iconEmoji}/></div>
+          <label className="field-label bill-icon-emoji-field">Custom emoji<input type="text" maxLength={40} value={draft.iconEmoji} onChange={(event) => setDraft({ ...draft, iconEmoji: event.target.value })} placeholder="Optional"/></label>
+          <label className="field-label bill-icon-color-field">Foreground<input type="color" value={draft.iconForegroundColor} onChange={(event) => setDraft({ ...draft, iconForegroundColor: event.target.value })}/></label>
+          <label className="field-label bill-icon-color-field">Background<input type="color" value={draft.iconBackgroundColor} onChange={(event) => setDraft({ ...draft, iconBackgroundColor: event.target.value })}/></label>
+        </div>
         <label className="field-label">Expected amount (PHP)<input required inputMode="decimal" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} placeholder="1,500.00"/></label>
         <label className="field-label">Frequency<select value={draft.frequency} onChange={(event) => setDraft({ ...draft, frequency: event.target.value as Draft["frequency"] })}><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>
         <label className="field-label">Next due date<input required type="date" value={draft.nextDueDate} onChange={(event) => setDraft({ ...draft, nextDueDate: event.target.value })}/></label>

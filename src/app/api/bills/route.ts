@@ -3,12 +3,16 @@ import { assertSameOrigin, requestJson, requireUser, respondError } from "@/lib/
 import { getStore } from "@/lib/db";
 import { todayInManila } from "@/lib/dates";
 import { parsePHPToMinor } from "@/lib/money";
-import { BILL_ICONS } from "@/lib/store";
+import { BILL_ICONS, isBillIconColor, isBillIconEmoji } from "@/lib/bill-icons";
+
+const iconEmoji = z.string().max(40).refine(isBillIconEmoji, "Choose one valid emoji for the bill icon.");
+const iconColor = z.string().refine(isBillIconColor, "Choose a valid six-digit hexadecimal color.");
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100), amount: z.string().max(24),
   frequency: z.enum(["weekly", "monthly", "yearly"]), nextDueDate: z.string().length(10),
   accountId: z.string().min(1).max(100), categoryId: z.string().min(1).max(100), icon: z.enum(BILL_ICONS).default("calendar"),
+  iconEmoji: iconEmoji.nullable().optional(), iconForegroundColor: iconColor.optional(), iconBackgroundColor: iconColor.optional(),
 });
 
 export async function GET() {
@@ -22,7 +26,11 @@ export async function POST(request: Request) {
     const user = await requireUser();
     const input = await requestJson(request, schema);
     const store = getStore();
-    let bill = store.createBill(user.id, { name: input.name, amountMinor: parsePHPToMinor(input.amount), frequency: input.frequency, nextDueDate: input.nextDueDate, accountId: input.accountId, categoryId: input.categoryId, icon: input.icon });
+    let bill = store.createBill(user.id, {
+      name: input.name, amountMinor: parsePHPToMinor(input.amount), frequency: input.frequency, nextDueDate: input.nextDueDate,
+      accountId: input.accountId, categoryId: input.categoryId, icon: input.icon, iconEmoji: input.iconEmoji,
+      iconForegroundColor: input.iconForegroundColor, iconBackgroundColor: input.iconBackgroundColor,
+    });
     const today = todayInManila();
     let postingWarning: string | undefined;
     try {

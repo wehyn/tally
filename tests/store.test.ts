@@ -74,6 +74,79 @@ describe("owner-scoped ledger", () => {
     });
   });
 
+  it("persists custom bill emojis and colors while partial edits keep omitted icon values", () => {
+    const user = store.registerUser("custom_bill_icon", "hash");
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const utilities = store.listCategories(user.id).find((category) => category.name === "Utilities")!;
+    const bill = store.createBill(user.id, {
+      name: "Netflix", amountMinor: 15900, frequency: "monthly", nextDueDate: "2099-01-01",
+      accountId: wallet.id, categoryId: utilities.id, icon: "netflix",
+      iconEmoji: "🧾", iconForegroundColor: "#ffffff", iconBackgroundColor: "#e50914",
+    });
+
+    expect(bill).toMatchObject({
+      icon: "netflix", iconEmoji: "🧾", iconForegroundColor: "#ffffff", iconBackgroundColor: "#e50914",
+    });
+    expect(store.updateBill(user.id, bill.id, { iconEmoji: null }, bill.nextDueDate)).toMatchObject({
+      icon: "netflix", iconEmoji: null, iconForegroundColor: "#ffffff", iconBackgroundColor: "#e50914",
+    });
+  });
+
+  it("rejects unsafe bill icon values before writing them", () => {
+    const user = store.registerUser("invalid_bill_icon", "hash");
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const utilities = store.listCategories(user.id).find((category) => category.name === "Utilities")!;
+    const input = {
+      name: "Internet", amountMinor: 5000, frequency: "monthly" as const, nextDueDate: "2099-01-01",
+      accountId: wallet.id, categoryId: utilities.id,
+    };
+
+    expect(() => store.createBill(user.id, { ...input, icon: "unknown" as never })).toThrow(/icon/i);
+    expect(() => store.createBill(user.id, { ...input, iconEmoji: "not emoji" })).toThrow(/emoji/i);
+    expect(() => store.createBill(user.id, { ...input, iconBackgroundColor: "red" })).toThrow(/color/i);
+  });
+
+  it("uses safe fallback icon values for malformed data already stored on a bill", () => {
+    const user = store.registerUser("malformed_bill_icon", "hash");
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const utilities = store.listCategories(user.id).find((category) => category.name === "Utilities")!;
+    const bill = store.createBill(user.id, {
+      name: "Internet", amountMinor: 5000, frequency: "monthly", nextDueDate: "2099-01-01", accountId: wallet.id, categoryId: utilities.id,
+      icon: "pldt", iconEmoji: "📶", iconForegroundColor: "#ffffff", iconBackgroundColor: "#123456",
+    });
+    database.prepare("UPDATE bills SET icon='unknown',icon_emoji='plain text',icon_foreground_color='red',icon_background_color='url(javascript:alert(1))' WHERE id=?").run(bill.id);
+
+    expect(store.listBills(user.id)).toMatchObject([{
+      icon: "calendar", iconEmoji: null, iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0",
+    }]);
+  });
+
+  it("adds default custom-icon fields to legacy bills without changing their selected preset", () => {
+    const user = store.registerUser("legacy_bill_icon", "hash");
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const utilities = store.listCategories(user.id).find((category) => category.name === "Utilities")!;
+    database.exec("DROP TABLE bills");
+    database.exec(`CREATE TABLE bills (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+      frequency TEXT NOT NULL CHECK(frequency IN ('weekly','monthly','yearly')), next_due_date TEXT NOT NULL,
+      icon TEXT NOT NULL DEFAULT 'calendar', anchor_day INTEGER NOT NULL, anchor_month INTEGER NOT NULL,
+      account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+      category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE RESTRICT,
+      archived_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`);
+    database.prepare(`INSERT INTO bills(id,user_id,name,amount_minor,frequency,next_due_date,icon,anchor_day,anchor_month,account_id,category_id,created_at,updated_at)
+      VALUES('legacy-bill',?,'Home internet',5000,'monthly','2099-01-01','wifi',1,1,?,?,?,?)`)
+      .run(user.id, wallet.id, utilities.id, "2026-10-09T00:00:00.000Z", "2026-10-09T00:00:00.000Z");
+
+    store.migrate();
+
+    expect(store.listBills(user.id)).toMatchObject([{
+      id: "legacy-bill", icon: "wifi", iconEmoji: null,
+      iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0",
+    }]);
+  });
+
   it("adds a nullable time column to legacy transactions without inventing event times", () => {
     const user = store.registerUser("legacy_transaction", "hash");
     const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });

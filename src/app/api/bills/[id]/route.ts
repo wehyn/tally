@@ -3,13 +3,17 @@ import { assertSameOrigin, requestJson, requireUser, respondError } from "@/lib/
 import { todayInManila } from "@/lib/dates";
 import { getStore } from "@/lib/db";
 import { parsePHPToMinor } from "@/lib/money";
-import { BILL_ICONS } from "@/lib/store";
+import { BILL_ICONS, isBillIconColor, isBillIconEmoji } from "@/lib/bill-icons";
+
+const iconEmoji = z.string().max(40).refine(isBillIconEmoji, "Choose one valid emoji for the bill icon.");
+const iconColor = z.string().refine(isBillIconColor, "Choose a valid six-digit hexadecimal color.");
 
 const schema = z.object({
   expectedNextDueDate: z.string().length(10),
   name: z.string().trim().min(1).max(100).optional(), amount: z.string().max(24).optional(),
   frequency: z.enum(["weekly", "monthly", "yearly"]).optional(), nextDueDate: z.string().length(10).optional(),
   accountId: z.string().min(1).max(100).optional(), categoryId: z.string().min(1).max(100).optional(), icon: z.enum(BILL_ICONS).optional(),
+  iconEmoji: iconEmoji.nullable().optional(), iconForegroundColor: iconColor.optional(), iconBackgroundColor: iconColor.optional(),
 }).refine((input) => Object.keys(input).some((field) => field !== "expectedNextDueDate"), "At least one bill field is required.");
 type Context = { params: Promise<{ id: string }> };
 

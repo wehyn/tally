@@ -43,6 +43,49 @@ describe("Bills API", () => {
     expect(invalid.status).toBe(400);
   });
 
+  it("saves custom emoji and colors and preserves fields omitted from partial edits", async () => {
+    const created = await POST(request("POST", "https://tally.test/api/bills", {
+      name: "Netflix", amount: "15.00", frequency: "monthly", nextDueDate: "2099-01-01", accountId, categoryId,
+      icon: "netflix", iconEmoji: "🧾", iconForegroundColor: "#ffffff", iconBackgroundColor: "#e50914",
+    }));
+    expect(created.status).toBe(201);
+    const { bill } = await created.json();
+    expect(bill).toMatchObject({ icon: "netflix", iconEmoji: "🧾", iconForegroundColor: "#ffffff", iconBackgroundColor: "#e50914" });
+
+    const colorUpdate = await PATCH(request("PATCH", `https://tally.test/api/bills/${bill.id}`, {
+      iconBackgroundColor: "#f58220", expectedNextDueDate: bill.nextDueDate,
+    }), context(bill.id));
+    expect((await colorUpdate.json()).bill).toMatchObject({
+      icon: "netflix", iconEmoji: "🧾", iconForegroundColor: "#ffffff", iconBackgroundColor: "#f58220",
+    });
+
+    const clearEmoji = await PATCH(request("PATCH", `https://tally.test/api/bills/${bill.id}`, {
+      iconEmoji: null, expectedNextDueDate: bill.nextDueDate,
+    }), context(bill.id));
+    expect((await clearEmoji.json()).bill).toMatchObject({
+      icon: "netflix", iconEmoji: null, iconForegroundColor: "#ffffff", iconBackgroundColor: "#f58220",
+    });
+  });
+
+  it("rejects non-emoji icon text and malformed bill icon colors", async () => {
+    const base = { name: "PLDT", amount: "15.00", frequency: "monthly", nextDueDate: "2099-01-01", accountId, categoryId };
+    const invalidEmoji = await POST(request("POST", "https://tally.test/api/bills", { ...base, iconEmoji: "hello" }));
+    const invalidColor = await POST(request("POST", "https://tally.test/api/bills", { ...base, iconForegroundColor: "url(javascript:alert(1))" }));
+    expect(invalidEmoji.status).toBe(400);
+    expect(invalidColor.status).toBe(400);
+  });
+
+  it("accepts one composite emoji and rejects two adjacent emoji graphemes", async () => {
+    const base = { amount: "1.00", frequency: "monthly", nextDueDate: "2099-01-01", accountId, categoryId };
+    const familyEmoji = "👨‍👩‍👧‍👦";
+    const accepted = await POST(request("POST", "https://tally.test/api/bills", { ...base, name: "Family emoji", iconEmoji: familyEmoji }));
+    expect(accepted.status).toBe(201);
+    expect((await accepted.json()).bill.iconEmoji).toBe(familyEmoji);
+
+    const rejected = await POST(request("POST", "https://tally.test/api/bills", { ...base, name: "Two emoji", iconEmoji: "😀😀" }));
+    expect(rejected.status).toBe(400);
+  });
+
   it("requires a signed-in owner for reads and writes", async () => {
     mocks.requireUser.mockRejectedValueOnce(new HttpError(401, "Sign in to continue."));
     expect((await GET()).status).toBe(401);
