@@ -164,7 +164,7 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
             <div><h2 id={`debt-heading-${direction}`}>{directionLabel(direction)}</h2><p>{direction === "owed_to_you" ? "People who need to repay you" : "Amounts you need to repay"}</p></div>
             <button className="button button-small" onClick={() => create(direction)}><Plus size={14}/> Add</button>
           </div>
-          <div className="debt-list">
+          <div className="debt-list" role="region" tabIndex={0} aria-labelledby={`debt-heading-${direction}`}>
             {sectionDebts.map((debt) => <article className={`debt-row ${debt.status}`} key={debt.id}>
               <div className={`debt-row-icon ${direction}`}><Icon size={17}/></div>
               <div className="debt-row-copy"><strong>{debt.counterparty}</strong><span>{debt.dueDate ? `Due ${formatDueDate(debt.dueDate)}` : "No due date"}{debt.note ? ` · ${debt.note}` : ""}</span></div>
