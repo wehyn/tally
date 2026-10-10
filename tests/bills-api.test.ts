@@ -37,7 +37,7 @@ describe("Bills API", () => {
     const { bill } = await created.json();
     expect(bill.icon).toBe("wifi");
 
-    const updated = await PATCH(request("PATCH", `https://tally.test/api/bills/${bill.id}`, { icon: "music" }), context(bill.id));
+    const updated = await PATCH(request("PATCH", `https://tally.test/api/bills/${bill.id}`, { icon: "music", expectedNextDueDate: bill.nextDueDate }), context(bill.id));
     expect((await updated.json()).bill.icon).toBe("music");
     const invalid = await POST(request("POST", "https://tally.test/api/bills", { name: "Bad icon", amount: "15.00", frequency: "monthly", nextDueDate: "2099-01-01", accountId, categoryId, icon: "custom" }));
     expect(invalid.status).toBe(400);
@@ -56,11 +56,26 @@ describe("Bills API", () => {
     const { bill } = await created.json();
     expect(bill).toMatchObject({ name: "Internet", amountMinor: 2500, nextDueDate: "2026-11-09" });
     expect(store.listTransactions(user.id, { start: "2026-10-09", end: "2026-10-09" }, 10)[0]).toMatchObject({ kind: "expense", amountMinor: 2500, description: "Internet", date: "2026-10-09" });
-    const updated = await PATCH(request("PATCH", "https://tally.test/api/bills/" + bill.id, { amount: "30.00" }), context(bill.id));
+    const updated = await PATCH(request("PATCH", "https://tally.test/api/bills/" + bill.id, { amount: "30.00", expectedNextDueDate: bill.nextDueDate }), context(bill.id));
     expect(updated.status).toBe(200);
     expect(store.listBills(user.id)[0].amountMinor).toBe(3000);
     expect(store.listTransactions(user.id, { start: "2026-10-09", end: "2026-10-09" }, 10)[0].amountMinor).toBe(2500);
     expect((await archive(request("POST", "https://tally.test/api/bills/" + bill.id + "/archive"), context(bill.id))).status).toBe(200);
+  });
+
+  it("rejects a stale edit after the due occurrence has posted", async () => {
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-10-09", accountId, categoryId });
+    expect(store.processDueBills("2026-10-09").processed).toBe(1);
+
+    const updated = await PATCH(request("PATCH", `https://tally.test/api/bills/${bill.id}`, {
+      name: "Home internet", amount: "25.00", frequency: "monthly", nextDueDate: bill.nextDueDate,
+      expectedNextDueDate: bill.nextDueDate, accountId, categoryId, icon: "calendar",
+    }), context(bill.id));
+
+    expect(updated.status).toBe(409);
+    expect(await updated.json()).toMatchObject({ error: expect.stringContaining("schedule changed") });
+    expect(store.listBills(user.id)).toMatchObject([{ id: bill.id, nextDueDate: "2026-11-09" }]);
+    expect(store.listTransactions(user.id, { start: "2026-10-09", end: "2026-10-09" }, 10, { kind: "expense" })).toHaveLength(1);
   });
 
   it("returns committed due-today POST and PATCH saves with a posting warning after a real overflow failure", async () => {
@@ -75,7 +90,7 @@ describe("Bills API", () => {
       postingWarning: expect.stringContaining("will retry automatically"),
     });
 
-    const updated = await PATCH(request("PATCH", `https://tally.test/api/bills/${createdBody.bill.id}`, { name: "Electricity" }), context(createdBody.bill.id));
+    const updated = await PATCH(request("PATCH", `https://tally.test/api/bills/${createdBody.bill.id}`, { name: "Electricity", expectedNextDueDate: createdBody.bill.nextDueDate }), context(createdBody.bill.id));
     expect(updated.status).toBe(200);
     expect(await updated.json()).toMatchObject({
       bill: { name: "Electricity", nextDueDate: "2026-10-09" },

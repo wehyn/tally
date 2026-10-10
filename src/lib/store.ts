@@ -304,12 +304,13 @@ export function createStore(db: Database.Database) {
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, value.name, value.amountMinor, value.frequency, value.nextDueDate, value.icon, anchorDay, anchorMonth, value.accountId, value.categoryId, now, now);
     return mapBill(db.prepare(`${billSelect} WHERE b.user_id=? AND b.id=?`).get(userId, id) as Record<string, unknown>);
   }
-  function updateBill(userId: string, billId: string, input: Partial<BillInput>): Bill {
+  function updateBill(userId: string, billId: string, input: Partial<BillInput>, expectedNextDueDate: string): Bill {
     return db.transaction(() => {
       const currentRow = db.prepare("SELECT * FROM bills WHERE id=? AND user_id=?").get(billId, userId) as Record<string, unknown> | undefined;
       if (!currentRow) throw new Error("Bill not found.");
       const current = { name: String(currentRow.name), amountMinor: Number(currentRow.amount_minor), frequency: currentRow.frequency as BillFrequency,
         nextDueDate: String(currentRow.next_due_date), accountId: String(currentRow.account_id), categoryId: String(currentRow.category_id), icon: currentRow.icon as BillIcon };
+      if (current.nextDueDate !== expectedNextDueDate) throw new Error("Bill schedule changed while editing. Refresh the Bills page before saving.");
       const value = { ...current, ...input, name: (input.name ?? current.name).trim(), icon: input.icon ?? current.icon };
       const dateUnchanged = value.nextDueDate === current.nextDueDate;
       validateBillInput(userId, value, dateUnchanged);

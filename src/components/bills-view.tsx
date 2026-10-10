@@ -48,7 +48,7 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
     event.preventDefault(); setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch(editing ? `/api/bills/${editing.id}` : "/api/bills", {
-        method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft),
+        method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(editing ? { ...draft, expectedNextDueDate: editing.nextDueDate } : draft),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save bill.");

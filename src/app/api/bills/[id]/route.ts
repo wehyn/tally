@@ -6,10 +6,11 @@ import { parsePHPToMinor } from "@/lib/money";
 import { BILL_ICONS } from "@/lib/store";
 
 const schema = z.object({
+  expectedNextDueDate: z.string().length(10),
   name: z.string().trim().min(1).max(100).optional(), amount: z.string().max(24).optional(),
   frequency: z.enum(["weekly", "monthly", "yearly"]).optional(), nextDueDate: z.string().length(10).optional(),
   accountId: z.string().min(1).max(100).optional(), categoryId: z.string().min(1).max(100).optional(), icon: z.enum(BILL_ICONS).optional(),
-}).refine((input) => Object.keys(input).length > 0, "At least one bill field is required.");
+}).refine((input) => Object.keys(input).some((field) => field !== "expectedNextDueDate"), "At least one bill field is required.");
 type Context = { params: Promise<{ id: string }> };
 
 export async function PATCH(request: Request, { params }: Context) {
@@ -18,9 +19,9 @@ export async function PATCH(request: Request, { params }: Context) {
     const user = await requireUser();
     const { id } = await params;
     const input = await requestJson(request, schema);
-    const { amount, ...fields } = input;
+    const { amount, expectedNextDueDate, ...fields } = input;
     const store = getStore();
-    let bill = store.updateBill(user.id, id, { ...fields, ...(amount === undefined ? {} : { amountMinor: parsePHPToMinor(amount) }) });
+    let bill = store.updateBill(user.id, id, { ...fields, ...(amount === undefined ? {} : { amountMinor: parsePHPToMinor(amount) }) }, expectedNextDueDate);
     const today = todayInManila();
     let postingWarning: string | undefined;
     try {

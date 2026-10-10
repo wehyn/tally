@@ -188,9 +188,9 @@ describe("recurring bills", () => {
     const defaulted = store.createBill(user.id, { ...input, name: "Calendar bill" });
 
     expect(selected.icon).toBe("wifi");
-    expect(store.updateBill(user.id, selected.id, { icon: "music" }).icon).toBe("music");
+    expect(store.updateBill(user.id, selected.id, { icon: "music" }, selected.nextDueDate).icon).toBe("music");
     expect(defaulted.icon).toBe("calendar");
-    expect(() => store.updateBill(user.id, selected.id, { icon: "custom" as never })).toThrow(/icon/i);
+    expect(() => store.updateBill(user.id, selected.id, { icon: "custom" as never }, selected.nextDueDate)).toThrow(/icon/i);
   });
 
   it("adds Calendar icons to existing bills when migrating", () => {
@@ -219,10 +219,10 @@ describe("recurring bills", () => {
       name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2099-01-31", accountId: account.id, categoryId: food.id,
     });
     expect(store.listBills(bob.id)).toEqual([]);
-    expect(() => store.updateBill(bob.id, bill.id, { name: "Changed" })).toThrow(/not found/i);
+    expect(() => store.updateBill(bob.id, bill.id, { name: "Changed" }, bill.nextDueDate)).toThrow(/not found/i);
     database.prepare("UPDATE bills SET next_due_date='2000-01-01' WHERE id=?").run(bill.id);
-    expect(store.updateBill(alice.id, bill.id, { name: "Internet service" })).toMatchObject({ nextDueDate: "2000-01-01", name: "Internet service" });
-    expect(() => store.updateBill(alice.id, bill.id, { nextDueDate: "1999-01-01" })).toThrow(/today or later/i);
+    expect(store.updateBill(alice.id, bill.id, { name: "Internet service" }, "2000-01-01")).toMatchObject({ nextDueDate: "2000-01-01", name: "Internet service" });
+    expect(() => store.updateBill(alice.id, bill.id, { nextDueDate: "1999-01-01" }, "2000-01-01")).toThrow(/today or later/i);
   });
 
   it("posts missed occurrences on their scheduled dates and does not repost on retry", () => {
@@ -264,7 +264,7 @@ describe("recurring bills", () => {
     const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
     const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
     const bill = store.createBill(user.id, { name: "Rent", amountMinor: 1000, frequency: "weekly", nextDueDate: "2099-01-01", accountId: account.id, categoryId: food.id });
-    store.updateBill(user.id, bill.id, { frequency: "monthly", nextDueDate: "2099-01-31" });
+    store.updateBill(user.id, bill.id, { frequency: "monthly", nextDueDate: "2099-01-31" }, bill.nextDueDate);
     expect(store.processDueBills("2099-02-28").processed).toBe(2);
     expect(store.listBills(user.id)[0]).toMatchObject({ nextDueDate: "2099-03-31", anchorDay: 31, anchorMonth: 1 });
   });
