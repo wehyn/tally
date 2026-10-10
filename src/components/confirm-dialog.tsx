@@ -43,10 +43,17 @@ export function ConfirmDialog({ request, onClose }: ConfirmDialogProps) {
       if (event.key !== "Tab") return;
 
       const buttons = dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
-      if (!buttons?.length) return;
+      if (!buttons?.length) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
       const first = buttons[0];
       const last = buttons[buttons.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      if (document.activeElement === dialogRef.current) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -64,6 +71,7 @@ export function ConfirmDialog({ request, onClose }: ConfirmDialogProps) {
 
   async function confirm() {
     if (busyRef.current) return;
+    dialogRef.current?.focus();
     busyRef.current = true;
     setBusy(true);
     setError("");
@@ -85,7 +93,7 @@ export function ConfirmDialog({ request, onClose }: ConfirmDialogProps) {
     <div className="modal-backdrop confirm-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busyRef.current) closeRef.current();
     }}>
-      <section className="modal-card confirm-card" ref={dialogRef} role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-description" aria-busy={busy}>
+      <section className="modal-card confirm-card" ref={dialogRef} tabIndex={-1} role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-description" aria-busy={busy}>
         <div className="confirm-heading">
           <span className={`confirm-icon ${request.intent ?? "delete"}`}><Icon size={18} aria-hidden="true"/></span>
           <div className="confirm-copy">

@@ -218,6 +218,10 @@
   .modal-actions .button{min-height:42px}
 }
 @media(max-width:360px){.dashboard-period-stats{gap:7px}.asset-table-heading,.asset-account-row{grid-template-columns:minmax(0,1fr) minmax(82px,.65fr) minmax(77px,.48fr);gap:5px;padding-right:2px;padding-left:2px}.asset-account-mark{display:none}.category-tile-grid{grid-template-columns:1fr}}
+
+@media(prefers-reduced-motion:reduce){
+  .modal-backdrop,.modal-card,.category-manager-chevron,.category-manager-disclosure,.category-manager-disclosure-clip{animation:none!important;transition:none!important}
+}
 @media(prefers-reduced-motion:reduce){.asset-composition>span,.category-tile,.category-icon-option{transition:none}}
 @media(max-width:620px){.list-table{min-width:560px}}
 
