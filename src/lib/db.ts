@@ -7,7 +7,8 @@ const globalDb = globalThis as typeof globalThis & { __tallyDb?: Database.Databa
 
 export function getStore(): Store {
   if (globalDb.__tallyStore) return globalDb.__tallyStore;
-  const dataDir = path.resolve(/*turbopackIgnore: true*/ process.env.TALLY_DATA_DIR || path.join(process.cwd(), "data"));
+  const defaultDataDir = process.env.NODE_ENV === "development" ? ".dev-data" : "data";
+  const dataDir = path.resolve(/*turbopackIgnore: true*/ process.env.TALLY_DATA_DIR || path.join(process.cwd(), defaultDataDir));
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const dbPath = process.env.TALLY_DB_PATH ? path.resolve(process.env.TALLY_DB_PATH) : path.join(dataDir, "tally.sqlite");
   mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });

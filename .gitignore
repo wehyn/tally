@@ -8,6 +8,7 @@ test-results/
 .env.*
 !.env.example
 data/
+.dev-data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

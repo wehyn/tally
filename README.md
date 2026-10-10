@@ -4,7 +4,7 @@ Tally is a single-instance, self-hosted finance tracker. Personal ledgers and as
 
 ## Local development
 
-Requirements: Node.js 20.9+ and npm. This project uses Next.js App Router, SQLite (`better-sqlite3`), and a persistent local `data/` directory.
+Requirements: Node.js 20.9+ and npm. This project uses Next.js App Router and SQLite (`better-sqlite3`). The development server stores its database in the ignored `./.dev-data/` directory by default, separate from the Docker deployment database in `./data/`. Set `TALLY_DATA_DIR` or `TALLY_DB_PATH` to use a different location.
 
 ```sh
 npm ci
