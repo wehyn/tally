@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { ArrowDownLeft, ArrowUpRight, Check, HandCoins, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import type { Debt, DebtDirection, DebtStatus } from "@/lib/store";
 import { formatPHP, formatPHPFromMinorString, minorToInput } from "@/lib/money";
+import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 
 type DebtDraft = { direction: DebtDirection; counterparty: string; amount: string; dueDate: string; note: string };
 type StatusFilter = DebtStatus | "all";
@@ -32,6 +33,7 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
 
   function create(direction: DebtDirection = "owed_to_you") {
     setEditing(null);
@@ -94,20 +96,26 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
     }
   }
 
-  async function remove(debt: Debt) {
-    if (!window.confirm(`Delete the debt with ${debt.counterparty}?`)) return;
-    setPendingId(debt.id);
-    setError("");
-    try {
-      const response = await fetch(`/api/debts/${debt.id}`, { method: "DELETE" });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not delete debt.");
-      setDebts((current) => current.filter((item) => item.id !== debt.id));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete debt.");
-    } finally {
-      setPendingId(null);
-    }
+  function remove(debt: Debt) {
+    setConfirmation({
+      intent: "delete",
+      title: `Delete debt with ${debt.counterparty}?`,
+      description: "This debt record will be permanently removed. This cannot be undone.",
+      confirmLabel: "Delete debt",
+      busyLabel: "Deleting…",
+      onConfirm: async () => {
+        setPendingId(debt.id);
+        setError("");
+        try {
+          const response = await fetch(`/api/debts/${debt.id}`, { method: "DELETE" });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error ?? "Could not delete debt.");
+          setDebts((current) => current.filter((item) => item.id !== debt.id));
+        } finally {
+          setPendingId(null);
+        }
+      },
+    });
   }
 
   return <div className="page-stack debts-page">
@@ -183,5 +191,6 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
         </form>
       </section>
     </div>}
+    {confirmation && <ConfirmDialog request={confirmation} onClose={() => setConfirmation(null)}/>}
   </div>;
 }
