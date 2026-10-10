@@ -85,6 +85,7 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
 
   return <div className="page-stack">
     <section className="page-heading-row page-heading-actions-only"><h1 className="sr-only">Bills</h1><button className="button button-primary" onClick={create}><Plus size={16}/> Add a bill</button></section>
+    <div className="notice-box warning" role="note">Bills due today or earlier are automatically recorded as expenses, even without payment confirmation.</div>
     {notice && <div className="notice-box warning" role="status">{notice}</div>}
     {error && !open && <p className="error-text" role="alert">{error}</p>}
     <section className="panel"><div className="panel-heading"><div><h2>Upcoming</h2><p>Active bills, ordered by next due date.</p></div></div>{list(active)}</section>

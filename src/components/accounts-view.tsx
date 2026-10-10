@@ -71,7 +71,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
       const response = await fetch(editing ? `/api/accounts/${editing.id}` : "/api/accounts", {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editing ? draft : { name: draft.name, type: draft.type }),
+        body: JSON.stringify(draft),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save account.");
@@ -200,8 +200,8 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
     </div></article>
 
     {open && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="account-title">
-      <div className="modal-heading"><div><h2 id="account-title">{editing ? "Edit account" : "New financial account"}</h2>{editing && <p>Opening balance is not recorded as income.</p>}</div><button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
-      <form onSubmit={save}><div className="form-grid"><label className="field-label span-2">Account name<input autoFocus required maxLength={80} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Everyday cash"/></label><label className={`field-label ${editing ? "" : "span-2"}`}>Type<select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value as AccountDraft["type"] })}><option value="cash">Cash</option><option value="bank">Bank</option></select></label>{editing && <label className="field-label">Opening balance<input inputMode="decimal" required value={draft.openingBalance} onChange={(e) => setDraft({ ...draft, openingBalance: e.target.value })} placeholder="0.00"/></label>}</div>
+      <div className="modal-heading"><div><h2 id="account-title">{editing ? "Edit account" : "New financial account"}</h2><p>Opening balance is not recorded as income.</p></div><button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
+      <form onSubmit={save}><div className="form-grid"><label className="field-label span-2">Account name<input autoFocus required maxLength={80} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Everyday cash"/></label><label className="field-label">Type<select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value as AccountDraft["type"] })}><option value="cash">Cash</option><option value="bank">Bank</option></select></label><label className="field-label">Opening balance<input inputMode="decimal" required value={draft.openingBalance} onChange={(e) => setDraft({ ...draft, openingBalance: e.target.value })} placeholder="0.00"/></label></div>
         {error && <p className="error-text" role="alert" style={{ marginTop: 12 }}>{error}</p>}<div className="modal-footer"><button type="button" className="button" onClick={() => setOpen(false)}>Cancel</button><button disabled={busy} className="button button-primary">{busy ? "Saving…" : editing ? "Save changes" : "Create account"}</button></div>
       </form>
     </section></div>}
