@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import Link from "next/link";
-import { Bot, ChevronDown, Send, Sparkles, Undo2, X } from "lucide-react";
+import { Bot, Send, Sparkles, Undo2, X } from "lucide-react";
 import { formatPHP, minorToInput } from "@/lib/money";
-import { isUndoAvailable, todayInManila } from "@/lib/dates";
+import { isUndoAvailable } from "@/lib/dates";
 import type { Debt } from "@/lib/store";
 import { ASSISTANT_SETTINGS_UPDATED_EVENT, DEBTS_UPDATED_EVENT, LEDGER_UPDATED_EVENT } from "@/lib/client-events";
+import { AssistantDatePicker, AssistantSelect } from "./assistant-transaction-controls";
 
 type AssistantTransaction = {
   id: string;
@@ -58,6 +59,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(0);
+  const [openTransactionControl, setOpenTransactionControl] = useState<string | null>(null);
   const messageList = useRef<HTMLDivElement>(null);
   const promptField = useRef<HTMLTextAreaElement>(null);
   const panelOpen = mode === "chat" || (!assistantEnabled && mode === "composing");
@@ -118,7 +120,10 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   useEffect(() => {
     const list = messageList.current;
     if (mode !== "chat" || !list) return;
-    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+    list.scrollTo({
+      top: list.scrollHeight,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
   }, [mode, messages, busy]);
 
   useEffect(() => {
@@ -139,6 +144,11 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   function openAssistant() {
     if (!assistantEnabled) setMode("chat");
     else setMode(messages.length || window.matchMedia("(max-width: 900px)").matches ? "chat" : "composing");
+  }
+
+  function closeAssistant() {
+    setOpenTransactionControl(null);
+    setMode("closed");
   }
 
   async function send(event?: FormEvent) {
@@ -235,7 +245,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Escape" && mode !== "closed") {
       event.preventDefault();
-      setMode("closed");
+      closeAssistant();
     } else if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void send();
@@ -243,11 +253,11 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   }
 
   return <div className={`assistant-widget ${mode}`}>
-    <section id="assistant-widget-panel" className={`assistant-widget-panel ${assistantEnabled ? "has-composer" : ""}`} role="dialog" aria-modal="false" aria-label="Tally assistant" onKeyDown={(event) => { if (event.key === "Escape") setMode("closed"); }} hidden={!panelOpen}>
+    <section id="assistant-widget-panel" className={`assistant-widget-panel ${assistantEnabled ? "has-composer" : ""}`} role="dialog" aria-modal="false" aria-label="Tally assistant" onKeyDown={(event) => { if (event.key === "Escape") closeAssistant(); }} hidden={!panelOpen}>
       <header className="assistant-widget-header">
         <span className="assistant-widget-mark"><Sparkles size={17}/></span>
         <div className="assistant-widget-title"><strong>Ask Tally</strong><span>{assistantEnabled ? "Your private ledger assistant" : "Optional assistant"}</span></div>
-        <button type="button" className="assistant-widget-icon" aria-label="Close assistant" title="Close" onClick={() => setMode("closed")}><X size={16}/></button>
+        <button type="button" className="assistant-widget-icon" aria-label="Close assistant" title="Close" onClick={closeAssistant}><X size={16}/></button>
       </header>
       {assistantEnabled ? <>
         <div ref={messageList} className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
@@ -255,25 +265,41 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
             <strong className={`chat-transaction-amount ${message.transaction.kind === "income" ? "positive" : "negative"}`}>{formatPHP(message.transaction.amountMinor)}</strong>
             <span className="chat-transaction-description">{message.transaction.description || "No description"}</span>
             <div className="chat-transaction-fields">
-              <label className="chat-transaction-control">
-                <select aria-label="Category" value={message.transaction.categoryId} disabled={!transactionOptions || savingTransactionId !== null} onChange={(event) => void updateTransaction(message.transaction!, { categoryId: event.target.value })}>
-                  <option value={message.transaction.categoryId}>{message.transaction.categoryName ?? "Choose category"}</option>
-                  {transactionOptions?.categories.filter((category) => category.type === message.transaction!.kind && category.id !== message.transaction!.categoryId).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-                </select>
-                <ChevronDown size={12} aria-hidden="true"/>
-              </label>
-              <label className="chat-transaction-control">
-                <select aria-label="Account" value={message.transaction.accountId} disabled={!transactionOptions || savingTransactionId !== null} onChange={(event) => void updateTransaction(message.transaction!, { accountId: event.target.value })}>
-                  <option value={message.transaction.accountId}>{message.transaction.accountName}</option>
-                  {transactionOptions?.accounts.filter((account) => account.id !== message.transaction!.accountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-                </select>
-                <ChevronDown size={12} aria-hidden="true"/>
-              </label>
-              <label className="chat-transaction-control chat-transaction-date">
-                <span>{message.transaction.date === todayInManila() ? "Today" : message.transaction.date}</span>
-                <ChevronDown size={12} aria-hidden="true"/>
-                <input type="date" aria-label="Transaction date" value={message.transaction.date} disabled={!transactionOptions || savingTransactionId !== null} onChange={(event) => void updateTransaction(message.transaction!, { date: event.target.value })}/>
-              </label>
+              <AssistantSelect
+                label="Category"
+                value={message.transaction.categoryId}
+                options={[
+                  { value: message.transaction.categoryId, label: message.transaction.categoryName ?? "Choose category" },
+                  ...(transactionOptions?.categories.filter((category) => category.type === message.transaction!.kind && category.id !== message.transaction!.categoryId).map((category) => ({ value: category.id, label: category.name })) ?? []),
+                ]}
+                disabled={!transactionOptions}
+                busy={savingTransactionId !== null}
+                open={openTransactionControl === `${message.transaction.id}:category`}
+                onOpenChange={(open) => setOpenTransactionControl(open ? `${message.transaction!.id}:category` : null)}
+                onChange={(categoryId) => void updateTransaction(message.transaction!, { categoryId })}
+              />
+              <AssistantSelect
+                label="Account"
+                value={message.transaction.accountId}
+                options={[
+                  { value: message.transaction.accountId, label: message.transaction.accountName },
+                  ...(transactionOptions?.accounts.filter((account) => account.id !== message.transaction!.accountId).map((account) => ({ value: account.id, label: account.name })) ?? []),
+                ]}
+                disabled={!transactionOptions}
+                busy={savingTransactionId !== null}
+                open={openTransactionControl === `${message.transaction.id}:account`}
+                alignEnd
+                onOpenChange={(open) => setOpenTransactionControl(open ? `${message.transaction!.id}:account` : null)}
+                onChange={(accountId) => void updateTransaction(message.transaction!, { accountId })}
+              />
+              <AssistantDatePicker
+                value={message.transaction.date}
+                disabled={!transactionOptions}
+                busy={savingTransactionId !== null}
+                open={openTransactionControl === `${message.transaction.id}:date`}
+                onOpenChange={(open) => setOpenTransactionControl(open ? `${message.transaction!.id}:date` : null)}
+                onChange={(date) => void updateTransaction(message.transaction!, { date })}
+              />
             </div>
             {savingTransactionId === message.transaction.id && <span className="chat-transaction-saving" role="status">Updating…</span>}
             {message.transaction.undoUntil && isUndoAvailable(message.transaction.undoUntil, now) && <button type="button" className="undo-link" disabled={savingTransactionId === message.transaction.id} onClick={() => void undo(message.transaction!.id)}><Undo2 size={12} style={{ verticalAlign: "-2px" }}/> Undo · {Math.max(1, Math.ceil((Date.parse(message.transaction.undoUntil) - now) / 1000))}s</button>}
@@ -290,7 +316,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
       </>}
     </section>
     {assistantEnabled ? <form className={`assistant-widget-composer ${mode}`} onSubmit={(event) => void send(event)}>
-        <button type="button" className="assistant-widget-mode-button" aria-label={mode === "closed" ? "Open Tally assistant" : "Close message composer"} aria-expanded={panelOpen} aria-controls="assistant-widget-panel" hidden={mode === "chat"} onClick={() => mode === "closed" ? openAssistant() : setMode("closed")}>
+        <button type="button" className="assistant-widget-mode-button" aria-label={mode === "closed" ? "Open Tally assistant" : "Close message composer"} aria-expanded={panelOpen} aria-controls="assistant-widget-panel" hidden={mode === "chat"} onClick={() => mode === "closed" ? openAssistant() : closeAssistant()}>
           {mode === "closed" ? <Sparkles size={19}/> : <X size={16}/>}
         </button>
         <label className="sr-only" htmlFor="assistant-widget-prompt" hidden={mode === "closed"}>Message Tally</label>

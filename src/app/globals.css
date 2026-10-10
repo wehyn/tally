@@ -53,16 +53,15 @@
 .chat-transaction-amount{font-size:14px;color:#283a30;font-variant-numeric:tabular-nums}
 .chat-transaction-description{color:#69766f;font-size:11px;overflow-wrap:anywhere}
 .chat-transaction-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 88px;gap:5px;margin-top:3px}
-.chat-transaction-control{position:relative;display:flex;align-items:center;min-width:0;height:30px;border:1px solid #e2e7e1;border-radius:999px;background:#f1f1f1;color:#45564a}
-.chat-transaction-control select{appearance:none;width:100%;min-width:0;height:100%;padding:0 20px 0 9px;border:0;border-radius:inherit;outline:0;background:transparent;color:inherit;font-size:9px;text-overflow:ellipsis;cursor:pointer}
-.chat-transaction-control select:focus-visible,.chat-transaction-date:focus-within{outline:2px solid #75ad8d;outline-offset:1px}
-.chat-transaction-control select:disabled{cursor:wait;opacity:.75}
-.chat-transaction-control>svg{position:absolute;right:6px;flex:0 0 auto;color:#84958a;pointer-events:none}
-.chat-transaction-date{justify-content:space-between;gap:3px;padding-right:6px;overflow:hidden;cursor:pointer}
-.chat-transaction-date span{min-width:0;padding-left:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px}
-.chat-transaction-date input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
-.chat-transaction-date input:disabled{cursor:wait}
-.chat-transaction-date input::-webkit-calendar-picker-indicator{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
+.chat-transaction-control{position:relative;display:flex;align-items:center;min-width:0;height:34px;border:1px solid var(--line);border-radius:999px;background:var(--surface-soft);color:#45564a;transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease}
+.chat-transaction-control:focus-within{border-color:#75ad8d;box-shadow:0 0 0 2px rgba(74,148,104,.12)}
+.chat-transaction-trigger{width:100%;height:100%;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:0 7px 0 9px;border:0;border-radius:inherit;background:transparent;color:inherit;font-size:10px;text-align:left;cursor:pointer}
+.chat-transaction-trigger:focus-visible{outline:0;box-shadow:none}
+.chat-transaction-trigger[aria-disabled=true]{cursor:wait;opacity:.62}
+.chat-transaction-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-transaction-chevron,.chat-transaction-calendar-icon{flex:0 0 auto;color:#84958a;transition:transform .16s ease}
+.chat-transaction-trigger[aria-expanded=true] .chat-transaction-chevron{transform:rotate(180deg)}
+.chat-transaction-date-trigger{padding-right:7px}
 .chat-transaction-saving{color:var(--muted);font-size:10px}
 .chat-transaction-card .undo-link{justify-self:start;padding-top:3px}
 .bill-icon-picker{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px}
@@ -226,9 +225,9 @@
 @media(max-width:620px){.list-table{min-width:560px}}
 
 /* Shared, restrained motion for interactive controls and dialogs */
-button:not(:disabled),a.button{transition:transform .16s cubic-bezier(.2,.8,.2,1),background-color .18s ease,border-color .18s ease,color .18s ease,box-shadow .18s ease,opacity .18s ease}
-@media(prefers-reduced-motion:no-preference) and (hover:hover){button:not(:disabled):hover,a.button:hover{transform:translateY(-1px)}}
-@media(prefers-reduced-motion:no-preference){button:not(:disabled):active,a.button:active{transform:scale(.985)}}
+button:not(:disabled):not([aria-disabled=true]),a.button{transition:transform .16s cubic-bezier(.2,.8,.2,1),background-color .18s ease,border-color .18s ease,color .18s ease,box-shadow .18s ease,opacity .18s ease}
+@media(prefers-reduced-motion:no-preference) and (hover:hover){button:not(:disabled):not([aria-disabled=true]):hover,a.button:hover{transform:translateY(-1px)}}
+@media(prefers-reduced-motion:no-preference){button:not(:disabled):not([aria-disabled=true]):active,a.button:active{transform:scale(.985)}}
 .modal-backdrop{animation:tally-modal-backdrop-in .18s ease-out both}
 .modal-card{animation:tally-modal-card-in .22s cubic-bezier(.2,.8,.2,1) both}
 @keyframes tally-modal-backdrop-in{from{opacity:0}to{opacity:1}}
@@ -252,3 +251,29 @@ button:not(:disabled),a.button{transition:transform .16s cubic-bezier(.2,.8,.2,1
 .page-heading-actions-only{justify-content:flex-end}
 .archived-disclosure>.panel-heading>.archived-chevron{flex:0 0 auto;color:var(--accent);transition:transform .16s}
 .archived-disclosure[open]>.panel-heading>.archived-chevron{transform:rotate(180deg)}
+button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:2px solid #75ad8d;outline-offset:2px}
+.chat-transaction-menu,.chat-calendar-popover{position:fixed;z-index:1000;opacity:1;transform:translateY(0) scale(1);transition:opacity .15s ease,transform .15s cubic-bezier(.2,.8,.2,1)}
+.chat-transaction-menu[data-open=false],.chat-calendar-popover[data-open=false]{opacity:0;transform:translateY(-5px) scale(.985);pointer-events:none}
+.chat-transaction-menu{width:218px;max-height:210px;display:grid;gap:2px;padding:5px;overflow-y:auto;overscroll-behavior:contain;scroll-behavior:smooth;scrollbar-width:thin;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 30px rgba(30,54,43,.14)}
+.chat-transaction-option{min-width:0;padding:8px 10px;border-radius:8px;color:#536158;font-size:11px;line-height:1.35;overflow-wrap:anywhere;cursor:pointer;transition:background-color .14s ease,color .14s ease}
+.chat-transaction-option[data-active=true],.chat-transaction-option[aria-selected=true]{background:var(--accent-soft);color:var(--accent-strong)}
+.chat-calendar-popover{width:264px;overflow-y:auto;overscroll-behavior:contain;padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 30px rgba(30,54,43,.14)}
+.chat-calendar-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+.chat-calendar-heading h3{margin:0;color:var(--ink);font-size:13px;font-weight:650;letter-spacing:-.2px}
+.chat-calendar-navigation{display:flex;gap:3px}
+.chat-calendar-navigation button{width:28px;height:28px;display:grid;place-items:center;padding:0;border:1px solid transparent;border-radius:8px;background:var(--surface-soft);color:var(--accent);cursor:pointer}
+.chat-calendar-navigation button:hover{border-color:var(--line);background:var(--accent-soft)}
+.chat-calendar-grid{display:grid;gap:3px}
+.chat-calendar-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px}
+.chat-calendar-weekdays{margin-bottom:2px}
+.chat-calendar-weekdays>span{display:grid;place-items:center;height:22px;color:#9aa49d;font-size:9px;font-weight:650}
+.chat-calendar-cell{display:grid;place-items:center;min-width:0;min-height:32px}
+.chat-calendar-cell.empty{pointer-events:none}
+.chat-calendar-day{width:32px;max-width:100%;aspect-ratio:1;display:grid;place-items:center;padding:0;border:0;border-radius:50%;background:transparent;color:var(--ink);font-size:11px;font-weight:520;cursor:pointer}
+.chat-calendar-day:hover{background:var(--accent-soft);color:var(--accent-strong)}
+.chat-calendar-cell[aria-selected=true] .chat-calendar-day{background:var(--accent);color:#fff;font-weight:700}
+.chat-calendar-cell:not([aria-selected=true]) .chat-calendar-day[aria-current=date]{color:var(--accent-strong);font-weight:700;box-shadow:inset 0 0 0 1px #83b497}
+.chat-calendar-day:focus-visible{outline-offset:1px}
+.chat-calendar-weeks{animation:chat-calendar-month-in .16s ease-out both}
+@keyframes chat-calendar-month-in{from{opacity:.55;transform:translateX(5px)}to{opacity:1;transform:translateX(0)}}
+@media(prefers-reduced-motion:reduce){.button:active{transform:none!important}.chat-transaction-menu{scroll-behavior:auto!important}.chat-transaction-menu,.chat-calendar-popover,.chat-calendar-weeks,.chat-transaction-option,.chat-transaction-chevron,.chat-transaction-calendar-icon{animation:none!important;transition:none!important}}
