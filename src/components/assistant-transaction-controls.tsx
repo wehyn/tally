@@ -12,7 +12,52 @@ function reducedMotion() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+function tabbableElements(container: ParentNode) {
+  return Array.from(container.querySelectorAll<HTMLElement>(
+    "a[href], area[href], input:not([type='hidden']), select, textarea, button, iframe, object, embed, [contenteditable='true'], [tabindex]",
+  )).filter((element) => element.tabIndex >= 0 && !element.matches(":disabled") && !element.closest("[inert], [hidden], [aria-hidden='true']"));
+}
+
+function moveFocusAtPopoverBoundary(
+  event: KeyboardEvent<HTMLElement>,
+  trigger: RefObject<HTMLButtonElement | null>,
+  popup: RefObject<HTMLDivElement | null>,
+) {
+  if (event.key !== "Tab") return;
+  const anchor = trigger.current;
+  const panel = popup.current;
+  if (!anchor || !panel) return;
+
+  const popupStops = tabbableElements(panel);
+  const boundary = event.shiftKey ? popupStops[0] : popupStops[popupStops.length - 1];
+  if (document.activeElement !== boundary) return;
+
+  const documentStops = tabbableElements(document.body).filter((element) => !panel.contains(element));
+  const anchorIndex = documentStops.indexOf(anchor);
+  const destination = documentStops[anchorIndex + (event.shiftKey ? -1 : 1)];
+  if (!destination) return;
+
+  event.preventDefault();
+  destination.focus({ preventScroll: true });
+}
+
 type PopoverPosition = { top: number; left: number; width: number; maxHeight: number };
+
+function isFullyClippedByOverflowAncestor(element: HTMLElement, rect: DOMRect) {
+  for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const { overflowX, overflowY } = window.getComputedStyle(ancestor);
+    if (overflowX === "visible" && overflowY === "visible") continue;
+
+    const bounds = ancestor.getBoundingClientRect();
+    const scaleX = ancestor.offsetWidth ? bounds.width / ancestor.offsetWidth : 1;
+    const scaleY = ancestor.offsetHeight ? bounds.height / ancestor.offsetHeight : 1;
+    const left = bounds.left + ancestor.clientLeft * scaleX;
+    const top = bounds.top + ancestor.clientTop * scaleY;
+    if (overflowX !== "visible" && (rect.right <= left || rect.left >= left + ancestor.clientWidth * scaleX)) return true;
+    if (overflowY !== "visible" && (rect.bottom <= top || rect.top >= top + ancestor.clientHeight * scaleY)) return true;
+  }
+  return false;
+}
 
 function usePopoverPosition(
   open: boolean,
@@ -29,12 +74,14 @@ function usePopoverPosition(
   useEffect(() => {
     if (!open || !present) return;
     const place = () => {
-      const anchor = trigger.current?.getBoundingClientRect();
+      const anchorElement = trigger.current;
+      const anchor = anchorElement?.getBoundingClientRect();
       const popover = panel.current;
-      if (!anchor || !popover) return;
+      if (!anchorElement || !anchor || !popover) return;
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
-      if (anchor.bottom < 0 || anchor.top > viewportHeight) {
+      if (anchor.bottom < 0 || anchor.top > viewportHeight || isFullyClippedByOverflowAncestor(anchorElement, anchor)) {
+        trigger.current?.focus({ preventScroll: true });
         onOpenChange(false);
         return;
       }
@@ -46,7 +93,7 @@ function usePopoverPosition(
       const desiredHeight = Math.min(popover.scrollHeight, maxHeight, viewportHeight - margin * 2);
       const openAbove = below < desiredHeight && above > below;
       const actualMaxHeight = Math.min(maxHeight, viewportHeight - margin * 2, openAbove ? above : below);
-      const height = Math.min(popover.scrollHeight, actualMaxHeight);
+      const height = Math.min(popover.offsetHeight, actualMaxHeight);
       const preferredLeft = alignEnd ? anchor.right - width : anchor.left;
       const left = Math.max(margin, Math.min(preferredLeft, viewportWidth - width - margin));
       const top = openAbove ? anchor.top - gap - height : Math.min(viewportHeight - margin - height, anchor.bottom + gap);
@@ -55,9 +102,12 @@ function usePopoverPosition(
         : { top, left, width, maxHeight: actualMaxHeight });
     };
     place();
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    if (resizeObserver && panel.current) resizeObserver.observe(panel.current);
     window.addEventListener("resize", place);
     document.addEventListener("scroll", place, true);
     return () => {
+      resizeObserver?.disconnect();
       window.removeEventListener("resize", place);
       document.removeEventListener("scroll", place, true);
     };
@@ -137,7 +187,7 @@ export function AssistantSelect({ label, value, options, disabled, busy, open, a
   }
 
   function choose(option: AssistantSelectOption) {
-    onChange(option.value);
+    if (option.value !== value) onChange(option.value);
     close(true);
   }
 
@@ -204,6 +254,7 @@ export function AssistantSelect({ label, value, options, disabled, busy, open, a
       inert={!open}
       data-open={open && Boolean(position)}
       style={popupStyle}
+      onKeyDown={(event) => moveFocusAtPopoverBoundary(event, trigger, popup)}
     >{options.map((option, index) => <div
       key={option.value}
       ref={(element) => { optionRefs.current[index] = element; }}
@@ -343,7 +394,7 @@ export function AssistantDatePicker({ value, disabled, busy, open, onOpenChange,
   }
 
   function selectDate(date: string) {
-    onChange(date);
+    if (date !== value) onChange(date);
     close(true);
   }
 
@@ -428,6 +479,7 @@ export function AssistantDatePicker({ value, disabled, busy, open, onOpenChange,
       inert={!open}
       data-open={open && Boolean(position)}
       style={popupStyle}
+      onKeyDown={(event) => moveFocusAtPopoverBoundary(event, trigger, popup)}
     >
       <div className="chat-calendar-heading">
         <h3 id={`${id}-month`} aria-live="polite" aria-atomic="true">{monthLabel(month)}</h3>

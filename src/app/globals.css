@@ -42,7 +42,7 @@
 .assistant-widget-disabled p{margin:0}
 .assistant-widget-disabled strong{color:#34443a;font-size:12px}
 .assistant-widget-disabled .button{justify-self:start;margin-top:3px}
-.assistant-widget :focus-visible{outline:2px solid #75ad8d;outline-offset:2px}
+.assistant-widget :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .assistant-widget-composer textarea:focus-visible{outline:0}
 @keyframes assistant-pill-in{from{opacity:.78;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
 @keyframes assistant-input-in{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:translateX(0)}}
@@ -56,7 +56,7 @@
 .chat-transaction-control{position:relative;display:flex;align-items:center;min-width:0;height:34px;border:1px solid var(--line);border-radius:999px;background:var(--surface-soft);color:#45564a;transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease}
 .chat-transaction-control:focus-within{border-color:#75ad8d;box-shadow:0 0 0 2px rgba(74,148,104,.12)}
 .chat-transaction-trigger{width:100%;height:100%;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:0 7px 0 9px;border:0;border-radius:inherit;background:transparent;color:inherit;font-size:10px;text-align:left;cursor:pointer}
-.chat-transaction-trigger:focus-visible{outline:0;box-shadow:none}
+.chat-transaction-trigger:focus-visible{outline:2px solid var(--accent);outline-offset:2px;box-shadow:none}
 .chat-transaction-trigger[aria-disabled=true]{cursor:wait;opacity:.62}
 .chat-transaction-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chat-transaction-chevron,.chat-transaction-calendar-icon{flex:0 0 auto;color:#84958a;transition:transform .16s ease}
@@ -252,6 +252,7 @@ button:not(:disabled):not([aria-disabled=true]),a.button{transition:transform .1
 .archived-disclosure>.panel-heading>.archived-chevron{flex:0 0 auto;color:var(--accent);transition:transform .16s}
 .archived-disclosure[open]>.panel-heading>.archived-chevron{transform:rotate(180deg)}
 button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:2px solid #75ad8d;outline-offset:2px}
+.chat-transaction-menu :focus-visible,.chat-calendar-popover :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .chat-transaction-menu,.chat-calendar-popover{position:fixed;z-index:1000;opacity:1;transform:translateY(0) scale(1);transition:opacity .15s ease,transform .15s cubic-bezier(.2,.8,.2,1)}
 .chat-transaction-menu[data-open=false],.chat-calendar-popover[data-open=false]{opacity:0;transform:translateY(-5px) scale(.985);pointer-events:none}
 .chat-transaction-menu{width:218px;max-height:210px;display:grid;gap:2px;padding:5px;overflow-y:auto;overscroll-behavior:contain;scroll-behavior:smooth;scrollbar-width:thin;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 30px rgba(30,54,43,.14)}
