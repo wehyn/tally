@@ -112,7 +112,7 @@ describe("owner-scoped ledger", () => {
     const dashboard = store.getDashboard(user.id, "2026-10-01", "2026-10-09");
 
     expect(dashboard.spendingMinor).toBe(25000);
-    expect(dashboard.categorySpending).toEqual([{ id: food.id, name: "Food", amountMinor: 25000 }]);
+    expect(dashboard).not.toHaveProperty("categorySpending");
     expect(dashboard.transactions.map((transaction) => transaction.description)).toEqual([
       "Current lunch", "February lunch", "November lunch",
     ]);

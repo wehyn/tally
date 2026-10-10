@@ -6,5 +6,5 @@ export const dynamic = "force-dynamic";
 export default async function DashboardPage() {
   const user = await currentUser(); if (!user) return null;
   const range = monthToDateRange(); const store = getStore();
-  return <DashboardView initial={store.getDashboard(user.id, range.start, range.end)} categories={store.listCategories(user.id)}/>;
+  return <DashboardView initial={store.getDashboard(user.id, range.start, range.end)}/>;
 }

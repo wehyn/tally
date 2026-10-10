@@ -24,9 +24,9 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 - An **expense** subtracts from one financial account and counts as spending.
 - A **transfer** moves money between two financial accounts owned by the same user. It updates both balances together, appears in account history, and is excluded from income and spending totals.
 - Income and expense records belong to one user and include an amount, date, financial account, category, and optional description. Transfers have a source account, destination account, amount, date, and optional description. The selected category determines whether a record is income or expense; transfers are managed from Accounts.
-- New users receive these starter categories: income **Salary**, **Other income**; expenses **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, **Other**. Users may add or rename categories for their own ledger.
+- New users receive these starter categories: income **Salary**, **Other income**; expenses **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, **Other**. Users may add or rename categories and choose their icons in **Transactions → Manage categories**.
 - Users may edit or permanently delete their own transactions at any time. Assistant Undo is a separate ten-second action; after it expires, deleting a transaction has no recovery path in the app.
-- Dashboard and assistant totals describe recorded actuals for a clear date range. The dashboard starts with month-to-date. Recommendations are deferred until enough history exists to support them; the threshold is not yet defined.
+- Dashboard period totals describe recorded actuals for a clear date range and start with month-to-date; the dashboard also shows total account balance and positive assets. Recommendations are deferred until enough history exists to support them; the threshold is not yet defined.
 
 ## Debt register
 
