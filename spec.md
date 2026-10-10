@@ -51,7 +51,7 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 - Income adds money to one owned account. Expenses subtract money from one owned account. Both appear in account history and relevant analytics.
 - Transfers move money between two accounts owned by the same user. Update both account balances as one operation. Show the transfer in account history, but exclude it from income and spending totals.
 - Users can manually create, view, edit, and delete their own income, expense, and transfer records. Income and expense records have an amount, date, account, category, and optional description. The selected category determines whether a record is income or expense. Transfers identify source and destination accounts and are managed from Accounts.
-- Seed every user with income categories **Salary** and **Other income**, and expense categories **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, and **Other**. Users can add and rename categories for their own ledger.
+- Seed every user with income categories **Salary** and **Other income**, and expense categories **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, and **Other**. Users can add, rename, and choose icons for categories in **Transactions → Manage categories**.
 - A user can privately track current debts in two directions: **owed to you** and **you owe**. Each record has a counterparty, positive PHP amount, optional due date and note, and open or settled status. Users can create, edit, settle, reopen, and delete only their own records.
 - Debt amounts are maintained manually as current outstanding amounts; v1 has no repayment schedule or debt payment history. A real receipt or repayment must be recorded separately in Transactions, and the debt amount/status updated by the user.
 - Debt records do not create or change financial accounts, transactions, balances, income, spending, or dashboard analytics. They remain a private register separate from the personal ledger.
@@ -61,11 +61,11 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 
 The dashboard is the signed-in user's overview and shows:
 
-- Current balances for the user's financial accounts.
-- Income and spending for the selected analytics period, with month-to-date as the default.
-- Spending by category and activity trends.
-- Recent transactions and active shared goals.
+- Four summary cards: total balance across all accounts, plus income, spending, and net activity for the selected period.
+- An Assets section with the positive-balance total and each account's current balance and proportional weight. Zero and negative balances remain visible but are excluded from the asset total and weights.
+- Recent transactions with category icons and active shared goals.
 - The date range represented by period-based figures.
+- Category management is in **Transactions → Manage categories**; the dashboard has no spending-by-category panel or separate quick-entry form.
 
 Use Asia/Manila for relative dates, the current day, and month boundaries. Opening balances affect current balances but are not income. Transfers affect account balances but are not income or spending. All dashboard figures must use only the signed-in user's personal records, except that shared-goal progress is visible to that goal's members.
 
@@ -81,7 +81,7 @@ Use Asia/Manila for relative dates, the current day, and month boundaries. Openi
 
 #### Transaction capture
 
-- Provide a quick-entry surface on the dashboard and an assistant chat UI.
+- Provide manual transaction entry in Transactions and an assistant chat UI; do not add a separate dashboard quick-entry form.
 - For a complete income or expense prompt, such as “Jollibee lunch 250,” save the transaction immediately without a separate confirmation step. A category determines whether the record is income or expense, and a description is optional.
 - Use the user's default account when none is named, and use a best-guess category when none is named. The user can edit the category on the result card or later.
 - Respect an explicitly named account and date. Interpret relative dates in Asia/Manila; when no date is specified, use today in that timezone.
@@ -138,7 +138,7 @@ V1 is acceptable when the following outcomes work for multiple independent users
 1. **Account bootstrap:** A reachable person can register and sign in. Concurrent first registrations produce exactly one admin; subsequent users are regular users. The admin can manage access and issue a one-time reset without seeing a user's private data or new password.
 2. **Ledger isolation:** Each user can create private accounts, categories, and records. A user or admin cannot read or change another user's personal finance records through the app.
 3. **Accounting behavior:** Opening balances affect balances without appearing as transactions or income. Income and expenses change balances and analytics correctly. Transfers update two owned accounts together and never inflate income or spending totals.
-4. **Dashboard:** The user sees their current balances, month-to-date income and spending, category spending, trends, recent transactions, and active goals. Period totals state their Asia/Manila date range.
+4. **Dashboard:** The user sees total balance across all accounts; income, spending, and net activity for the selected period; positive-balance Assets with each account's balance and weight; recent transactions with category icons; and active goals. Category management is in Transactions. The dashboard has no spending-by-category panel or separate quick-entry form. Period totals state their Asia/Manila date range.
 5. **Assistant capture:** A user who opts in can save a complete natural-language income or expense using the default account and a best-guess category, with the category determining the transaction type and no required description. They can see the saved fields, undo the entry promptly, and later edit or delete it. An incomplete entry is not saved until required information is supplied. Users who do not opt in can maintain their ledger manually.
 6. **Assistant privacy and answers:** Hosted processing happens only after opt-in, with the configured provider path disclosed. Questions use only the signed-in user's records, provide a date range, and do not invent totals. Conversation deletion leaves finance records intact.
 7. **Shared goals:** A user can create a goal, invite another registered user, and require acceptance. Members can see goal progress and contributions, add their own contribution, and edit or delete only their own entries. Contributions do not alter personal balances.
