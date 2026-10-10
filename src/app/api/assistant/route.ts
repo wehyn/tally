@@ -149,6 +149,24 @@ function directCategoryCapture(prompt: string, categories: AssistantCategory[]):
   if (!category) return null;
   return { name: "log_transaction", args: { kind: category.type, category: category.name, amount: match[2], description: label } };
 }
+function directDebtCapture(prompt: string): { name: string; args: Record<string, unknown> } | null {
+  const text = prompt.trim().replace(/[.!]+$/, "");
+  if (text.includes("?")) return null;
+  const amount = "((?:₱\\s*)?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d{1,2})?)";
+  const patterns: { pattern: RegExp; direction: "owed_to_you" | "you_owe" }[] = [
+    { pattern: new RegExp(`^(.+?)\\s+ow(?:e|es|ed)\\s+me\\s+${amount}$`, "i"), direction: "owed_to_you" },
+    { pattern: new RegExp(`^(?:i|we)\\s+ow(?:e|es|ed)\\s+(.+?)\\s+${amount}$`, "i"), direction: "you_owe" },
+  ];
+  for (const { pattern, direction } of patterns) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    const rawCounterparty = match[1].replace(/^my\s+/i, "").replace(/[,:;.!]+$/, "").trim();
+    if (!rawCounterparty) return null;
+    const counterparty = rawCounterparty.replace(/^\p{L}/u, (letter) => letter.toUpperCase());
+    return { name: "log_debt", args: { direction, counterparty, amount: match[2] } };
+  }
+  return null;
+}
 
 export async function POST(request: Request) {
   try {
@@ -170,9 +188,8 @@ export async function POST(request: Request) {
     ];
     const userMessageText = userMessages.map((message) => message.content);
     store.addMessage(user.id, conversationId, "user", input.prompt);
-    const directCapture = history.length ? null : directCategoryCapture(input.prompt, categories);
-    const providerCall = await askProvider({ prompt: input.prompt, history, categories });
-    const call = directCapture ?? providerCall;
+    const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
+    const call = directCapture ?? await askProvider({ prompt: input.prompt, history, categories });
     if (!call) throw new Error("Assistant provider returned no action.");
 
     let answer: string; let transaction: Transaction | null = null; let undoUntil: string | null = null; let needsFollowup = false;
@@ -186,6 +203,24 @@ export async function POST(request: Request) {
         const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
         const facts = store.getFinanceFacts(user.id, start, end, category);
         answer = answerForFacts(facts);
+      }
+    } else if (call.name === "log_debt") {
+      const direction = call.args.direction === "owed_to_you" || call.args.direction === "you_owe" ? call.args.direction : null;
+      const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
+      const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
+      const dueDate = typeof call.args.dueDate === "string" ? call.args.dueDate.trim() || null : null;
+      const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
+      if (!counterparty) { answer = "Who is this debt with?"; needsFollowup = true; }
+      else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; needsFollowup = true; }
+      else if (!direction) { answer = "Is this money owed to you, or do you owe the other person?"; needsFollowup = true; }
+      else if (!amount) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
+      else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; needsFollowup = true; }
+      else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; needsFollowup = true; }
+      else {
+        const debt = store.createDebt(user.id, { direction, counterparty, amountMinor: parsePHPToMinor(amount), dueDate, note });
+        answer = direction === "owed_to_you"
+          ? `${formatPHP(debt.amountMinor)} is owed to you by ${debt.counterparty}. Added it to Debts.`
+          : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts.`;
       }
     } else if (call.name === "log_transaction") {
       const kindHint = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;

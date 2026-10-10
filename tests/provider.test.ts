@@ -167,6 +167,7 @@ describe("assistant data minimization", () => {
     ]);
     expect(requestBody?.tools.map(({ type, function: fn }) => ({ type, name: fn.name }))).toEqual([
       { type: "function", name: "log_transaction" },
+      { type: "function", name: "log_debt" },
       { type: "function", name: "finance_question" },
       { type: "function", name: "ask_clarification" },
     ]);
