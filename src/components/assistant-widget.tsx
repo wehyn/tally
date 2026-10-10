@@ -6,7 +6,8 @@ import Link from "next/link";
 import { Bot, ChevronDown, Send, Sparkles, Undo2, X } from "lucide-react";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { isUndoAvailable, todayInManila } from "@/lib/dates";
-import { ASSISTANT_SETTINGS_UPDATED_EVENT, LEDGER_UPDATED_EVENT } from "@/lib/client-events";
+import type { Debt } from "@/lib/store";
+import { ASSISTANT_SETTINGS_UPDATED_EVENT, DEBTS_UPDATED_EVENT, LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 
 type AssistantTransaction = {
   id: string;
@@ -37,6 +38,7 @@ type AssistantResponse = {
   answer?: string;
   transaction?: AssistantTransaction | null;
   undoUntil?: string | null;
+  debt?: Debt | null;
 };
 
 let messageSequence = 0;
@@ -166,6 +168,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
         transaction: result.transaction ? { ...result.transaction, undoUntil: result.undoUntil ?? result.transaction.undoUntil } : null,
       }]);
       if (result.transaction) window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
+      if (result.debt) window.dispatchEvent(new CustomEvent<Debt>(DEBTS_UPDATED_EVENT, { detail: result.debt }));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Tally could not answer that.");
     } finally {
@@ -274,7 +277,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
             </div>
             {savingTransactionId === message.transaction.id && <span className="chat-transaction-saving" role="status">Updating…</span>}
             {message.transaction.undoUntil && isUndoAvailable(message.transaction.undoUntil, now) && <button type="button" className="undo-link" disabled={savingTransactionId === message.transaction.id} onClick={() => void undo(message.transaction!.id)}><Undo2 size={12} style={{ verticalAlign: "-2px" }}/> Undo · {Math.max(1, Math.ceil((Date.parse(message.transaction.undoUntil) - now) / 1000))}s</button>}
-          </article> : <div className={`chat-bubble ${message.role}`} key={message.id}>{message.content}</div>) : <div className="assistant-widget-empty"><span className="assistant-widget-mark"><Bot size={19}/></span><strong>What would you like to do?</strong><p>Ask about your recorded spending or describe a transaction.</p></div>}
+          </article> : <div className={`chat-bubble ${message.role}`} key={message.id}>{message.content}</div>) : <div className="assistant-widget-empty"><span className="assistant-widget-mark"><Bot size={19}/></span><strong>What would you like to do?</strong><p>Ask about your money, describe a transaction, or record a debt.</p></div>}
           {busy && <div className="chat-bubble assistant">Checking your request…</div>}
           {notice && <p className="assistant-widget-notice" role="status">{notice}</p>}
         </div>

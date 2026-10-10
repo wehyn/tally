@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ArrowDownLeft, ArrowUpRight, Check, HandCoins, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import type { Debt, DebtDirection, DebtStatus } from "@/lib/store";
 import { formatPHP, formatPHPFromMinorString, minorToInput } from "@/lib/money";
+import { DEBTS_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 
 type DebtDraft = { direction: DebtDirection; counterparty: string; amount: string; dueDate: string; note: string };
@@ -34,6 +35,15 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
   const [busy, setBusy] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
+
+  useEffect(() => {
+    const addAssistantDebt = (event: Event) => {
+      const debt = (event as CustomEvent<Debt>).detail;
+      setDebts((current) => [debt, ...current.filter((item) => item.id !== debt.id)]);
+    };
+    window.addEventListener(DEBTS_UPDATED_EVENT, addAssistantDebt);
+    return () => window.removeEventListener(DEBTS_UPDATED_EVENT, addAssistantDebt);
+  }, []);
 
   function create(direction: DebtDirection = "owed_to_you") {
     setEditing(null);

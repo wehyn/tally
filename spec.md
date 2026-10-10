@@ -89,6 +89,11 @@ Use Asia/Manila for relative dates, the current day, and month boundaries. Openi
 - After saving, show a transaction card with amount, category, account, and date, plus a description when provided. Provide an approximately 10-second Undo action for that entry.
 - Users can edit their own saved records after the Undo period. Deletion after the approximately 10-second assistant Undo window is permanent in the app. Manual entry remains available to users who do not opt in to AI.
 
+#### Debt capture
+
+- For a clear debt statement, such as “Mom owes me 3486” or “I owe Mom 3486,” create an open debt in the correct direction in the private debt register. Ask only when the counterparty, direction, or amount is unclear.
+- Debt capture never creates a transaction or changes account balances or analytics. Respect an explicitly stated due date or note when provided.
+
 #### Factual questions and conversation history
 
 - Answer finance questions from the signed-in user's actual records. The application calculates totals and supplies the applicable date range; the assistant must not invent totals or present unsupported recommendations.
@@ -139,7 +144,7 @@ V1 is acceptable when the following outcomes work for multiple independent users
 2. **Ledger isolation:** Each user can create private accounts, categories, and records. A user or admin cannot read or change another user's personal finance records through the app.
 3. **Accounting behavior:** Opening balances affect balances without appearing as transactions or income. Income and expenses change balances and analytics correctly. Transfers update two owned accounts together and never inflate income or spending totals.
 4. **Dashboard:** The user sees total balance across all accounts; income, spending, and net activity for the selected period; positive-balance Assets with each account's balance and weight; recent transactions with category icons; and active goals. Category management is in Transactions. The dashboard has no spending-by-category panel or separate quick-entry form. Period totals state their Asia/Manila date range.
-5. **Assistant capture:** A user who opts in can save a complete natural-language income or expense using the default account and a best-guess category, with the category determining the transaction type and no required description. They can see the saved fields, undo the entry promptly, and later edit or delete it. An incomplete entry is not saved until required information is supplied. Users who do not opt in can maintain their ledger manually.
+5. **Assistant capture:** A user who opts in can save a complete natural-language income or expense using the default account and a best-guess category, with the category determining the transaction type and no required description. They can see the saved fields, undo the entry promptly, and later edit or delete it. Clear debt statements create an open record in the correct debt direction and never create a transaction or change ledger figures. An incomplete entry is not saved until required information is supplied. Users who do not opt in can maintain their ledger manually.
 6. **Assistant privacy and answers:** Hosted processing happens only after opt-in, with the configured provider path disclosed. Questions use only the signed-in user's records, provide a date range, and do not invent totals. Conversation deletion leaves finance records intact.
 7. **Shared goals:** A user can create a goal, invite another registered user, and require acceptance. Members can see goal progress and contributions, add their own contribution, and edit or delete only their own entries. Contributions do not alter personal balances.
 8. **Deletion:** Account deletion removes private finance and chat data while preserving goal contributions under “Former member” and preserving group progress. Goal management passes to the next invited user when its manager deletes their account.
