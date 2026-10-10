@@ -5,6 +5,7 @@ import type { Account, Transaction } from "@/lib/store";
 import { todayInManila, timeInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
+import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 
 type AccountDraft = { name: string; type: "cash" | "bank"; openingBalance: string };
 type TransferDraft = { amount: string; description: string; accountId: string; destinationAccountId: string; date: string; time: string };
@@ -32,6 +33,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
   const [transferDraft, setTransferDraft] = useState<TransferDraft>(blankTransfer(initial));
   const [transferError, setTransferError] = useState("");
   const [transferBusy, setTransferBusy] = useState(false);
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
 
   const refresh = useCallback(async () => {
     const [accountResult, transactionResult] = await Promise.all([
@@ -92,11 +94,21 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
   }
 
   async function remove(account: Account) {
-    if (!window.confirm(`Delete ${account.name}? Accounts with transaction history cannot be deleted.`)) return;
     const response = await fetch(`/api/accounts/${account.id}`, { method: "DELETE" });
     const result = await response.json();
-    if (!response.ok) { setError(result.error); return; }
+    if (!response.ok) throw new Error(result.error ?? "Could not delete account.");
     await refresh();
+  }
+
+  function requestRemoveAccount(account: Account) {
+    setConfirmation({
+      intent: "delete",
+      title: `Delete ${account.name}?`,
+      description: "Accounts with transaction history cannot be deleted.",
+      confirmLabel: "Delete account",
+      busyLabel: "Deleting…",
+      onConfirm: () => remove(account),
+    });
   }
 
   function createTransfer() {
@@ -142,11 +154,21 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
   }
 
   async function removeTransfer(transfer: Transaction) {
-    if (!window.confirm(`Permanently delete this ${formatPHP(transfer.amountMinor)} transfer?`)) return;
     const response = await fetch(`/api/transactions/${transfer.id}`, { method: "DELETE" });
     const result = await response.json();
-    if (!response.ok) { setTransferError(result.error ?? "Could not delete transfer."); return; }
+    if (!response.ok) throw new Error(result.error ?? "Could not delete transfer.");
     await refresh();
+  }
+
+  function requestRemoveTransfer(transfer: Transaction) {
+    setConfirmation({
+      intent: "delete",
+      title: "Delete this transfer?",
+      description: `Permanently delete the ${formatPHP(transfer.amountMinor)} transfer? This cannot be undone in Tally.`,
+      confirmLabel: "Delete transfer",
+      busyLabel: "Deleting…",
+      onConfirm: () => removeTransfer(transfer),
+    });
   }
 
   async function loadMoreTransfers() {
@@ -180,7 +202,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
     {accounts.length ? <section className="account-grid">{accounts.map((account) => <article className="account-card" key={account.id}>
       <div className="account-card-top"><div><div className="account-type">{account.type === "cash" ? <Wallet size={14} style={{ display: "inline", marginRight: 5 }}/> : <Landmark size={14} style={{ display: "inline", marginRight: 5 }}/>}{account.type} account</div><h2 className="account-name">{account.name}</h2></div>{account.isDefault && <span className="badge badge-green">Default</span>}</div>
       <div className="account-balance">{formatPHP(account.balanceMinor)}</div><div className="account-opening">Opening balance {formatPHP(account.openingMinor)}</div>
-      <div className="account-actions">{!account.isDefault && <button className="button button-small button-secondary" onClick={() => setDefault(account)}><Star size={13}/> Make default</button>}<button className="icon-button" aria-label={`Edit ${account.name}`} onClick={() => edit(account)}><Pencil size={15}/></button><button className="icon-button" aria-label={`Delete ${account.name}`} onClick={() => remove(account)}><Trash2 size={15}/></button></div>
+      <div className="account-actions">{!account.isDefault && <button className="button button-small button-secondary" onClick={() => setDefault(account)}><Star size={13}/> Make default</button>}<button className="icon-button" aria-label={`Edit ${account.name}`} onClick={() => edit(account)}><Pencil size={15}/></button><button className="icon-button" aria-label={`Delete ${account.name}`} onClick={() => requestRemoveAccount(account)}><Trash2 size={15}/></button></div>
     </article>)}</section> : <article className="panel-empty"><div style={{ display: "grid", justifyItems: "center", gap: 8 }}><Wallet size={24}/><strong>Create your first financial account</strong><span>Start with cash or a bank account; its opening balance can be zero.</span><button className="button button-primary" onClick={create}><Plus size={15}/> Add account</button></div></article>}
 
     <article className="panel"><div className="panel-heading"><div><h2>Transfers between accounts</h2><p>Move money without changing income or spending totals.</p></div>{accounts.length >= 2 && <button className="button button-small" onClick={createTransfer}><ArrowLeftRight size={14}/> New transfer</button>}</div>
@@ -189,7 +211,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
         <div className="activity-copy"><strong>{transfer.accountName} → {transfer.destinationAccountName}</strong><span>{transfer.description || "Transfer"} · {transfer.date}{transfer.time ? ` · ${transfer.time}` : ""}</span></div>
         <strong>{formatPHP(transfer.amountMinor)}</strong>
         <button className="icon-button" aria-label="Edit transfer" onClick={() => editTransfer(transfer)}><Pencil size={15}/></button>
-        <button className="icon-button" aria-label="Delete transfer" onClick={() => removeTransfer(transfer)}><Trash2 size={15}/></button>
+        <button className="icon-button" aria-label="Delete transfer" onClick={() => requestRemoveTransfer(transfer)}><Trash2 size={15}/></button>
       </div>)}{!transfers.length && <div className="panel-empty">No transfers yet. Use Transfer to move money between your accounts.</div>}</div>
       {hasMoreTransfers && <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}><button className="button button-small" onClick={loadMoreTransfers} disabled={loadingMoreTransfers}>{loadingMoreTransfers ? "Loading…" : "Load more transfers"}</button></div>}
     </article>
@@ -217,5 +239,6 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
         <label className="field-label span-2">Description (optional)<input maxLength={180} value={transferDraft.description} onChange={(e) => setTransferDraft({ ...transferDraft, description: e.target.value })} placeholder="Add a note"/></label>
       </div>{transferError && <p className="error-text" role="alert" style={{ marginTop: 12 }}>{transferError}</p>}<div className="modal-footer"><button type="button" className="button" onClick={() => setTransferOpen(false)}>Cancel</button><button disabled={transferBusy} className="button button-primary">{transferBusy ? "Saving…" : editingTransfer ? "Save changes" : "Transfer"}</button></div></form>
     </section></div>}
+    {confirmation && <ConfirmDialog request={confirmation} onClose={() => setConfirmation(null)}/>}
   </div>;
 }
