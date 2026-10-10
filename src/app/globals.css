@@ -66,3 +66,4 @@
 .chat-transaction-saving{color:var(--muted);font-size:10px}
 .chat-transaction-card .undo-link{justify-self:start;padding-top:3px}
 .chat-transaction-card .undo-link:disabled{opacity:.5;cursor:wait}
+@media(max-width:620px){.list-table{min-width:560px}}
