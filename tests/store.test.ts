@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createStore } from "../src/lib/store";
+import { todayInManila } from "../src/lib/dates";
 
 let database: Database.Database;
 let store: ReturnType<typeof createStore>;
@@ -174,5 +175,166 @@ describe("owner-scoped ledger", () => {
     expect(database.prepare("SELECT status,manager_id FROM goals WHERE id=?").get(goalId)).toEqual({ status: "archived", manager_id: null });
     expect(database.prepare("SELECT user_id,member_name,amount_minor FROM goal_contributions WHERE goal_id=?").get(goalId)).toEqual({ user_id: null, member_name: "Former member", amount_minor: 7500 });
     expect(store.getUserById(bob.id)?.role).toBe("admin");
+  });
+});
+
+describe("recurring bills", () => {
+  it("persists a selected icon and defaults omitted icons to Calendar", () => {
+    const user = store.registerUser("bill_icons", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const input = { name: "Internet", amountMinor: 1500, frequency: "monthly" as const, nextDueDate: "2099-01-01", accountId: account.id, categoryId: category.id };
+    const selected = store.createBill(user.id, { ...input, icon: "wifi" });
+    const defaulted = store.createBill(user.id, { ...input, name: "Calendar bill" });
+
+    expect(selected.icon).toBe("wifi");
+    expect(store.updateBill(user.id, selected.id, { icon: "music" }, selected.nextDueDate).icon).toBe("music");
+    expect(defaulted.icon).toBe("calendar");
+    expect(() => store.updateBill(user.id, selected.id, { icon: "custom" as never }, selected.nextDueDate)).toThrow(/icon/i);
+  });
+
+  it("adds Calendar icons to existing bills when migrating", () => {
+    const user = store.registerUser("bill_icon_migration", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 1500, frequency: "monthly", nextDueDate: "2099-01-01", accountId: account.id, categoryId: category.id });
+    const columns = database.pragma("table_info(bills)") as { name: string }[];
+    if (columns.some((column) => column.name === "icon")) {
+      database.prepare("UPDATE bills SET icon='wifi' WHERE id=?").run(bill.id);
+      database.exec("ALTER TABLE bills DROP COLUMN icon");
+    }
+
+    store.migrate();
+
+    expect((database.pragma("table_info(bills)") as { name: string }[]).some((column) => column.name === "icon")).toBe(true);
+    expect(store.listBills(user.id).find((item) => item.id === bill.id)?.icon).toBe("calendar");
+  });
+
+  it("keeps bill listing and updates owner-scoped", () => {
+    const alice = store.registerUser("bill_alice", "hash");
+    const bob = store.registerUser("bill_bob", "hash");
+    const account = store.createAccount(alice.id, { name: "Wallet", type: "cash", openingMinor: 10000 });
+    const food = store.listCategories(alice.id).find((category) => category.name === "Food")!;
+    const bill = store.createBill(alice.id, {
+      name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2099-01-31", accountId: account.id, categoryId: food.id,
+    });
+    expect(store.listBills(bob.id)).toEqual([]);
+    expect(() => store.updateBill(bob.id, bill.id, { name: "Changed" }, bill.nextDueDate)).toThrow(/not found/i);
+    database.prepare("UPDATE bills SET next_due_date='2000-01-01' WHERE id=?").run(bill.id);
+    expect(store.updateBill(alice.id, bill.id, { name: "Internet service" }, "2000-01-01")).toMatchObject({ nextDueDate: "2000-01-01", name: "Internet service" });
+    expect(() => store.updateBill(alice.id, bill.id, { nextDueDate: "1999-01-01" }, "2000-01-01")).toThrow(/today or later/i);
+  });
+
+  it("posts missed occurrences on their scheduled dates and does not repost on retry", () => {
+    const user = store.registerUser("bill_catchup", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 10000 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2099-01-31", accountId: account.id, categoryId: food.id });
+    expect(store.processDueBills("2099-03-31").processed).toBe(3);
+    expect(store.processDueBills("2099-03-31").processed).toBe(0);
+    expect(store.listTransactions(user.id, { start: "2099-01-31", end: "2099-03-31" }, 10, { kind: "expense" }).map(({ description, amountMinor, date, accountId, categoryId }) => ({ description, amountMinor, date, accountId, categoryId })))
+      .toEqual([{ description: "Internet", amountMinor: 2500, date: "2099-03-31", accountId: account.id, categoryId: food.id }, { description: "Internet", amountMinor: 2500, date: "2099-02-28", accountId: account.id, categoryId: food.id }, { description: "Internet", amountMinor: 2500, date: "2099-01-31", accountId: account.id, categoryId: food.id }]);
+    expect(store.listBills(user.id).find((entry) => entry.id === bill.id)?.nextDueDate).toBe("2099-04-30");
+  });
+
+  it("keeps archived bills browsable and excludes them from posting", () => {
+    const user = store.registerUser("bill_archived", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const bill = store.createBill(user.id, { name: "Music", amountMinor: 500, frequency: "weekly", nextDueDate: "2099-01-01", accountId: account.id, categoryId: food.id });
+    store.archiveBill(user.id, bill.id);
+    expect(store.listBills(user.id).find((entry) => entry.id === bill.id)?.archivedAt).toBeTruthy();
+    expect(store.processDueBills("2099-12-31").processed).toBe(0);
+    expect(store.listTransactions(user.id, undefined, 10, { kind: "expense" })).toEqual([]);
+  });
+
+  it("lets a generated transaction change without changing the bill defaults", () => {
+    const user = store.registerUser("bill_tx_edit", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 10000 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const bill = store.createBill(user.id, { name: "Music", amountMinor: 500, frequency: "weekly", nextDueDate: "2099-01-01", accountId: account.id, categoryId: food.id });
+    store.processDueBills("2099-01-01");
+    const transaction = store.listTransactions(user.id, { start: "2099-01-01", end: "2099-01-01" }, 1)[0];
+    store.updateTransaction(user.id, transaction.id, { ...transaction, amountMinor: 700, description: "Actual subscription" });
+    expect(store.listBills(user.id).find((entry) => entry.id === bill.id)).toMatchObject({ amountMinor: 500, name: "Music", nextDueDate: "2099-01-08" });
+  });
+
+  it("reanchors a bill when its cadence and due date change", () => {
+    const user = store.registerUser("bill_reanchor", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const bill = store.createBill(user.id, { name: "Rent", amountMinor: 1000, frequency: "weekly", nextDueDate: "2099-01-01", accountId: account.id, categoryId: food.id });
+    store.updateBill(user.id, bill.id, { frequency: "monthly", nextDueDate: "2099-01-31" }, bill.nextDueDate);
+    expect(store.processDueBills("2099-02-28").processed).toBe(2);
+    expect(store.listBills(user.id)[0]).toMatchObject({ nextDueDate: "2099-03-31", anchorDay: 31, anchorMonth: 1 });
+  });
+
+  it("rolls back posting and advancement when exact ledger totals overflow", () => {
+    const user = store.registerUser("bill_overflow", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const today = todayInManila();
+    store.createTransaction(user.id, { kind: "expense", amountMinor: Number.MAX_SAFE_INTEGER, accountId: account.id, categoryId: food.id, description: "Existing", date: today });
+    const bill = store.createBill(user.id, { name: "Small bill", amountMinor: 1, frequency: "weekly", nextDueDate: today, accountId: account.id, categoryId: food.id });
+    expect(store.processDueBills(today)).toMatchObject({ processed: 0, failures: [expect.objectContaining({ billId: bill.id, dueDate: today, message: expect.stringContaining("supported exact PHP minor-unit range") })] });
+    expect(store.listBills(user.id).find((entry) => entry.id === bill.id)?.nextDueDate).toBe(today);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM transactions WHERE user_id=?").get(user.id)).toEqual({ count: 1 });
+  });
+
+  it("records an occurrence failure and continues posting for the next owner", () => {
+    const blocked = store.registerUser("bill_blocked_owner", "hash");
+    const available = store.registerUser("bill_available_owner", "hash");
+    const blockedAccount = store.createAccount(blocked.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const availableAccount = store.createAccount(available.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const blockedFood = store.listCategories(blocked.id).find((category) => category.name === "Food")!;
+    const availableFood = store.listCategories(available.id).find((category) => category.name === "Food")!;
+    const today = todayInManila();
+    store.createTransaction(blocked.id, { kind: "expense", amountMinor: Number.MAX_SAFE_INTEGER, accountId: blockedAccount.id, categoryId: blockedFood.id, description: "At limit", date: today });
+    const blockedBill = store.createBill(blocked.id, { name: "Overflow", amountMinor: 1, frequency: "weekly", nextDueDate: today, accountId: blockedAccount.id, categoryId: blockedFood.id });
+    const availableBill = store.createBill(available.id, { name: "Can post", amountMinor: 100, frequency: "weekly", nextDueDate: today, accountId: availableAccount.id, categoryId: availableFood.id });
+    const earlierDate = new Date(Date.parse(`${today}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
+    database.prepare("UPDATE bills SET next_due_date=? WHERE id=?").run(earlierDate, blockedBill.id);
+
+    const result = store.processDueBills(today);
+
+    expect(result).toMatchObject({ processed: 1, failures: [expect.objectContaining({ billId: blockedBill.id, dueDate: earlierDate })] });
+    expect(store.listBills(blocked.id).find((bill) => bill.id === blockedBill.id)?.nextDueDate).toBe(earlierDate);
+    expect(store.listTransactions(available.id, { start: today, end: today }, 10, { kind: "expense" })).toMatchObject([{ description: "Can post", amountMinor: 100, date: today }]);
+    const expectedNextDate = new Date(Date.parse(`${today}T00:00:00.000Z`) + 7 * 86_400_000).toISOString().slice(0, 10);
+    expect(store.listBills(available.id).find((bill) => bill.id === availableBill.id)?.nextDueDate).toBe(expectedNextDate);
+  });
+
+  it("removes bills before deleting their owner", () => {
+    store.registerUser("bill_owner_admin", "hash");
+    const user = store.registerUser("bill_owner_delete", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    store.createBill(user.id, { name: "Rent", amountMinor: 100, frequency: "monthly", nextDueDate: todayInManila(), accountId: account.id, categoryId: food.id });
+    expect(() => store.deleteAccountOwner(user.id)).not.toThrow();
+    expect(database.prepare("SELECT COUNT(*) AS count FROM bills WHERE user_id=?").get(user.id)).toEqual({ count: 0 });
+  });
+
+  it("rejects invalid inputs and prevents account deletion while a bill refers to it", () => {
+    const user = store.registerUser("bill_validations", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    store.createAccount(user.id, { name: "Bank", type: "bank", openingMinor: 0 });
+    const categories = store.listCategories(user.id);
+    const food = categories.find((category) => category.name === "Food")!;
+    const salary = categories.find((category) => category.name === "Salary")!;
+    const today = todayInManila();
+    expect(() => store.createBill(user.id, { name: "Bad", amountMinor: 0, frequency: "weekly", nextDueDate: today, accountId: account.id, categoryId: food.id })).toThrow();
+    expect(() => store.createBill(user.id, { name: "Bad", amountMinor: 1, frequency: "monthly", nextDueDate: "2026-02-30", accountId: account.id, categoryId: food.id })).toThrow();
+    expect(() => store.createBill(user.id, { name: "Bad", amountMinor: 1, frequency: "weekly", nextDueDate: today, accountId: account.id, categoryId: salary.id })).toThrow(/expense/i);
+    const bill = store.createBill(user.id, { name: "Valid", amountMinor: 1, frequency: "weekly", nextDueDate: today, accountId: account.id, categoryId: food.id });
+    expect(() => store.deleteAccount(user.id, account.id)).toThrow(/bill/i);
+    expect(store.listBills(user.id)).toContainEqual(expect.objectContaining({ id: bill.id }));
+  });
+
+  it("rejects a bill category owned by another user", () => {
+    const alice = store.registerUser("bill_category_owner", "hash");
+    const bob = store.registerUser("bill_category_other", "hash");
+    const account = store.createAccount(alice.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const category = store.listCategories(bob.id).find((entry) => entry.type === "expense")!;
+    expect(() => store.createBill(alice.id, { name: "Bad", amountMinor: 1, frequency: "weekly", nextDueDate: todayInManila(), accountId: account.id, categoryId: category.id })).toThrow(/expense category/i);
   });
 });

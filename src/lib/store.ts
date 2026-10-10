@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { isDateOnly, isTime, timeInManila } from "./dates";
+import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
 
 export const STARTER_CATEGORIES = {
   income: ["Salary", "Other income"],
@@ -16,6 +16,12 @@ export type Category = { id: string; name: string; type: "income" | "expense" };
 export type TransactionKind = "income" | "expense" | "transfer";
 export type TransactionInput = { kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; description: string; date: string; time?: string | null; source?: "manual" | "assistant" };
 export type Transaction = Omit<TransactionInput, "time"> & { time: string | null; id: string; categoryName: string | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
+export const BILL_ICONS = ["calendar", "home", "wifi", "phone", "electricity", "water", "tv", "music", "card"] as const;
+export type BillIcon = typeof BILL_ICONS[number];
+export type BillInput = { name: string; amountMinor: number; frequency: BillFrequency; nextDueDate: string; accountId: string; categoryId: string; icon?: BillIcon };
+export type Bill = Omit<BillInput, "icon"> & { id: string; anchorDay: number; anchorMonth: number; accountName: string; categoryName: string; archivedAt: string | null; icon: BillIcon };
+export type BillPostingFailure = { billId: string; dueDate: string; message: string };
+export type BillPostingResult = { processed: number; failures: BillPostingFailure[] };
 
 const stamp = () => new Date().toISOString();
 const publicUser = (row: Record<string, unknown>): PublicUser => ({
@@ -66,6 +72,17 @@ export function createStore(db: Database.Database) {
         CHECK(destination_account_id IS NULL OR destination_account_id != account_id)
       );
       CREATE INDEX IF NOT EXISTS transactions_owner_date ON transactions(user_id, date DESC);
+      CREATE TABLE IF NOT EXISTS bills (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+        frequency TEXT NOT NULL CHECK(frequency IN ('weekly','monthly','yearly')), next_due_date TEXT NOT NULL,
+        icon TEXT NOT NULL DEFAULT 'calendar',
+        anchor_day INTEGER NOT NULL CHECK(anchor_day BETWEEN 1 AND 31), anchor_month INTEGER NOT NULL CHECK(anchor_month BETWEEN 1 AND 12),
+        account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+        category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE RESTRICT,
+        archived_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS bills_due ON bills(archived_at,next_due_date);
       CREATE TABLE IF NOT EXISTS assistant_consents (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         disclosure_hash TEXT NOT NULL, consented_at TEXT NOT NULL
@@ -102,6 +119,8 @@ export function createStore(db: Database.Database) {
     `);
     const transactionColumns = db.pragma("table_info(transactions)") as { name: string }[];
     if (!transactionColumns.some((column) => column.name === "time")) db.exec("ALTER TABLE transactions ADD COLUMN time TEXT");
+    const billColumns = db.pragma("table_info(bills)") as { name: string }[];
+    if (!billColumns.some((column) => column.name === "icon")) db.exec("ALTER TABLE bills ADD COLUMN icon TEXT NOT NULL DEFAULT 'calendar'");
     const messageColumns = db.pragma("table_info(assistant_messages)") as { name: string }[];
     if (!messageColumns.some((column) => column.name === "transaction_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL");
     if (!messageColumns.some((column) => column.name === "needs_followup")) db.exec("ALTER TABLE assistant_messages ADD COLUMN needs_followup INTEGER NOT NULL DEFAULT 0");
@@ -221,6 +240,7 @@ export function createStore(db: Database.Database) {
     db.transaction(() => {
       const account = db.prepare("SELECT is_default FROM financial_accounts WHERE id=? AND user_id=?").get(accountId, userId) as { is_default: number } | undefined;
       if (!account) throw new Error("Financial account not found.");
+      if (db.prepare("SELECT 1 FROM bills WHERE user_id=? AND account_id=? LIMIT 1").get(userId, accountId)) throw new Error("This account is used by a bill and cannot be deleted.");
       const count = Number((db.prepare("SELECT COUNT(*) AS n FROM financial_accounts WHERE user_id=?").get(userId) as { n: number }).n);
       if (count <= 1) throw new Error("Keep at least one financial account.");
       if (db.prepare("SELECT 1 FROM transactions WHERE user_id=? AND (account_id=? OR destination_account_id=?) LIMIT 1").get(userId, accountId, accountId)) throw new Error("This account has transaction history and cannot be deleted.");
@@ -250,6 +270,97 @@ export function createStore(db: Database.Database) {
     if (!value || value.length > 40) throw new Error("Category name must be 1–40 characters.");
     const result = db.prepare("UPDATE categories SET name=? WHERE id=? AND user_id=?").run(value, categoryId, userId);
     if (!result.changes) throw new Error("Category not found.");
+  }
+
+  function mapBill(row: Record<string, unknown>): Bill {
+    return {
+      id: String(row.id), name: String(row.name), amountMinor: safeMinorNumber(row.amount_minor, "Bill amount"),
+      frequency: row.frequency as BillFrequency, nextDueDate: String(row.next_due_date), anchorDay: Number(row.anchor_day), anchorMonth: Number(row.anchor_month),
+      accountId: String(row.account_id), categoryId: String(row.category_id), accountName: String(row.account_name), categoryName: String(row.category_name), icon: row.icon as BillIcon,
+      archivedAt: row.archived_at ? String(row.archived_at) : null,
+    };
+  }
+  const billSelect = `SELECT b.*,a.name AS account_name,c.name AS category_name FROM bills b
+    JOIN financial_accounts a ON a.id=b.account_id JOIN categories c ON c.id=b.category_id`;
+  function listBills(userId: string): Bill[] {
+    return (db.prepare(`${billSelect} WHERE b.user_id=? ORDER BY b.next_due_date,b.created_at`).all(userId) as Record<string, unknown>[]).map(mapBill);
+  }
+  function validateBillInput(userId: string, input: BillInput, allowOverdue = false): void {
+    const name = input.name.trim();
+    if (!name || name.length > 100) throw new Error("Bill name must be 1–100 characters.");
+    if (!validMoney(input.amountMinor)) throw new Error("Bill amount must be a positive PHP value.");
+    if (!(input.frequency === "weekly" || input.frequency === "monthly" || input.frequency === "yearly")) throw new Error("Choose weekly, monthly, or yearly frequency.");
+    if (input.icon !== undefined && !BILL_ICONS.some((icon) => icon === input.icon)) throw new Error("Choose a valid bill icon.");
+    if (!isDateOnly(input.nextDueDate) || (!allowOverdue && input.nextDueDate < todayInManila())) throw new Error("Bill due date must be today or later.");
+    if (!db.prepare("SELECT 1 FROM financial_accounts WHERE id=? AND user_id=?").get(input.accountId, userId)) throw new Error("Financial account is not owned by this user.");
+    if (!db.prepare("SELECT 1 FROM categories WHERE id=? AND user_id=? AND type='expense'").get(input.categoryId, userId)) throw new Error("Bill category must be an expense category owned by this user.");
+  }
+  function createBill(userId: string, input: BillInput): Bill {
+    const value = { ...input, name: input.name.trim(), icon: input.icon ?? "calendar" };
+    validateBillInput(userId, value);
+    const id = randomUUID(); const now = stamp();
+    const anchorDay = Number(value.nextDueDate.slice(-2)); const anchorMonth = Number(value.nextDueDate.slice(5, 7));
+    db.prepare(`INSERT INTO bills(id,user_id,name,amount_minor,frequency,next_due_date,icon,anchor_day,anchor_month,account_id,category_id,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, value.name, value.amountMinor, value.frequency, value.nextDueDate, value.icon, anchorDay, anchorMonth, value.accountId, value.categoryId, now, now);
+    return mapBill(db.prepare(`${billSelect} WHERE b.user_id=? AND b.id=?`).get(userId, id) as Record<string, unknown>);
+  }
+  function updateBill(userId: string, billId: string, input: Partial<BillInput>, expectedNextDueDate: string): Bill {
+    return db.transaction(() => {
+      const currentRow = db.prepare("SELECT * FROM bills WHERE id=? AND user_id=?").get(billId, userId) as Record<string, unknown> | undefined;
+      if (!currentRow) throw new Error("Bill not found.");
+      const current = { name: String(currentRow.name), amountMinor: Number(currentRow.amount_minor), frequency: currentRow.frequency as BillFrequency,
+        nextDueDate: String(currentRow.next_due_date), accountId: String(currentRow.account_id), categoryId: String(currentRow.category_id), icon: currentRow.icon as BillIcon };
+      if (current.nextDueDate !== expectedNextDueDate) throw new Error("Bill schedule changed while editing. Refresh the Bills page before saving.");
+      const value = { ...current, ...input, name: (input.name ?? current.name).trim(), icon: input.icon ?? current.icon };
+      const dateUnchanged = value.nextDueDate === current.nextDueDate;
+      validateBillInput(userId, value, dateUnchanged);
+      const reanchor = value.frequency !== current.frequency || value.nextDueDate !== current.nextDueDate;
+      const anchorDay = reanchor ? Number(value.nextDueDate.slice(-2)) : Number(currentRow.anchor_day);
+      const anchorMonth = reanchor ? Number(value.nextDueDate.slice(5, 7)) : Number(currentRow.anchor_month);
+      db.prepare(`UPDATE bills SET name=?,amount_minor=?,frequency=?,next_due_date=?,icon=?,anchor_day=?,anchor_month=?,account_id=?,category_id=?,updated_at=?
+        WHERE id=? AND user_id=?`).run(value.name, value.amountMinor, value.frequency, value.nextDueDate, value.icon, anchorDay, anchorMonth, value.accountId, value.categoryId, stamp(), billId, userId);
+      return mapBill(db.prepare(`${billSelect} WHERE b.user_id=? AND b.id=?`).get(userId, billId) as Record<string, unknown>);
+    }).immediate();
+  }
+  function archiveBill(userId: string, billId: string): void {
+    const result = db.prepare("UPDATE bills SET archived_at=COALESCE(archived_at,?),updated_at=? WHERE id=? AND user_id=?").run(stamp(), stamp(), billId, userId);
+    if (!result.changes) throw new Error("Bill not found.");
+  }
+  function processDueBills(today: string): BillPostingResult {
+    if (!isDateOnly(today)) throw new Error("Choose a valid processing date.");
+    let processed = 0;
+    const failures: BillPostingFailure[] = [];
+    const due = db.prepare("SELECT id,user_id,next_due_date FROM bills WHERE archived_at IS NULL AND next_due_date<=? ORDER BY next_due_date").all(today) as { id: string; user_id: string; next_due_date: string }[];
+    for (const candidate of due) {
+      while (true) {
+        let dueDate = candidate.next_due_date;
+        let posted: boolean;
+        try {
+          posted = db.transaction(() => {
+            const row = db.prepare("SELECT * FROM bills WHERE id=? AND user_id=? AND archived_at IS NULL").get(candidate.id, candidate.user_id) as Record<string, unknown> | undefined;
+            if (!row || String(row.next_due_date) > today) return false;
+            dueDate = String(row.next_due_date);
+            const tx: TransactionInput = { kind: "expense", amountMinor: safeMinorNumber(row.amount_minor, "Bill amount"), accountId: String(row.account_id), categoryId: String(row.category_id), description: String(row.name), date: dueDate };
+            assertTransactionInput(candidate.user_id, tx);
+            const id = randomUUID();
+            db.prepare(`INSERT INTO transactions(id,user_id,kind,amount_minor,account_id,category_id,description,date,time,source,undo_until,created_at)
+              VALUES(?,?,'expense',?,?,?,?,?,NULL,'manual',NULL,?)`).run(id, candidate.user_id, tx.amountMinor, tx.accountId, tx.categoryId, tx.description, dueDate, stamp());
+            assertLedgerTotalsSafe(candidate.user_id);
+            const nextDueDate = advanceBillDate(dueDate, row.frequency as BillFrequency, Number(row.anchor_day), Number(row.anchor_month));
+            const advanced = db.prepare("UPDATE bills SET next_due_date=?,updated_at=? WHERE id=? AND archived_at IS NULL AND next_due_date=?")
+              .run(nextDueDate, stamp(), candidate.id, dueDate);
+            if (!advanced.changes) throw new Error("Bill schedule changed while posting.");
+            return true;
+          }).immediate();
+        } catch (error) {
+          failures.push({ billId: candidate.id, dueDate, message: error instanceof Error ? error.message : "Bill expense could not be recorded." });
+          break;
+        }
+        if (!posted) break;
+        processed++;
+      }
+    }
+    return { processed, failures };
   }
 
   function assertTransactionInput(userId: string, input: TransactionInput) {
@@ -567,6 +678,7 @@ export function createStore(db: Database.Database) {
       for (const goal of managed) succession(goal.id, userId);
       db.prepare("UPDATE goal_contributions SET user_id=NULL,member_name='Former member' WHERE user_id=?").run(userId);
       db.prepare("UPDATE goal_members SET user_id=NULL,username_snapshot='Former member',status='former' WHERE user_id=?").run(userId);
+      db.prepare("DELETE FROM bills WHERE user_id=?").run(userId);
       db.prepare("DELETE FROM users WHERE id=?").run(userId);
     }).immediate();
   }
@@ -577,6 +689,7 @@ export function createStore(db: Database.Database) {
   return {
     migrate, registerUser, getUserByUsername, getUserById, listUsers, setUserEnabled, setResetCredential, consumeResetCredential,
     listAccounts, createAccount, setDefaultAccount, updateAccount, deleteAccount, listCategories, createCategory, renameCategory,
+    listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
     setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,
     createGoal, listGoals, inviteToGoal, respondInvitation, listInvitations, updateGoal, changeMembership, addContribution, updateContribution,
