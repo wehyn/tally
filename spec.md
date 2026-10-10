@@ -6,15 +6,16 @@
 
 ## Purpose
 
-Tally is a self-hosted finance tracker for people who share a home-server instance. Each person needs a private ledger for their own money, a quick way to record activity, and factual views of their finances. People may also collaborate on savings goals without sharing their personal accounts or transactions.
+Tally is a self-hosted finance tracker for people who share a home-server instance. Each person needs a private ledger for their own money, a quick way to record activity, a private register of debts, and factual views of their finances. People may also collaborate on savings goals without sharing their personal accounts or transactions.
 
-V1 delivers private personal finance tracking, an optional hosted assistant for capture and questions, shared savings goals, and a recoverable single-server deployment.
+V1 delivers private personal finance and debt tracking, an optional hosted assistant for capture and questions, shared savings goals, and a recoverable single-server deployment.
 
 ## Goals
 
 - Let anyone who can reach the instance register and keep a private ledger.
 - Give the first registrant instance-administration privileges without exposing personal finance data to the admin role.
 - Track PHP cash and bank accounts, opening balances, income, expenses, and transfers.
+- Track current amounts owed to the user and amounts the user owes, without mixing debt records into the account ledger or analytics.
 - Show current balances and actual activity, defaulting analytics to month-to-date.
 - Offer opt-in natural-language transaction capture and factual finance questions through Codex-LB.
 - Let users collaborate on goals and contributions without linking goals to personal transaction records.
@@ -22,8 +23,8 @@ V1 delivers private personal finance tracking, an optional hosted assistant for 
 
 ## Actors and privacy boundaries
 
-- **User:** Registers with a unique username and password. Owns a private set of financial accounts, transactions, categories, and assistant conversations.
-- **Admin:** The first registered user. Can manage instance settings and user access. Admin privileges do not grant access to another user's financial accounts, balances, transactions, categories, goals, or assistant conversations.
+- **User:** Registers with a unique username and password. Owns private financial accounts, transactions, categories, debt records, and assistant conversations.
+- **Admin:** The first registered user. Can manage instance settings and user access. Admin privileges do not grant access to another user's financial accounts, balances, transactions, categories, debt records, goals, or assistant conversations.
 - **Goal member:** A user who has accepted an invitation. Can see the shared goal and its member contribution history, but not members' personal finance records.
 - **Host operator:** Controls the home server and can access its files, including SQLite data and backups. The in-app privacy boundary does not protect data from a person with direct host-file access.
 
@@ -41,7 +42,7 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 - A reset credential can be consumed once and requires the user to choose a new password. The admin never learns the user's new password.
 - Admin controls and server actions must not return personal finance records or assistant conversations.
 
-### 2. Personal accounts and ledger
+### 2. Personal accounts, ledger, and debt register
 
 - A user can create cash and bank accounts with a name and PHP opening balance. A new account defaults to ₱0.
 - The opening balance establishes the starting balance without creating a transaction or counting as income.
@@ -51,7 +52,10 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 - Transfers move money between two accounts owned by the same user. Update both account balances as one operation. Show the transfer in account history, but exclude it from income and spending totals.
 - Users can manually create, view, edit, and delete their own income, expense, and transfer records. Income and expense records have an amount, date, account, category, and optional description. The selected category determines whether a record is income or expense. Transfers identify source and destination accounts and are managed from Accounts.
 - Seed every user with income categories **Salary** and **Other income**, and expense categories **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, and **Other**. Users can add and rename categories for their own ledger.
-- Accounts, categories, and transactions are private to their owner, including when another user is the admin.
+- A user can privately track current debts in two directions: **owed to you** and **you owe**. Each record has a counterparty, positive PHP amount, optional due date and note, and open or settled status. Users can create, edit, settle, reopen, and delete only their own records.
+- Debt amounts are maintained manually as current outstanding amounts; v1 has no repayment schedule or debt payment history. A real receipt or repayment must be recorded separately in Transactions, and the debt amount/status updated by the user.
+- Debt records do not create or change financial accounts, transactions, balances, income, spending, or dashboard analytics. They remain a private register separate from the personal ledger.
+- Accounts, categories, transactions, and debt records are private to their owner, including when another user is the admin.
 
 ### 3. Dashboard and analytics
 
@@ -105,7 +109,7 @@ Use Asia/Manila for relative dates, the current day, and month boundaries. Openi
 ### 6. Account deletion
 
 - A user can delete their own account.
-- Deletion removes that user's private accounts, transactions, categories, and assistant conversations so they are no longer available in Tally to that user, other users, or the admin.
+- Deletion removes that user's private accounts, transactions, categories, debt records, and assistant conversations so they are no longer available in Tally to that user, other users, or the admin.
 - Preserve shared-goal contribution records and progress. Show the deleted contributor as “Former member.” Preserve the goal for its remaining members and transfer management as described above.
 - Deletion must not remove or expose another user's personal finance data.
 - If the deleting user is the admin and other enabled users remain, require an explicit handoff of admin access to one of those users.
@@ -122,7 +126,7 @@ Use Asia/Manila for relative dates, the current day, and month boundaries. Openi
 
 - CLI or messaging integrations, including Hermes, iMessage, and Telegram.
 - Receipt photo scanning or OCR.
-- Bill tracking, credit-card accounts, or budgets.
+- Recurring bill tracking and reminders, credit-card accounts, or budgets.
 - Automated budget or savings recommendations.
 - Local AI processing or multiple currencies.
 - Bank synchronization; accounts and transactions are entered manually or through the in-app assistant.
@@ -140,12 +144,13 @@ V1 is acceptable when the following outcomes work for multiple independent users
 7. **Shared goals:** A user can create a goal, invite another registered user, and require acceptance. Members can see goal progress and contributions, add their own contribution, and edit or delete only their own entries. Contributions do not alter personal balances.
 8. **Deletion:** Account deletion removes private finance and chat data while preserving goal contributions under “Former member” and preserving group progress. Goal management passes to the next invited user when its manager deletes their account.
 9. **Recovery:** Recreating the app container preserves the SQLite database. Nightly backups are stored persistently, and a documented restore recovers personal ledgers, transfers, goals, contributions, assistant history, and former-member goal history.
+10. **Debt register:** A user can see separate “Owed to you” and “You owe” lists, maintain current amounts and optional due dates/notes, filter outstanding and settled records, and settle or reopen their own debts. Another user, including the admin, cannot access those records. Creating or editing a debt does not change accounts, transactions, balances, income, spending, or analytics; repayments are entered separately as transactions.
 
 ## Verification approach
 
 Use browser end-to-end tests against the running Next.js application with an isolated SQLite database and a deterministic fake Codex-LB endpoint. Tests should observe user-visible outcomes and authorization boundaries rather than internal helper names or database implementation details.
 
-Use multiple users to exercise registration and admin bootstrap, private ledgers, admin access boundaries, manual entry, assistant opt-in and capture, date-range analytics, transfers, goal invitations and contributions, account deletion, and backup/restore. Verify accounting invariants through visible balances and analytics.
+Use multiple users to exercise registration and admin bootstrap, private ledgers and debt registers, admin access boundaries, manual entry, assistant opt-in and capture, date-range analytics, transfers, goal invitations and contributions, account deletion, and backup/restore. Verify accounting invariants through visible balances and analytics; specifically confirm debt records never affect ledger figures and repayment transactions remain independently recorded.
 
 ## Open product and implementation details
 

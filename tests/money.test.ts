@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPHP, parsePHPToMinor } from "../src/lib/money";
+import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "../src/lib/money";
 
 describe("PHP minor-unit amounts", () => {
   it("parses whole and fractional peso amounts exactly", () => {
@@ -13,6 +13,13 @@ describe("PHP minor-unit amounts", () => {
     for (const value of ["", "0", "-1", "1.001", "12,34", "₱₱2", "1e3"]) {
       expect(() => parsePHPToMinor(value), value).toThrow();
     }
+  });
+
+  it("formats serialized minor-unit totals without floating-point loss", () => {
+    expect(formatPHPFromMinorString("123405")).toBe("₱1,234.05");
+    expect(formatPHPFromMinorString("900719925474099300")).toBe("₱9,007,199,254,740,993.00");
+    expect(formatPHPFromMinorString("-105")).toBe("-₱1.05");
+    expect(() => formatPHPFromMinorString("1.5")).toThrow(/integer/);
   });
 
   it("formats integer minor units without losing cents", () => {

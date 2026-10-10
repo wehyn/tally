@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
+import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
 
 export const STARTER_CATEGORIES = {
   income: ["Salary", "Other income"],
@@ -12,10 +13,13 @@ export type User = { id: string; username: string; passwordHash: string; role: R
 export type PublicUser = Omit<User, "passwordHash">;
 export type AccountType = "cash" | "bank";
 export type Account = { id: string; name: string; type: AccountType; openingMinor: number; balanceMinor: number; isDefault: boolean };
-export type Category = { id: string; name: string; type: "income" | "expense" };
+export type Category = { id: string; name: string; type: CategoryType; icon: CategoryIconId };
 export type TransactionKind = "income" | "expense" | "transfer";
 export type TransactionInput = { kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; description: string; date: string; time?: string | null; source?: "manual" | "assistant" };
-export type Transaction = Omit<TransactionInput, "time"> & { time: string | null; id: string; categoryName: string | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
+export type Transaction = Omit<TransactionInput, "time"> & { time: string | null; id: string; categoryName: string | null; categoryIcon: CategoryIconId | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
+export type DebtDirection = "owed_to_you" | "you_owe";
+export type DebtStatus = "open" | "settled";
+export type Debt = { id: string; direction: DebtDirection; counterparty: string; amountMinor: number; note: string; dueDate: string | null; status: DebtStatus; createdAt: string; updatedAt: string };
 export const BILL_ICONS = ["calendar", "home", "wifi", "phone", "electricity", "water", "tv", "music", "card"] as const;
 export type BillIcon = typeof BILL_ICONS[number];
 export type BillInput = { name: string; amountMinor: number; frequency: BillFrequency; nextDueDate: string; accountId: string; categoryId: string; icon?: BillIcon };
@@ -57,9 +61,18 @@ export function createStore(db: Database.Database) {
       CREATE UNIQUE INDEX IF NOT EXISTS accounts_one_default ON financial_accounts(user_id) WHERE is_default = 1;
       CREATE TABLE IF NOT EXISTS categories (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        name TEXT NOT NULL COLLATE NOCASE, type TEXT NOT NULL CHECK(type IN ('income','expense')),
+        name TEXT NOT NULL COLLATE NOCASE, type TEXT NOT NULL CHECK(type IN ('income','expense')), icon TEXT NOT NULL DEFAULT 'tag',
         UNIQUE(user_id, type, name)
       );
+      CREATE TABLE IF NOT EXISTS debts (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        direction TEXT NOT NULL CHECK(direction IN ('owed_to_you','you_owe')),
+        counterparty TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+        note TEXT NOT NULL DEFAULT '', due_date TEXT,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','settled')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS debts_owner_status_due ON debts(user_id,status,due_date,created_at DESC);
       CREATE TABLE IF NOT EXISTS transactions (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         kind TEXT NOT NULL CHECK(kind IN ('income','expense','transfer')), amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
@@ -119,6 +132,13 @@ export function createStore(db: Database.Database) {
     `);
     const transactionColumns = db.pragma("table_info(transactions)") as { name: string }[];
     if (!transactionColumns.some((column) => column.name === "time")) db.exec("ALTER TABLE transactions ADD COLUMN time TEXT");
+    const categoryColumns = db.pragma("table_info(categories)") as { name: string }[];
+    if (!categoryColumns.some((column) => column.name === "icon")) {
+      db.exec("ALTER TABLE categories ADD COLUMN icon TEXT NOT NULL DEFAULT 'tag'");
+      const updateIcon = db.prepare("UPDATE categories SET icon=? WHERE id=?");
+      const legacyCategories = db.prepare("SELECT id,name,type FROM categories").all() as { id: string; name: string; type: CategoryType }[];
+      for (const category of legacyCategories) updateIcon.run(defaultCategoryIcon(category.type, category.name), category.id);
+    }
     const billColumns = db.pragma("table_info(bills)") as { name: string }[];
     if (!billColumns.some((column) => column.name === "icon")) db.exec("ALTER TABLE bills ADD COLUMN icon TEXT NOT NULL DEFAULT 'calendar'");
     const messageColumns = db.pragma("table_info(assistant_messages)") as { name: string }[];
@@ -137,8 +157,10 @@ export function createStore(db: Database.Database) {
       const user = { id: randomUUID(), username: normalized, passwordHash, role, enabled: true, assistantOptIn: false, createdAt: stamp() };
       db.prepare("INSERT INTO users(id,username,password_hash,role,enabled,assistant_opt_in,created_at) VALUES(?,?,?,?,1,0,?)")
         .run(user.id, normalized, passwordHash, role, user.createdAt);
-      const insert = db.prepare("INSERT INTO categories(id,user_id,name,type) VALUES(?,?,?,?)");
-      for (const type of ["income", "expense"] as const) for (const name of STARTER_CATEGORIES[type]) insert.run(randomUUID(), user.id, name, type);
+      const insert = db.prepare("INSERT INTO categories(id,user_id,name,type,icon) VALUES(?,?,?,?,?)");
+      for (const type of ["income", "expense"] as const) {
+        for (const name of STARTER_CATEGORIES[type]) insert.run(randomUUID(), user.id, name, type, defaultCategoryIcon(type, name));
+      }
       return { id: user.id, username: user.username, role, enabled: true, assistantOptIn: false, createdAt: user.createdAt };
     }).immediate();
   }
@@ -254,22 +276,94 @@ export function createStore(db: Database.Database) {
     }).immediate();
   }
 
-  function listCategories(userId: string): Category[] {
-    return (db.prepare("SELECT id,name,type FROM categories WHERE user_id=? ORDER BY CASE type WHEN 'income' THEN 0 ELSE 1 END, rowid").all(userId) as Record<string, unknown>[])
-      .map((row) => ({ id: String(row.id), name: String(row.name), type: row.type as Category["type"] }));
+  type DebtInput = { direction: DebtDirection; counterparty: string; amountMinor: number; dueDate?: string | null; note?: string };
+  type DebtUpdate = Partial<DebtInput> & { status?: DebtStatus };
+  function validateDebtInput(input: DebtInput) {
+    const counterparty = input.counterparty.trim();
+    const note = (input.note ?? "").trim();
+    const dueDate = input.dueDate ?? null;
+    if (!(input.direction === "owed_to_you" || input.direction === "you_owe")) throw new Error("Choose a valid debt direction: owed to you or you owe.");
+    if (!counterparty || counterparty.length > 80) throw new Error("Counterparty name must be 1–80 characters.");
+    if (!validMoney(input.amountMinor)) throw new Error("Debt amount must be a positive PHP value within the supported range.");
+    if (dueDate !== null && !isDateOnly(dueDate)) throw new Error("Enter a valid debt due date.");
+    if (note.length > 500) throw new Error("Debt note must be 500 characters or fewer.");
+    return { direction: input.direction, counterparty, amountMinor: input.amountMinor, dueDate, note };
   }
-  function createCategory(userId: string, input: { name: string; type: Category["type"] }): Category {
+  function debtFromRow(row: Record<string, unknown>): Debt {
+    return {
+      id: String(row.id), direction: row.direction as DebtDirection, counterparty: String(row.counterparty),
+      amountMinor: safeMinorNumber(row.amount_minor, "Debt amount"), note: String(row.note),
+      dueDate: row.due_date ? String(row.due_date) : null, status: row.status as DebtStatus,
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    };
+  }
+  function listDebts(userId: string): Debt[] {
+    return (db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
+      FROM debts WHERE user_id=?
+      ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, CASE WHEN due_date IS NULL THEN 1 ELSE 0 END, due_date, created_at DESC`).all(userId) as Record<string, unknown>[])
+      .map(debtFromRow);
+  }
+  function createDebt(userId: string, input: DebtInput): Debt {
+    const value = validateDebtInput(input);
+    const id = randomUUID();
+    const now = stamp();
+    db.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,'open',?,?)`).run(id, userId, value.direction, value.counterparty, value.amountMinor, value.note, value.dueDate, now, now);
+    return { id, ...value, status: "open", createdAt: now, updatedAt: now };
+  }
+  function updateDebt(userId: string, debtId: string, input: DebtUpdate): Debt {
+    const row = db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
+      FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
+    if (!row) throw new Error("Debt not found.");
+    const current = debtFromRow(row);
+    const value = validateDebtInput({
+      direction: input.direction ?? current.direction,
+      counterparty: input.counterparty ?? current.counterparty,
+      amountMinor: input.amountMinor ?? current.amountMinor,
+      dueDate: input.dueDate === undefined ? current.dueDate : input.dueDate,
+      note: input.note ?? current.note,
+    });
+    const status = input.status ?? current.status;
+    if (!(status === "open" || status === "settled")) throw new Error("Choose open or settled status.");
+    const updatedAt = stamp();
+    db.prepare(`UPDATE debts SET direction=?,counterparty=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
+      WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
+    return { id: debtId, ...value, status, createdAt: current.createdAt, updatedAt };
+  }
+  function deleteDebt(userId: string, debtId: string): void {
+    const result = db.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(debtId, userId);
+    if (!result.changes) throw new Error("Debt not found.");
+  }
+
+  function listCategories(userId: string): Category[] {
+    return (db.prepare("SELECT id,name,type,icon FROM categories WHERE user_id=? ORDER BY CASE type WHEN 'income' THEN 0 ELSE 1 END, rowid").all(userId) as Record<string, unknown>[])
+      .map((row) => {
+        const type = row.type as CategoryType;
+        const name = String(row.name);
+        return { id: String(row.id), name, type, icon: isCategoryIconId(row.icon) ? row.icon : defaultCategoryIcon(type, name) };
+      });
+  }
+  function createCategory(userId: string, input: { name: string; type: CategoryType; icon?: CategoryIconId }): Category {
     const name = input.name.trim();
     if (!name || name.length > 40 || !(input.type === "income" || input.type === "expense")) throw new Error("Enter a category name (1–40 characters) and type.");
-    const category = { id: randomUUID(), name, type: input.type };
-    db.prepare("INSERT INTO categories(id,user_id,name,type) VALUES(?,?,?,?)").run(category.id, userId, name, input.type);
+    const icon = input.icon ?? defaultCategoryIcon(input.type, name);
+    if (!isCategoryIconId(icon)) throw new Error("Choose a supported category icon.");
+    const category = { id: randomUUID(), name, type: input.type, icon };
+    db.prepare("INSERT INTO categories(id,user_id,name,type,icon) VALUES(?,?,?,?,?)").run(category.id, userId, name, input.type, icon);
     return category;
   }
+  function updateCategory(userId: string, categoryId: string, input: { name?: string; icon?: CategoryIconId }): Category {
+    const existing = db.prepare("SELECT name,type,icon FROM categories WHERE id=? AND user_id=?").get(categoryId, userId) as { name: string; type: CategoryType; icon: string } | undefined;
+    if (!existing) throw new Error("Category not found.");
+    const name = input.name === undefined ? existing.name : input.name.trim();
+    if (!name || name.length > 40) throw new Error("Category name must be 1–40 characters.");
+    const icon = input.icon ?? (isCategoryIconId(existing.icon) ? existing.icon : defaultCategoryIcon(existing.type, existing.name));
+    if (!isCategoryIconId(icon)) throw new Error("Choose a supported category icon.");
+    db.prepare("UPDATE categories SET name=?,icon=? WHERE id=? AND user_id=?").run(name, icon, categoryId, userId);
+    return { id: categoryId, name, type: existing.type, icon };
+  }
   function renameCategory(userId: string, categoryId: string, name: string): void {
-    const value = name.trim();
-    if (!value || value.length > 40) throw new Error("Category name must be 1–40 characters.");
-    const result = db.prepare("UPDATE categories SET name=? WHERE id=? AND user_id=?").run(value, categoryId, userId);
-    if (!result.changes) throw new Error("Category not found.");
+    updateCategory(userId, categoryId, { name });
   }
 
   function mapBill(row: Record<string, unknown>): Bill {
@@ -396,7 +490,7 @@ export function createStore(db: Database.Database) {
     }).immediate();
   }
   function getTransaction(userId: string, id: string): Transaction | null {
-    const row = db.prepare(`SELECT t.*,c.name AS category_name,a.name AS account_name,d.name AS destination_account_name
+    const row = db.prepare(`SELECT t.*,c.name AS category_name,c.icon AS category_icon,a.name AS account_name,d.name AS destination_account_name
       FROM transactions t JOIN financial_accounts a ON a.id=t.account_id
       LEFT JOIN categories c ON c.id=t.category_id LEFT JOIN financial_accounts d ON d.id=t.destination_account_id
       WHERE t.user_id=? AND t.id=?`).get(userId, id) as Record<string, unknown> | undefined;
@@ -408,7 +502,9 @@ export function createStore(db: Database.Database) {
       destinationAccountId: row.destination_account_id ? String(row.destination_account_id) : undefined,
       categoryId: row.category_id ? String(row.category_id) : undefined, description: String(row.description), date: String(row.date), time: row.time ? String(row.time) : null,
       source: row.source as "manual" | "assistant", undoUntil: row.undo_until ? String(row.undo_until) : null,
-      categoryName: row.category_name ? String(row.category_name) : null, accountName: String(row.account_name),
+      categoryName: row.category_name ? String(row.category_name) : null,
+      categoryIcon: row.category_icon && isCategoryIconId(row.category_icon) ? row.category_icon : row.category_name ? defaultCategoryIcon(row.kind as CategoryType, String(row.category_name)) : null,
+      accountName: String(row.account_name),
       destinationAccountName: row.destination_account_name ? String(row.destination_account_name) : null,
     };
   }
@@ -418,7 +514,7 @@ export function createStore(db: Database.Database) {
     const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 501) : 100;
     const offset = Number.isSafeInteger(options?.offset) ? Math.max(options?.offset ?? 0, 0) : 0;
     const kind = options?.kind ?? null;
-    return (db.prepare(`SELECT t.*,c.name AS category_name,a.name AS account_name,d.name AS destination_account_name
+    return (db.prepare(`SELECT t.*,c.name AS category_name,c.icon AS category_icon,a.name AS account_name,d.name AS destination_account_name
       FROM transactions t JOIN financial_accounts a ON a.id=t.account_id LEFT JOIN categories c ON c.id=t.category_id
       LEFT JOIN financial_accounts d ON d.id=t.destination_account_id
       WHERE t.user_id=? AND t.date BETWEEN ? AND ? AND (? IS NULL OR t.kind=?)
@@ -467,8 +563,17 @@ export function createStore(db: Database.Database) {
     const goals = listGoals(userId);
     const accounts = listAccounts(userId);
     assertSafeMinorTotal(accounts.reduce((sum, account) => sum + BigInt(account.balanceMinor), 0n), "Combined account balance");
+    const positiveBalances = accounts.map((account) => BigInt(Math.max(0, account.balanceMinor)));
+    const assetTotal = positiveBalances.reduce((sum, balance) => sum + balance, 0n);
+    const assetWeightValues = positiveBalances.map((balance) => assetTotal === 0n ? 0 : Number(balance * 10_000n / assetTotal));
+    if (assetTotal > 0n) {
+      const largestIndex = positiveBalances.reduce((best, balance, index) => balance > positiveBalances[best] ? index : best, 0);
+      assetWeightValues[largestIndex] += 10_000 - assetWeightValues.reduce((sum, weight) => sum + weight, 0);
+    }
+    const assetWeights = Object.fromEntries(accounts.map((account, index) => [account.id, assetWeightValues[index]]));
     return { start, end, incomeMinor: safeMinorNumber(totals.income_minor, "Period income total"), spendingMinor: safeMinorNumber(totals.spending_minor, "Period spending total"),
-      accounts, categorySpending: categorySpending.map((r) => ({ id: r.id, name: r.name, amountMinor: safeMinorNumber(r.amount_minor, "Category spending total") })),
+      accounts, assetTotalMinor: assetTotal.toString(), assetWeights,
+      categorySpending: categorySpending.map((row) => ({ id: row.id, name: row.name, amountMinor: safeMinorNumber(row.amount_minor, "Category spending total") })),
       activity: activity.map((row) => ({ date: row.date, income_minor: safeMinorNumber(row.income_minor, "Daily income total"), spending_minor: safeMinorNumber(row.spending_minor, "Daily spending total") })), transactions, goals };
   }
 
@@ -688,7 +793,8 @@ export function createStore(db: Database.Database) {
 
   return {
     migrate, registerUser, getUserByUsername, getUserById, listUsers, setUserEnabled, setResetCredential, consumeResetCredential,
-    listAccounts, createAccount, setDefaultAccount, updateAccount, deleteAccount, listCategories, createCategory, renameCategory,
+    listAccounts, createAccount, setDefaultAccount, updateAccount, deleteAccount, listCategories, createCategory, updateCategory, renameCategory,
+    listDebts, createDebt, updateDebt, deleteDebt,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
     setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,
