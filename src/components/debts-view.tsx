@@ -111,8 +111,8 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
   }
 
   return <div className="page-stack debts-page">
-    <section className="page-heading-row">
-      <div><div className="eyebrow">YOUR MONEY</div><h1>Debts</h1><p className="subtitle">Keep track of money owed to you and money you need to repay.</p></div>
+    <section className="page-heading-row page-heading-actions-only">
+      <h1 className="sr-only">Debts</h1>
       <button className="button button-primary" onClick={() => create()}><Plus size={16}/> Add debt</button>
     </section>
 
