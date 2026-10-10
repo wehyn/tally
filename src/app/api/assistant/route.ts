@@ -3,7 +3,7 @@ import { assertSameOrigin, HttpError, requestJson, requireUser, respondError } f
 import { getStore } from "@/lib/db";
 import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } from "@/lib/dates";
 import { formatPHP, parsePHPToMinor } from "@/lib/money";
-import type { Account, Transaction } from "@/lib/store";
+import type { Account, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 
 const schema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
@@ -149,6 +149,7 @@ function directCategoryCapture(prompt: string, categories: AssistantCategory[]):
   if (!category) return null;
   return { name: "log_transaction", args: { kind: category.type, category: category.name, amount: match[2], description: label } };
 }
+const unclearDebtCounterparty = /^(?:(?:some|any|every)one(?:\s+else)?|(?:some|any|every)body(?:\s+else)?|nobody|no\s+one|people|(?:some|the)\s+people|(?:some|any|a|the|other)\s+person|unknown|unspecified|maybe|perhaps|probably|possibly|all|both|they|them|you|us)$/i;
 function directDebtCapture(prompt: string): { name: string; args: Record<string, unknown> } | null {
   const text = prompt.trim().replace(/[.!]+$/, "");
   if (text.includes("?")) return null;
@@ -163,6 +164,8 @@ function directDebtCapture(prompt: string): { name: string; args: Record<string,
     const rawCounterparty = match[1].replace(/^my\s+/i, "").replace(/[,:;.!]+$/, "").trim();
     if (!rawCounterparty) return null;
     const counterparty = rawCounterparty.replace(/^\p{L}/u, (letter) => letter.toUpperCase());
+    // shortcut: only one-word counterparties bypass the provider; expand this if structured multiword parsing is needed.
+    if (!/^\p{Lu}[\p{L}'’\-]*$/u.test(counterparty) || unclearDebtCounterparty.test(counterparty)) return null;
     return { name: "log_debt", args: { direction, counterparty, amount: match[2] } };
   }
   return null;
@@ -192,7 +195,7 @@ export async function POST(request: Request) {
     const call = directCapture ?? await askProvider({ prompt: input.prompt, history, categories });
     if (!call) throw new Error("Assistant provider returned no action.");
 
-    let answer: string; let transaction: Transaction | null = null; let undoUntil: string | null = null; let needsFollowup = false;
+    let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let undoUntil: string | null = null; let needsFollowup = false;
     if (call.name === "ask_clarification") { answer = safeClarification(call.args.question); needsFollowup = true; }
     else if (call.name === "finance_question") {
       const defaultRange = monthToDateRange();
@@ -212,12 +215,13 @@ export async function POST(request: Request) {
       const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
       if (!counterparty) { answer = "Who is this debt with?"; needsFollowup = true; }
       else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; needsFollowup = true; }
+      else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; needsFollowup = true; }
       else if (!direction) { answer = "Is this money owed to you, or do you owe the other person?"; needsFollowup = true; }
       else if (!amount) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
       else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; needsFollowup = true; }
       else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; needsFollowup = true; }
       else {
-        const debt = store.createDebt(user.id, { direction, counterparty, amountMinor: parsePHPToMinor(amount), dueDate, note });
+        debt = store.createDebt(user.id, { direction, counterparty, amountMinor: parsePHPToMinor(amount), dueDate, note });
         answer = direction === "owed_to_you"
           ? `${formatPHP(debt.amountMinor)} is owed to you by ${debt.counterparty}. Added it to Debts.`
           : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts.`;
@@ -274,6 +278,6 @@ export async function POST(request: Request) {
     } else answer = "I couldn't complete that request. Please rephrase it.";
 
     store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, needsFollowup);
-    return Response.json({ conversationId, answer, transaction, undoUntil });
+    return Response.json({ conversationId, answer, transaction, undoUntil, debt });
   } catch (error) { return respondError(error); }
 }
