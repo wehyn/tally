@@ -440,6 +440,9 @@ export function createStore(db: Database.Database) {
       COALESCE(SUM(CASE WHEN kind='income' THEN amount_minor ELSE 0 END),0) AS income_minor,
       COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor
       FROM transactions WHERE user_id=? AND date BETWEEN ? AND ?`).get(userId, start, end) as { income_minor: number; spending_minor: number };
+    const categorySpending = db.prepare(`SELECT c.id,c.name,SUM(t.amount_minor) AS amount_minor FROM transactions t
+      JOIN categories c ON c.id=t.category_id WHERE t.user_id=? AND t.kind='expense' AND t.date BETWEEN ? AND ?
+      GROUP BY c.id,c.name ORDER BY amount_minor DESC`).all(userId, start, end) as { id: string; name: string; amount_minor: number }[];
     const activity = db.prepare(`SELECT date,
       COALESCE(SUM(CASE WHEN kind='income' THEN amount_minor ELSE 0 END),0) AS income_minor,
       COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor
@@ -459,6 +462,7 @@ export function createStore(db: Database.Database) {
     const assetWeights = Object.fromEntries(accounts.map((account, index) => [account.id, assetWeightValues[index]]));
     return { start, end, incomeMinor: safeMinorNumber(totals.income_minor, "Period income total"), spendingMinor: safeMinorNumber(totals.spending_minor, "Period spending total"),
       accounts, assetTotalMinor: assetTotal.toString(), assetWeights,
+      categorySpending: categorySpending.map((row) => ({ id: row.id, name: row.name, amountMinor: safeMinorNumber(row.amount_minor, "Category spending total") })),
       activity: activity.map((row) => ({ date: row.date, income_minor: safeMinorNumber(row.income_minor, "Daily income total"), spending_minor: safeMinorNumber(row.spending_minor, "Daily spending total") })), transactions, goals };
   }
 

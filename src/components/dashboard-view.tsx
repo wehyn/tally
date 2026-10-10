@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, CalendarDays, Landmark, Plus, Wallet } from "lucide-react";
 import { CategoryManager } from "@/components/category-manager";
 import { CategoryGlyph } from "@/components/category-glyph";
 import { formatPHP, formatPHPFromMinorString } from "@/lib/money";
-import { monthToDateRange } from "@/lib/dates";
+import { monthToDateRange, todayInManila } from "@/lib/dates";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 import type { Store } from "@/lib/store";
 
@@ -21,6 +21,11 @@ export function DashboardView({ initial, categories: initialCategories }: { init
   const [categories, setCategories] = useState(initialCategories);
   const [start, setStart] = useState(initial.start);
   const [end, setEnd] = useState(initial.end);
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [categoryId, setCategoryId] = useState(initialCategories.find((item) => item.type === "expense" && item.name === "Other")?.id ?? initialCategories.find((item) => item.type === "expense")?.id ?? "");
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     const refreshLedger = () => {
@@ -43,12 +48,44 @@ export function DashboardView({ initial, categories: initialCategories }: { init
     const categoriesById = new Map(next.map((category) => [category.id, category]));
     setData((current) => ({
       ...current,
+      categorySpending: current.categorySpending.map((entry) => {
+        const category = categoriesById.get(entry.id);
+        return category ? { ...entry, name: category.name } : entry;
+      }),
       transactions: current.transactions.map((transaction) => {
         const category = transaction.categoryId ? categoriesById.get(transaction.categoryId) : undefined;
         return category ? { ...transaction, categoryName: category.name, categoryIcon: category.icon } : transaction;
       }),
     }));
   }
+
+  async function submitQuick(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setNotice("");
+    try {
+      const account = data.accounts.find((item) => item.isDefault) ?? data.accounts[0];
+      const category = categories.find((item) => item.id === categoryId);
+      if (!account || !category) throw new Error("Add an account and category before recording.");
+      const response = await fetch("/api/transactions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: category.type, amount, accountId: account.id, categoryId: category.id, description, date: todayInManila() }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not save transaction.");
+      setAmount("");
+      setDescription("");
+      setNotice("Added to your ledger.");
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not save transaction.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const maxBar = Math.max(...data.categorySpending.map((entry) => entry.amountMinor), 1);
 
   return <div className="page-stack">
     <section className="page-heading-row"><div><div className="eyebrow">PERSONAL LEDGER</div><h1>Your money, in view.</h1><p className="subtitle">A clear picture of what came in, what went out, and what’s next.</p></div><Link className="button button-primary" href="/transactions"><Plus size={17}/> Add transaction</Link></section>
@@ -58,6 +95,23 @@ export function DashboardView({ initial, categories: initialCategories }: { init
       <article className="stat-card"><div className="stat-top"><span>Income</span><span className="stat-icon green-light"><ArrowDownRight size={18}/></span></div><strong className="stat-value">{formatPHP(data.incomeMinor)}</strong><span className="stat-foot">Recorded in this period</span></article>
       <article className="stat-card"><div className="stat-top"><span>Spending</span><span className="stat-icon coral-light"><ArrowUpRight size={18}/></span></div><strong className="stat-value">{formatPHP(data.spendingMinor)}</strong><span className="stat-foot">Recorded in this period</span></article>
       <article className="stat-card"><div className="stat-top"><span>Net activity</span><span className="stat-icon violet-light"><ArrowLeftRight size={18}/></span></div><strong className={`stat-value ${data.incomeMinor - data.spendingMinor < 0 ? "negative" : ""}`}>{formatPHP(data.incomeMinor - data.spendingMinor)}</strong><span className="stat-foot">Income less spending</span></article>
+    </section>
+
+    <section className="dashboard-main-grid">
+      <article className="panel panel-large">
+        <div className="panel-heading"><div><h2>Spending by category</h2><p>Expenses in the selected range; transfers and opening balances are excluded.</p></div><Link href="/transactions" className="quiet-link">View ledger</Link></div>
+        {data.categorySpending.length ? <div className="category-bars">{data.categorySpending.slice(0, 6).map((entry, index) => <div className="category-bar-row" key={entry.id}><div className="bar-label"><span>{entry.name}</span><strong>{formatPHP(entry.amountMinor)}</strong></div><div className="bar-track"><span className={`bar-fill bar-tone-${index % 4}`} style={{ width: `${Math.max(4, entry.amountMinor / maxBar * 100)}%` }}/></div></div>)}</div> : <div className="empty-inline"><div className="empty-spark">✦</div><div><strong>No spending recorded yet</strong><span>Once you add expenses, category patterns will show here.</span></div></div>}
+      </article>
+      <article className="panel quick-entry-panel">
+        <div className="panel-heading"><div><h2>Quick entry</h2><p>Save to your default account.</p></div><span className="quick-dot"/></div>
+        {data.accounts.length ? <form onSubmit={(event) => void submitQuick(event)} className="quick-form">
+          <label className="field-label">Category<select required value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">Choose category</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.type}</option>)}</select></label>
+          <label className="field-label">Amount<input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="₱ 0.00"/></label>
+          <label className="field-label">Description (optional)<input maxLength={180} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add a note"/></label>
+          <button className="button button-primary full-width" disabled={saving}>{saving ? "Saving…" : "Add to ledger"}</button>
+          {notice && <p className="form-notice" role="status">{notice}</p>}
+        </form> : <div className="quick-empty"><span>Start with a financial account.</span><Link href="/accounts" className="button button-primary">Create account</Link></div>}
+      </article>
     </section>
 
     <article className="panel assets-panel" aria-labelledby="assets-heading">
