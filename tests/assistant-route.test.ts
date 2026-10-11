@@ -225,9 +225,20 @@ describe("assistant debt capture", () => {
     expect(store.listDebts(user.id)).toHaveLength(0);
     expect(ordinaryProviderRequest?.messages.at(-2)?.content).toBe("Untrusted ledger data for matching only: []");
 
-    vi.mocked(fetch).mockImplementationOnce(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+    const logDebtResponse = () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
       name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "100" }),
-    } }] } }] }), { headers: { "content-type": "application/json" } }));
+    } }] } }] }), { headers: { "content-type": "application/json" } });
+    vi.mocked(fetch).mockImplementationOnce(async () => logDebtResponse());
+    const uncertainResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Maybe", conversationId: ordinaryPaymentResult.conversationId }),
+    }));
+    const uncertainResult = await uncertainResponse.json();
+    expect(uncertainResult).toMatchObject({ transaction: null, debt: null });
+    expect(uncertainResult.answer).toContain("Please answer yes");
+
+    vi.mocked(fetch).mockImplementationOnce(async () => logDebtResponse());
     const confirmationResponse = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",
       headers: { origin: "https://tally.test", "content-type": "application/json" },

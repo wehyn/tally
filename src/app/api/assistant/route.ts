@@ -213,7 +213,7 @@ export async function POST(request: Request) {
     if (!providerCall) throw new Error("Assistant provider returned no action.");
     const lastHistoryMessage = history.at(-1);
     const lastAssistantFollowup = lastHistoryMessage?.role === "assistant" ? lastHistoryMessage.content : "";
-    const ordinaryIncomeQuestionPattern = /\bshould i record\b.*\bordinary income\b/i;
+    const ordinaryIncomeQuestionPattern = /\b(?:should i record|please answer yes)\b.*\bordinary income\b/i;
     let ordinaryIncomeQuestionIndex = -1;
     for (let index = history.length - 1; index >= 0; index--) {
       if (history[index].role === "assistant" && ordinaryIncomeQuestionPattern.test(history[index].content)) {
