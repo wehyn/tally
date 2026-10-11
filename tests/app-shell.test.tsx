@@ -47,4 +47,25 @@ describe("AppShell mobile navigation", () => {
       { href: "/settings", label: "Settings", current: null, icon: "lucide-settings", text: "" },
     ]);
   });
+
+  it("keeps Administration out of the mobile navigation for admins", () => {
+    const props = {
+      user: {
+        id: "admin-1",
+        username: "Admin",
+        role: "admin",
+        enabled: true,
+        assistantOptIn: false,
+        createdAt: "2026-10-11T00:00:00.000Z",
+      } satisfies PublicUser,
+      assistantEnabled: false,
+      assistantConfigured: false,
+    } as Parameters<typeof AppShell>[0];
+    const html = renderToStaticMarkup(createElement(AppShell, props, null));
+    const document = new DOMParser().parseFromString(html, "text/html");
+    const links = Array.from(document.querySelectorAll('nav[aria-label="Mobile navigation"] a'));
+
+    expect(links).toHaveLength(7);
+    expect(links.map((link) => link.getAttribute("href"))).not.toContain("/admin");
+  });
 });
