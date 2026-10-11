@@ -304,7 +304,12 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
             {savingTransactionId === message.transaction.id && <span className="chat-transaction-saving" role="status">Updating…</span>}
             {message.transaction.undoUntil && isUndoAvailable(message.transaction.undoUntil, now) && <button type="button" className="undo-link" disabled={savingTransactionId === message.transaction.id} onClick={() => void undo(message.transaction!.id)}><Undo2 size={12} style={{ verticalAlign: "-2px" }}/> Undo · {Math.max(1, Math.ceil((Date.parse(message.transaction.undoUntil) - now) / 1000))}s</button>}
           </article> : <div className={`chat-bubble ${message.role}`} key={message.id}>{message.content}</div>) : <div className="assistant-widget-empty"><span className="assistant-widget-mark"><Bot size={19}/></span><strong>What would you like to do?</strong><p>Ask about your money, describe a transaction, or record a debt.</p></div>}
-          {busy && <div className="chat-bubble assistant">Checking your request…</div>}
+          {busy && <div className="chat-bubble assistant chat-typing" role="status">
+            <span className="sr-only">Tally is typing</span>
+            <span className="chat-typing-dot" aria-hidden="true"/>
+            <span className="chat-typing-dot" aria-hidden="true"/>
+            <span className="chat-typing-dot" aria-hidden="true"/>
+          </div>}
           {notice && <p className="assistant-widget-notice" role="status">{notice}</p>}
         </div>
       </> : <>

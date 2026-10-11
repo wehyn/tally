@@ -16,6 +16,10 @@
 .assistant-widget-icon:hover{background:#f1f4ef;color:var(--ink)}
 .assistant-widget-messages{min-height:0;flex:1;padding:16px;display:flex;flex-direction:column;gap:11px;overflow-y:auto;overscroll-behavior:contain}
 .assistant-widget-messages .chat-bubble{max-width:100%;font-size:12px}
+.assistant-widget-messages .chat-typing{display:flex;align-items:center;gap:4px}
+.chat-typing-dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.4;animation:assistant-typing 1.1s ease-in-out infinite}
+.chat-typing-dot:nth-child(3){animation-delay:.15s}
+.chat-typing-dot:nth-child(4){animation-delay:.3s}
 .assistant-widget-empty{margin:auto;max-width:280px;display:grid;justify-items:center;gap:8px;text-align:center;color:var(--muted)}
 .assistant-widget-empty strong{font-size:13px;color:#4c5c52}
 .assistant-widget-empty p{margin:0;font-size:11px;line-height:1.55}
@@ -47,6 +51,7 @@
 @keyframes assistant-pill-in{from{opacity:.78;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
 @keyframes assistant-input-in{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:translateX(0)}}
 @keyframes assistant-panel-in{from{opacity:0;transform:translateY(9px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes assistant-typing{0%,60%,100%{opacity:.4;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
 @media(max-width:900px){.assistant-widget{right:16px;bottom:calc(76px + env(safe-area-inset-bottom));max-width:calc(100vw - 32px)}.assistant-widget.composing{width:min(310px,calc(100vw - 32px))}.assistant-widget.chat{width:min(390px,calc(100vw - 32px))}.assistant-widget-panel.has-composer{height:min(66vh,calc(100dvh - 168px))}.assistant-widget-messages{padding:14px}}
 @media(max-width:620px){.assistant-widget{right:12px;bottom:calc(73px + env(safe-area-inset-bottom));max-width:calc(100vw - 24px)}.assistant-widget.composing{width:min(310px,calc(100vw - 24px))}.assistant-widget.chat{width:min(390px,calc(100vw - 24px))}.assistant-widget-panel{border-radius:16px}.assistant-widget-panel.has-composer{height:min(66vh,calc(100dvh - 155px));border-radius:16px 16px 0 0}.assistant-widget-messages{padding:14px}.assistant-widget-composer.chat{border-radius:0 0 16px 16px}}
 .chat-transaction-card{align-self:flex-start;display:grid;gap:7px;width:min(100%,290px);padding:12px;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);color:#4e5d53;font-size:10px}
