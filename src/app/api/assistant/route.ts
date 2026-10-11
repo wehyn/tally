@@ -29,7 +29,13 @@ function containsCounterparty(text: string, counterparty: string): boolean {
   return normalizedCounterparty.length > 0 && ` ${normalizeWords(text)} `.includes(` ${normalizedCounterparty} `);
 }
 function isIncomingDebtRepayment(text: string): boolean {
-  return /\b(?:paid\s+me|repaid\s+me|repayment)\b/i.test(text);
+  if (/\b(?:paid\s+me|repaid\s+me|repayment)\b/i.test(text)) return true;
+  const payment = /\b(?:paid\s+back|repaid|returned)\s+(?:(?:₱|PHP|\$)\s*)?\d|\breturned\s+(?:the|my)\s+money\b/giu;
+  return [...text.matchAll(payment)].some((match) => {
+    const beforePayment = text.slice(0, match.index).trimEnd();
+    const subject = beforePayment.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*$/u)?.[0];
+    return Boolean(subject && !/^(?:i|we|you)$/i.test(subject));
+  });
 }
 function categoryNameMatches(name: string, categories: AssistantCategory[]): AssistantCategory[] {
   const exact = categories.filter((category) => category.name.toLowerCase() === name.trim().toLowerCase());
@@ -212,11 +218,19 @@ export async function POST(request: Request) {
     const repaymentDebt = repaymentNames.length === 1
       ? openOwedToYouDebts.find((debt) => normalizeWords(debt.counterparty) === repaymentNames[0])
       : undefined;
-    const call = repaymentIntent && (providerCall.name === "log_debt" || providerCall.name === "log_transaction")
-      ? repaymentDebt
-        ? { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } }
-        : { name: "ask_clarification", args: { question: repaymentNames.length ? "Which person's open debt should I apply this payment to?" : "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } }
-      : providerCall;
+    let call = providerCall;
+    if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
+      const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeWords(providerCall.args.counterparty) : "";
+      if (repaymentNames.length > 1) {
+        call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } };
+      } else if (!repaymentDebt) {
+        call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } };
+      } else if (providerCounterparty && providerCounterparty !== normalizeWords(repaymentDebt.counterparty)) {
+        call = { name: "ask_clarification", args: { question: "I couldn't confirm which person paid. Which person's open debt should I update?" } };
+      } else {
+        call = { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
+      }
+    }
 
     let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let undoUntil: string | null = null; let needsFollowup = false;
     if (call.name === "ask_clarification") { answer = safeClarification(call.args.question); needsFollowup = true; }
