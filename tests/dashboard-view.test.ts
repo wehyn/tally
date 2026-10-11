@@ -1,14 +1,19 @@
+// @vitest-environment jsdom
+
 import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView } from "../src/components/dashboard-view";
 import { createStore } from "../src/lib/store";
 
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
 let database: Database.Database;
 let store: ReturnType<typeof createStore>;
-const globalStyles = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+const globalStyles = readFileSync("src/app/globals.css", "utf8");
 
 beforeEach(() => {
   database = new Database(":memory:");
@@ -18,7 +23,7 @@ beforeEach(() => {
 
 afterEach(() => database.close());
 
-function renderDashboard() {
+function dashboardData() {
   const user = store.registerUser("dashboard_view", "hash");
   const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 10_000 });
   const overdrawn = store.createAccount(user.id, { name: "Overdrawn account", type: "bank", openingMinor: 0 });
@@ -40,9 +45,11 @@ function renderDashboard() {
     date: "2026-10-09",
   });
 
-  return renderToStaticMarkup(createElement(DashboardView, {
-    initial: store.getDashboard(user.id, "2026-10-01", "2026-10-31"),
-  }));
+  return store.getDashboard(user.id, "2026-10-01", "2026-10-31");
+}
+
+function renderDashboard() {
+  return renderToStaticMarkup(createElement(DashboardView, { initial: dashboardData() }));
 }
 
 describe("DashboardView", () => {
@@ -59,6 +66,63 @@ describe("DashboardView", () => {
     expect(dateInputValues).toEqual(["2026-10-01", "2026-10-31"]);
     expect(period).toMatch(/<button\b(?=[^>]*\btype="submit")[^>]*>Apply<\/button>/);
     expect(period).toMatch(/<button\b(?=[^>]*\btype="button")[^>]*>Month to date<\/button>/);
+  });
+
+  it("requests the selected dates when Apply is submitted", async () => {
+    const initial = dashboardData();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => initial });
+    vi.stubGlobal("fetch", fetchMock);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(createElement(DashboardView, { initial })));
+      const [start, end] = [...container.querySelectorAll<HTMLInputElement>('.date-range-form input[type="date"]')];
+      const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      await act(async () => {
+        setInputValue.call(start, "2026-10-05");
+        start.dispatchEvent(new Event("input", { bubbles: true }));
+        setInputValue.call(end, "2026-10-09");
+        end.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => {
+        container.querySelector<HTMLFormElement>(".date-range-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/dashboard?start=2026-10-05&end=2026-10-09");
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("requests the Manila month-to-date range", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T16:00:00.000Z"));
+    const initial = dashboardData();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => initial });
+    vi.stubGlobal("fetch", fetchMock);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(createElement(DashboardView, { initial })));
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('.date-range-form button[type="button"]')!.click();
+        await Promise.resolve();
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/dashboard?start=2026-10-01&end=2026-10-12");
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it("shows total balance alongside the period summary and Assets", () => {
