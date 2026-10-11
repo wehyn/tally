@@ -4,6 +4,12 @@ export const BILL_ICONS = [
 ] as const;
 export type BillIcon = typeof BILL_ICONS[number];
 
+export const BILL_ICON_LOGO_PATHS: Partial<Record<BillIcon, string>> = {
+  netflix: "/bill-logos/netflix.svg",
+  shopee: "/bill-logos/shopee.svg",
+  pldt: "/bill-logos/pldt.svg",
+};
+
 export const DEFAULT_BILL_ICON_FOREGROUND_COLOR = "#5e9872";
 export const DEFAULT_BILL_ICON_BACKGROUND_COLOR = "#f0f5f0";
 
