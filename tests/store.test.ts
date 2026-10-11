@@ -52,6 +52,36 @@ describe("owner-scoped ledger", () => {
     expect(store.listTransactions(user.id)).toMatchObject([{ id: transaction.id, kind: "income", amountMinor: 1, accountId: account.id }]);
   });
 
+  it("keeps balances exact after 1,024 maximum transfers and balance resets", () => {
+    const amountMinor = Number.MAX_SAFE_INTEGER;
+    const user = store.registerUser("account_balance_transfer_range", "hash");
+    const source = store.createAccount(user.id, { name: "Source", type: "cash", openingMinor: amountMinor });
+    const destination = store.createAccount(user.id, { name: "Destination", type: "bank", openingMinor: 0 });
+    const transferIds: string[] = [];
+
+    for (let index = 0; index < 1_024; index++) {
+      const transfer = store.createTransaction(user.id, {
+        kind: "transfer", amountMinor, accountId: source.id, destinationAccountId: destination.id,
+        description: "Balance reset", date: "2026-10-09",
+      });
+      transferIds.push(transfer.id);
+      store.updateAccount(user.id, destination.id, { balanceMinor: 0 });
+      store.updateAccount(user.id, source.id, { balanceMinor: amountMinor });
+    }
+
+    expect(Object.fromEntries(store.listAccounts(user.id).map(({ id, balanceMinor }) => [id, balanceMinor])))
+      .toEqual({ [source.id]: amountMinor, [destination.id]: 0 });
+
+    const transactions = database.prepare(`SELECT id,kind,amount_minor,account_id,destination_account_id
+      FROM transactions WHERE user_id=?`).all(user.id) as {
+        id: string; kind: string; amount_minor: number; account_id: string; destination_account_id: string;
+      }[];
+    expect(transactions).toHaveLength(1_024);
+    expect(new Set(transactions.map(({ id }) => id))).toEqual(new Set(transferIds));
+    expect(transactions.every((transaction) => transaction.kind === "transfer" && transaction.amount_minor === amountMinor
+      && transaction.account_id === source.id && transaction.destination_account_id === destination.id)).toBe(true);
+  }, 30_000);
+
   it("calculates asset totals and weights from positive account balances", () => {
     const user = store.registerUser("asset_weights", "hash");
     const cash = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 6000 });

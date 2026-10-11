@@ -212,16 +212,26 @@ export function createStore(db: Database.Database) {
   }
 
   function listAccounts(userId: string): Account[] {
-    const rows = db.prepare(`SELECT a.id,a.name,a.type,a.opening_minor,a.is_default,
-      a.opening_minor + a.balance_adjustment_minor + COALESCE(SUM(CASE
-        WHEN t.kind='income' AND t.account_id=a.id THEN t.amount_minor
-        WHEN t.kind='expense' AND t.account_id=a.id THEN -t.amount_minor
-        WHEN t.kind='transfer' AND t.account_id=a.id THEN -t.amount_minor
-        WHEN t.kind='transfer' AND t.destination_account_id=a.id THEN t.amount_minor ELSE 0 END),0) AS balance_minor
-      FROM financial_accounts a LEFT JOIN transactions t ON t.user_id=a.user_id AND (t.account_id=a.id OR t.destination_account_id=a.id)
-      WHERE a.user_id=? GROUP BY a.id ORDER BY a.created_at,a.rowid`).all(userId) as Record<string, unknown>[];
+    const rows = db.prepare(`SELECT id,name,type,CAST(opening_minor AS TEXT) AS opening_minor,
+      CAST(balance_adjustment_minor AS TEXT) AS balance_adjustment_minor,is_default
+      FROM financial_accounts WHERE user_id=? ORDER BY created_at,rowid`).all(userId) as Record<string, unknown>[];
+    const balances = new Map(rows.map((row) => [String(row.id), BigInt(String(row.opening_minor)) + BigInt(String(row.balance_adjustment_minor))]));
+    const transactions = db.prepare(`SELECT kind,CAST(amount_minor AS TEXT) AS amount_minor,account_id,destination_account_id
+      FROM transactions WHERE user_id=?`).iterate(userId) as Iterable<Record<string, unknown>>;
+    for (const transaction of transactions) {
+      const amount = BigInt(String(transaction.amount_minor));
+      const accountId = String(transaction.account_id);
+      const balance = balances.get(accountId);
+      if (balance !== undefined && transaction.kind === "income") balances.set(accountId, balance + amount);
+      else if (balance !== undefined && (transaction.kind === "expense" || transaction.kind === "transfer")) balances.set(accountId, balance - amount);
+      if (transaction.kind === "transfer" && transaction.destination_account_id != null) {
+        const destinationId = String(transaction.destination_account_id);
+        const destinationBalance = balances.get(destinationId);
+        if (destinationBalance !== undefined) balances.set(destinationId, destinationBalance + amount);
+      }
+    }
     return rows.map((row) => ({ id: String(row.id), name: String(row.name), type: row.type as AccountType,
-      openingMinor: safeMinorNumber(row.opening_minor, "Account opening balance"), balanceMinor: safeMinorNumber(row.balance_minor, "Account balance"), isDefault: Boolean(row.is_default) }));
+      openingMinor: safeMinorNumber(row.opening_minor, "Account opening balance"), balanceMinor: safeMinorNumber(balances.get(String(row.id))!, "Account balance"), isDefault: Boolean(row.is_default) }));
   }
   function assertLedgerTotalsSafe(userId: string): void {
     const totals = db.prepare(`SELECT
