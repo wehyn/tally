@@ -116,10 +116,14 @@ test("keeps the calendar 6px above its trigger when February has one fewer week 
   await expect(calendar.locator("h3")).toHaveText("February 2026");
   await expect(weekRows).toHaveCount(4);
 
+  await expect.poll(async () => {
+    const { gap } = await measurePlacement();
+    return Math.abs(gap - 6) <= 1;
+  }, { message: "February calendar should settle 6px above its trigger" }).toBe(true);
+
   const february = await measurePlacement();
   expect(february.popupHeight).toBeLessThan(january.popupHeight);
   expect(february.overlaps).toBe(false);
-  expect(Math.abs(february.gap - 6), `February trigger-to-popup gap was ${february.gap}px`).toBeLessThanOrEqual(1);
 });
 
 /*
