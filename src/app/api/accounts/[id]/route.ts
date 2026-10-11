@@ -3,7 +3,7 @@ import { assertSameOrigin, requestJson, requireUser, respondError } from "@/lib/
 import { getStore } from "@/lib/db";
 import { parsePHPToMinor } from "@/lib/money";
 
-const schema = z.object({ name: z.string().trim().min(1).max(80).optional(), type: z.enum(["cash", "bank"]).optional(), balance: z.string().max(24).optional() });
+const schema = z.strictObject({ name: z.string().trim().min(1).max(80).optional(), type: z.enum(["cash", "bank"]).optional(), balance: z.string().max(24).optional() });
 type Context = { params: Promise<{ id: string }> };
 export async function PATCH(request: Request, { params }: Context) {
   try {
