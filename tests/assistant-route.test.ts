@@ -294,6 +294,41 @@ describe("assistant debt capture", () => {
     expect(store.listDebts(user.id)).toHaveLength(0);
   });
 
+  it("keeps an accepted ordinary-income choice through a later account clarification", async () => {
+    const providerResponse = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }],
+    }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerResponse("record_debt_payment", { counterparty: "Mom", amount: "100" }))
+      .mockResolvedValueOnce(providerResponse("log_transaction", { kind: "income", category: "Other income", amount: "100", account: "Missing account" }))
+      .mockResolvedValueOnce(providerResponse("log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "100", account: "Wallet" })));
+
+    const initialResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom paid me 100" }),
+    }));
+    const { conversationId } = await initialResponse.json();
+    const confirmationResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Yes", conversationId }),
+    }));
+    expect((await confirmationResponse.json()).answer).toContain("I couldn't find the account");
+
+    const accountResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Wallet", conversationId }),
+    }));
+    const result = await accountResponse.json();
+
+    expect(result.transaction).toMatchObject({ kind: "income", categoryName: "Other income", amountMinor: 10000, accountName: "Wallet" });
+    expect(result.debt).toBeNull();
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
+    expect(store.listDebts(user.id)).toHaveLength(0);
+  });
+
   it("asks before updating a different person selected by the provider", async () => {
     const momDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 20000 });
     const dadDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Dad", amountMinor: 30000 });

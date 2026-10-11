@@ -211,12 +211,24 @@ export async function POST(request: Request) {
     const openOwedToYou = openOwedToYouDebts.map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
     const providerCall = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou });
     if (!providerCall) throw new Error("Assistant provider returned no action.");
-    const lastAssistantFollowup = history.at(-1)?.role === "assistant" ? history.at(-1)!.content : "";
-    const ordinaryIncomeQuestion = history.some((message) => message.role === "assistant" && /\bshould i record\b.*\bordinary income\b/i.test(message.content));
-    const ordinaryIncomeAccepted = ordinaryIncomeQuestion && !/^\s*(?:no|nope|nah)\b/i.test(input.prompt)
-      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt);
-    const ordinaryIncomeDeclined = ordinaryIncomeQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
-    const repaymentContextText = ordinaryIncomeQuestion ? input.prompt : userMessageText.join(" ");
+    const lastHistoryMessage = history.at(-1);
+    const lastAssistantFollowup = lastHistoryMessage?.role === "assistant" ? lastHistoryMessage.content : "";
+    const ordinaryIncomeQuestionPattern = /\bshould i record\b.*\bordinary income\b/i;
+    let ordinaryIncomeQuestionIndex = -1;
+    for (let index = history.length - 1; index >= 0; index--) {
+      if (history[index].role === "assistant" && ordinaryIncomeQuestionPattern.test(history[index].content)) {
+        ordinaryIncomeQuestionIndex = index;
+        break;
+      }
+    }
+    const ordinaryIncomeQuestionPending = ordinaryIncomeQuestionPattern.test(lastAssistantFollowup);
+    const ordinaryIncomeConfirmedInHistory = ordinaryIncomeQuestionIndex >= 0 && history.slice(ordinaryIncomeQuestionIndex + 1)
+      .some((message) => message.role === "user" && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content));
+    const ordinaryIncomeFlow = ordinaryIncomeQuestionPending || ordinaryIncomeConfirmedInHistory;
+    const ordinaryIncomeAccepted = ordinaryIncomeConfirmedInHistory || (ordinaryIncomeQuestionPending
+      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt));
+    const ordinaryIncomeDeclined = ordinaryIncomeFlow && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
+    const repaymentContextText = ordinaryIncomeFlow ? input.prompt : userMessageText.join(" ");
     const payerSelection = /\b(?:who paid|which person|which person's|which debt)\b/i.test(lastAssistantFollowup);
     const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
     const repaymentIntent = isIncomingDebtRepayment(repaymentContextText);
@@ -227,7 +239,7 @@ export async function POST(request: Request) {
       ? openOwedToYouDebts.find((debt) => normalizeWords(debt.counterparty) === repaymentNames[0])
       : undefined;
     let call = providerCall;
-    if (ordinaryIncomeQuestion) {
+    if (ordinaryIncomeFlow) {
       if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
         const providerCounterparty = typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty.trim() : "";
         const description = typeof providerCall.args.description === "string" && providerCall.args.description.trim()
@@ -236,7 +248,7 @@ export async function POST(request: Request) {
         call = { name: "log_transaction", args: { ...providerCall.args, kind: "income", category: "Other income", description } };
       } else if (ordinaryIncomeDeclined) {
         call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
-      } else {
+      } else if (!ordinaryIncomeAccepted) {
         call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } };
       }
     } else if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
