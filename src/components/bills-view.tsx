@@ -1,19 +1,20 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { Archive, CalendarDays, CarFront, ChevronDown, Cloud, CreditCard, Droplet, Fuel, GraduationCap, Dumbbell, Home, Music2, Pencil, Plus, ShieldCheck, ShoppingBag, Smartphone, Stethoscope, Trash2, Tv, Wifi, X, Zap, type LucideIcon } from "lucide-react";
-import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, selectBillIconPreset, type BillIcon } from "@/lib/bill-icons";
+import { BILL_ICON_LOGO_PATHS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, selectBillIconPreset, type BillIcon } from "@/lib/bill-icons";
 import type { Account, Bill, Category } from "@/lib/store";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
 
-const billIcons: { key: BillIcon; label: string; Icon?: LucideIcon; mark?: string }[] = [
+const billIcons: { key: BillIcon; label: string; Icon?: LucideIcon }[] = [
   { key: "calendar", label: "Calendar", Icon: CalendarDays }, { key: "home", label: "Home", Icon: Home },
   { key: "wifi", label: "Wi-Fi", Icon: Wifi }, { key: "phone", label: "Phone", Icon: Smartphone },
   { key: "electricity", label: "Electricity", Icon: Zap }, { key: "water", label: "Water", Icon: Droplet },
   { key: "tv", label: "TV", Icon: Tv }, { key: "music", label: "Music", Icon: Music2 },
-  { key: "card", label: "Card", Icon: CreditCard }, { key: "netflix", label: "Netflix", mark: "N" },
-  { key: "shopee", label: "Shopee", mark: "S" }, { key: "pldt", label: "PLDT", mark: "P" },
+  { key: "card", label: "Card", Icon: CreditCard }, { key: "netflix", label: "Netflix" },
+  { key: "shopee", label: "Shopee" }, { key: "pldt", label: "PLDT" },
   { key: "gym", label: "Gym", Icon: Dumbbell }, { key: "streaming", label: "Streaming", Icon: Tv },
   { key: "shopping", label: "Shopping", Icon: ShoppingBag }, { key: "transport", label: "Transport", Icon: CarFront },
   { key: "insurance", label: "Insurance", Icon: ShieldCheck }, { key: "gas", label: "Gas", Icon: Fuel },
@@ -23,8 +24,9 @@ const billIcons: { key: BillIcon; label: string; Icon?: LucideIcon; mark?: strin
 type BillIconGlyphProps = { icon: BillIcon; emoji?: string | null; size?: number };
 function BillIconGlyph({ icon, emoji, size = 17 }: BillIconGlyphProps) {
   if (emoji) return <span className="bill-icon-emoji" aria-hidden="true">{emoji}</span>;
+  const logoPath = BILL_ICON_LOGO_PATHS[icon];
+  if (logoPath) return <Image src={logoPath} alt="" className="bill-brand-logo" width={size} height={size} unoptimized style={{ objectFit: "contain" }}/>;
   const option = billIcons.find((entry) => entry.key === icon);
-  if (option?.mark) return <span className={`bill-icon-mark bill-icon-mark-${icon}`} aria-hidden="true">{option.mark}</span>;
   const Icon = option?.Icon ?? CalendarDays;
   return <Icon size={size} aria-hidden="true"/>;
 }
@@ -110,7 +112,6 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
 
   return <div className="page-stack">
     <section className="page-heading-row page-heading-actions-only"><h1 className="sr-only">Bills</h1><button className="button button-primary" onClick={create}><Plus size={16}/> Add a bill</button></section>
-    <div className="notice-box warning" role="note">Bills due today or earlier are automatically recorded as expenses, even without payment confirmation.</div>
     {notice && <div className="notice-box warning" role="status">{notice}</div>}
     {error && !open && <p className="error-text" role="alert">{error}</p>}
     <section className="panel"><div className="panel-heading"><div><h2>Upcoming</h2><p>Active bills, ordered by next due date.</p></div></div>{list(active)}</section>
