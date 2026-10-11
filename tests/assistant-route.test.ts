@@ -224,6 +224,74 @@ describe("assistant debt capture", () => {
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
     expect(store.listDebts(user.id)).toHaveLength(0);
     expect(ordinaryProviderRequest?.messages.at(-2)?.content).toBe("Untrusted ledger data for matching only: []");
+
+    vi.mocked(fetch).mockImplementationOnce(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "100" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } }));
+    const confirmationResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Yes", conversationId: ordinaryPaymentResult.conversationId }),
+    }));
+    const confirmationResult = await confirmationResponse.json();
+    expect(confirmationResult.transaction).toMatchObject({ kind: "income", categoryName: "Other income", amountMinor: 10000 });
+    expect(confirmationResult.debt).toBeNull();
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(20000);
+    expect(store.listDebts(user.id)).toHaveLength(0);
+  });
+
+  it("carries the payer through an active amount clarification", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
+    const providerResponse = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }],
+    }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerResponse("ask_clarification", { question: "What amount should I use for the repayment?" }))
+      .mockResolvedValueOnce(providerResponse("log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "100" })));
+
+    const initialResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom paid me" }),
+    }));
+    const { conversationId } = await initialResponse.json();
+    const followupResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "100", conversationId }),
+    }));
+    const result = await followupResponse.json();
+
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000 });
+    expect(result.debt).toMatchObject({ id: debt.id, amountMinor: 338600, status: "open" });
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
+  });
+
+  it("does not write when ordinary income is declined after a missing-debt clarification", async () => {
+    const providerResponse = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }],
+    }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerResponse("record_debt_payment", { counterparty: "Mom", amount: "100" }))
+      .mockResolvedValueOnce(providerResponse("log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "100" })));
+
+    const initialResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom paid me 100" }),
+    }));
+    const { conversationId } = await initialResponse.json();
+    const declineResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "No", conversationId }),
+    }));
+    const result = await declineResponse.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null, answer: "Okay, I won't record the money." });
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listDebts(user.id)).toHaveLength(0);
   });
 
   it("asks before updating a different person selected by the provider", async () => {
