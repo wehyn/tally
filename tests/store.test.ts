@@ -38,6 +38,20 @@ describe("owner-scoped ledger", () => {
     expect(dashboard.accounts.map((account) => [account.name, account.balanceMinor])).toEqual([["Wallet", 12000], ["Savings", 6000]]);
   });
 
+  it("sets the opposite safe-integer boundary without changing transaction history", () => {
+    const user = store.registerUser("account_balance_boundary", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: Number.MAX_SAFE_INTEGER - 1 });
+    const salary = store.listCategories(user.id).find((category) => category.type === "income")!;
+    const transaction = store.createTransaction(user.id, {
+      kind: "income", amountMinor: 1, accountId: account.id, categoryId: salary.id, description: "Pay", date: "2026-10-09",
+    });
+
+    store.updateAccount(user.id, account.id, { balanceMinor: -Number.MAX_SAFE_INTEGER });
+
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(-Number.MAX_SAFE_INTEGER);
+    expect(store.listTransactions(user.id)).toMatchObject([{ id: transaction.id, kind: "income", amountMinor: 1, accountId: account.id }]);
+  });
+
   it("calculates asset totals and weights from positive account balances", () => {
     const user = store.registerUser("asset_weights", "hash");
     const cash = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 6000 });

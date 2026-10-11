@@ -7,8 +7,9 @@ import { formatPHP, minorToInput } from "@/lib/money";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 
-type AccountDraft = { name: string; type: "cash" | "bank"; openingBalance: string };
+type AccountDraft = { name: string; type: "cash" | "bank"; balance: string };
 type TransferDraft = { amount: string; description: string; accountId: string; destinationAccountId: string; date: string; time: string };
+const balanceToInput = (minor: number) => `${minor < 0 ? "-" : ""}${minorToInput(minor)}`;
 const blankTransfer = (accounts: Account[]): TransferDraft => ({
   amount: "",
   description: "",
@@ -25,7 +26,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
   const [loadingMoreTransfers, setLoadingMoreTransfers] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
-  const [draft, setDraft] = useState<AccountDraft>({ name: "", type: "cash", openingBalance: "0.00" });
+  const [draft, setDraft] = useState<AccountDraft>({ name: "", type: "cash", balance: "0.00" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
@@ -53,14 +54,14 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
 
   function create() {
     setEditing(null);
-    setDraft({ name: "", type: "cash", openingBalance: "0.00" });
+    setDraft({ name: "", type: "cash", balance: "0.00" });
     setError("");
     setOpen(true);
   }
 
   function edit(account: Account) {
     setEditing(account);
-    setDraft({ name: account.name, type: account.type, openingBalance: minorToInput(account.openingMinor) });
+    setDraft({ name: account.name, type: account.type, balance: balanceToInput(account.balanceMinor) });
     setError("");
     setOpen(true);
   }
@@ -215,15 +216,15 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
       {hasMoreTransfers && <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}><button className="button button-small" onClick={loadMoreTransfers} disabled={loadingMoreTransfers}>{loadingMoreTransfers ? "Loading…" : "Load more transfers"}</button></div>}
     </article>
 
-    <article className="panel"><div className="panel-heading"><div><h2>How account balances work</h2><p>Balances are calculated from your opening amount and owned transactions.</p></div></div><div className="activity-list">
+    <article className="panel"><div className="panel-heading"><div><h2>How account balances work</h2><p>Balances start at the amount you set and update with owned transactions.</p></div></div><div className="activity-list">
       <div className="activity-row"><div className="activity-icon"><ArrowDownLeft size={17}/></div><div className="activity-copy"><strong>Income</strong><span>Added to the account you choose.</span></div></div>
       <div className="activity-row"><div className="activity-icon expense"><ArrowUpRight size={17}/></div><div className="activity-copy"><strong>Expense</strong><span>Subtracted from the selected account.</span></div></div>
       <div className="activity-row"><div className="activity-icon transfer"><ArrowLeftRight size={17}/></div><div className="activity-copy"><strong>Transfer</strong><span>Moves money between your accounts without changing income or spending totals.</span></div></div>
     </div></article>
 
     {open && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="account-title">
-      <div className="modal-heading"><div><h2 id="account-title">{editing ? "Edit account" : "New financial account"}</h2><p>Opening balance is not recorded as income.</p></div><button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
-      <form onSubmit={save}><div className="form-grid"><label className="field-label span-2">Account name<input autoFocus required maxLength={80} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Everyday cash"/></label><label className="field-label">Type<select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value as AccountDraft["type"] })}><option value="cash">Cash</option><option value="bank">Bank</option></select></label><label className="field-label">Opening balance<input inputMode="decimal" required value={draft.openingBalance} onChange={(e) => setDraft({ ...draft, openingBalance: e.target.value })} placeholder="0.00"/></label></div>
+      <div className="modal-heading"><div><h2 id="account-title">{editing ? "Edit account" : "New financial account"}</h2><p>{editing ? "Set the current balance; transaction history stays unchanged." : "Initial balance is not recorded as income."}</p></div><button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
+      <form onSubmit={save}><div className="form-grid"><label className="field-label span-2">Account name<input autoFocus required maxLength={80} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Everyday cash"/></label><label className="field-label">Type<select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value as AccountDraft["type"] })}><option value="cash">Cash</option><option value="bank">Bank</option></select></label><label className="field-label">Set balance<input inputMode="text" required value={draft.balance} onChange={(e) => setDraft({ ...draft, balance: e.target.value })} placeholder="0.00"/></label></div>
         {error && <p className="error-text" role="alert" style={{ marginTop: 12 }}>{error}</p>}<div className="modal-footer"><button type="button" className="button" onClick={() => setOpen(false)}>Cancel</button><button disabled={busy} className="button button-primary">{busy ? "Saving…" : editing ? "Save changes" : "Create account"}</button></div>
       </form>
     </section></div>}

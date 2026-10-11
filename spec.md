@@ -14,7 +14,7 @@ V1 delivers private personal finance and debt tracking, an optional hosted assis
 
 - Let anyone who can reach the instance register and keep a private ledger.
 - Give the first registrant instance-administration privileges without exposing personal finance data to the admin role.
-- Track PHP cash and bank accounts, opening balances, income, expenses, and transfers.
+- Track PHP cash and bank accounts, set balances, income, expenses, and transfers.
 - Track current amounts owed to the user and amounts the user owes, without mixing debt records into the account ledger or analytics.
 - Show current balances and actual activity, defaulting analytics to month-to-date.
 - Offer opt-in natural-language transaction capture and factual finance questions through Codex-LB.
@@ -44,8 +44,8 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 
 ### 2. Personal accounts, ledger, and debt register
 
-- A user can create cash and bank accounts with a name and PHP opening balance. A new account defaults to ₱0.
-- The opening balance establishes the starting balance without creating a transaction or counting as income.
+- A user can create cash and bank accounts with a name and PHP balance. A new account defaults to ₱0.
+- Setting a balance does not create or alter transactions or count as income. Editing sets the current balance; later transactions continue to update it.
 - The user's first account becomes the default account for assistant capture. The user can change the default later. At least one financial account is required before recording a transaction.
 - V1 supports PHP only. Store and calculate money using precise minor-unit arithmetic; do not use floating-point arithmetic for financial totals.
 - Income adds money to one owned account. Expenses subtract money from one owned account. Both appear in account history and relevant analytics.
@@ -67,7 +67,7 @@ The dashboard is the signed-in user's overview and shows:
 - The date range represented by period-based figures.
 - Category management is in **Transactions → Manage categories**; the dashboard has no spending-by-category panel or separate quick-entry form.
 
-Use Asia/Manila for relative dates, the current day, and month boundaries. Opening balances affect current balances but are not income. Transfers affect account balances but are not income or spending. All dashboard figures must use only the signed-in user's personal records, except that shared-goal progress is visible to that goal's members.
+Use Asia/Manila for relative dates, the current day, and month boundaries. Set balances affect current balances but are not income. Transfers affect account balances but are not income or spending. All dashboard figures must use only the signed-in user's personal records, except that shared-goal progress is visible to that goal's members.
 
 ### 4. Optional in-app assistant
 
@@ -145,7 +145,7 @@ V1 is acceptable when the following outcomes work for multiple independent users
 
 1. **Account bootstrap:** A reachable person can register and sign in. Concurrent first registrations produce exactly one admin; subsequent users are regular users. The admin can manage access and issue a one-time reset without seeing a user's private data or new password.
 2. **Ledger isolation:** Each user can create private accounts, categories, and records. A user or admin cannot read or change another user's personal finance records through the app.
-3. **Accounting behavior:** Opening balances affect balances without appearing as transactions or income. Income and expenses change balances and analytics correctly. Transfers update two owned accounts together and never inflate income or spending totals.
+3. **Accounting behavior:** Set balances affect balances without appearing as transactions or income. Editing an account preserves its transaction history. Income and expenses change balances and analytics correctly. Transfers update two owned accounts together and never inflate income or spending totals.
 4. **Dashboard:** The user sees total balance across all accounts; income, spending, and net activity for the selected period; positive-balance Assets with each account's balance and weight; recent transactions with category icons; and active goals. Category management is in Transactions. The dashboard has no spending-by-category panel or separate quick-entry form. Period totals state their Asia/Manila date range.
 5. **Assistant capture:** A user who opts in can save a complete natural-language income or expense using the default account and a best-guess category, with the category determining the transaction type and no required description. They can see the saved fields, undo the entry promptly, and later edit or delete it. Clear debt statements create an open record in the correct debt direction and never create a transaction or change ledger figures. An incomplete entry is not saved until required information is supplied. Users who do not opt in can maintain their ledger manually.
 6. **Assistant privacy and answers:** Hosted processing happens only after opt-in, with the configured provider path disclosed. Questions use only the signed-in user's records, provide a date range, and do not invent totals. Conversation deletion leaves finance records intact.
