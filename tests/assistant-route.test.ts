@@ -172,3 +172,47 @@ describe("assistant transaction capture", () => {
     expect(result.transaction).toMatchObject({ kind: "income", categoryName: "Salary", amountMinor: 500000 });
   });
 });
+
+describe("assistant debt capture", () => {
+  it("sends debt direction guidance to the AI and keeps ordinary payments as transactions", async () => {
+    let debtSystemPrompt = "";
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const requestBody = JSON.parse(String(init?.body));
+      const prompt = requestBody.messages.at(-1).content;
+      if (prompt.toLowerCase().startsWith("for debts")) debtSystemPrompt = requestBody.messages[0].content;
+      const toolCall = prompt.toLowerCase().startsWith("for debts")
+        ? { function: { name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "1000" }) } }
+        : { function: { name: "log_transaction", arguments: JSON.stringify({ kind: "income", category: "Salary", amount: "1000", description: "Mom paid me" }) } };
+      return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [toolCall] } }] }), { headers: { "content-type": "application/json" } });
+    }));
+
+    const firstResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 3486" }),
+    }));
+    const { conversationId } = await firstResponse.json();
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "for debts mom paid me 1000", conversationId }),
+    }));
+    const ordinaryPaymentResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom paid me 1000", conversationId }),
+    }));
+
+    expect((await response.json()).debt).toMatchObject({
+      direction: "owed_to_you",
+      counterparty: "Mom",
+      amountMinor: 100000,
+    });
+    expect(debtSystemPrompt).toContain("“Mom paid me 1,000” means owed_to_you");
+    expect(debtSystemPrompt).toContain("“I paid Mom 1,000” means you_owe");
+    expect(await ordinaryPaymentResponse.json()).toMatchObject({
+      transaction: { kind: "income", categoryName: "Salary", amountMinor: 100000 },
+      debt: null,
+    });
+  });
+});
