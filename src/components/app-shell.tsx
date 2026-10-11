@@ -35,7 +35,7 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
       <header className="topbar"><div className="mobile-brand"><span className="brand-mark">t</span><span>Tally</span></div><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{entries.find((item) => item.href === active)?.label ?? "Overview"}</strong></div><div className="topbar-right"><span className="today-chip">PHP · Asia/Manila</span><div className="avatar avatar-small">{user.username.slice(0,1).toUpperCase()}</div></div></header>
       <main className="page-content">{children}</main>
     </div>
-    <nav className="mobile-nav" aria-label="Mobile navigation">{mobileEntries.map(({href,label,icon:Icon})=><Link key={href} href={href} className={active===href?"selected":""} aria-label={label} aria-current={active===href?"page":undefined}><Icon size={20}/><span>{label === "Overview" ? "Home" : label === "Transactions" ? "Ledger" : label === "Shared goals" ? "Goals" : label}</span></Link>)}</nav>
+    <nav className="mobile-nav" aria-label="Mobile navigation">{mobileEntries.map(({href,label,icon:Icon})=><Link key={href} href={href} className={active===href?"selected":""} aria-label={label} aria-current={active===href?"page":undefined}><Icon size={20}/></Link>)}</nav>
     <AssistantWidget enabled={assistantEnabled} configured={assistantConfigured} />
   </div>;
 }
