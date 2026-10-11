@@ -32,7 +32,7 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 
 - A **debt record** tracks a current amount either **owed to you** or **you owe**. It belongs to one user and includes a counterparty, positive PHP amount, optional due date and note, and an open or settled status.
 - Debt records are private to their owner and do not directly create or change financial accounts, transactions, balances, income, spending, or dashboard analytics.
-- The recorded amount is the current outstanding amount; Tally does not record a repayment schedule or per-payment debt history. Manual repayments remain separate transactions and debt edits. Ask Tally's received-repayment action is described under **In-app assistant**.
+- An open record's amount is the current outstanding balance. A settled record retains its last positive amount for display; status is authoritative. Tally does not record a repayment schedule or per-payment debt history. Manual repayments remain separate transactions and debt edits. Ask Tally's received-repayment action is described under **In-app assistant**.
 - Users may edit, reopen, settle, or permanently delete only their own debt records.
 
 ## In-app assistant
