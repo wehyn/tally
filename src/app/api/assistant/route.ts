@@ -24,6 +24,13 @@ function normalizeCategoryName(value: string): string {
 function normalizeWords(value: string): string {
   return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
+function containsCounterparty(text: string, counterparty: string): boolean {
+  const normalizedCounterparty = normalizeWords(counterparty);
+  return normalizedCounterparty.length > 0 && ` ${normalizeWords(text)} `.includes(` ${normalizedCounterparty} `);
+}
+function isIncomingDebtRepayment(text: string): boolean {
+  return /\b(?:paid\s+me|repaid\s+me|repayment)\b/i.test(text);
+}
 function categoryNameMatches(name: string, categories: AssistantCategory[]): AssistantCategory[] {
   const exact = categories.filter((category) => category.name.toLowerCase() === name.trim().toLowerCase());
   if (exact.length) return exact;
@@ -192,12 +199,24 @@ export async function POST(request: Request) {
     const userMessageText = userMessages.map((message) => message.content);
     store.addMessage(user.id, conversationId, "user", input.prompt);
     const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
-    const openOwedToYou = store.listDebts(user.id)
+    const openOwedToYouDebts = store.listDebts(user.id)
       .filter((debt) => debt.direction === "owed_to_you" && debt.status === "open")
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
-    const call = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou });
-    if (!call) throw new Error("Assistant provider returned no action.");
+    const openOwedToYou = openOwedToYouDebts.map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
+    const providerCall = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou });
+    if (!providerCall) throw new Error("Assistant provider returned no action.");
+    const repaymentIntent = isIncomingDebtRepayment(input.prompt);
+    const repaymentNames = repaymentIntent
+      ? [...new Set(openOwedToYouDebts.filter((debt) => containsCounterparty(input.prompt, debt.counterparty)).map((debt) => normalizeWords(debt.counterparty)))]
+      : [];
+    const repaymentDebt = repaymentNames.length === 1
+      ? openOwedToYouDebts.find((debt) => normalizeWords(debt.counterparty) === repaymentNames[0])
+      : undefined;
+    const call = repaymentIntent && (providerCall.name === "log_debt" || providerCall.name === "log_transaction")
+      ? repaymentDebt
+        ? { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } }
+        : { name: "ask_clarification", args: { question: repaymentNames.length ? "Which person's open debt should I apply this payment to?" : "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } }
+      : providerCall;
 
     let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let undoUntil: string | null = null; let needsFollowup = false;
     if (call.name === "ask_clarification") { answer = safeClarification(call.args.question); needsFollowup = true; }

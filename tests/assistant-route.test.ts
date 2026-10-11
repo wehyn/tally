@@ -184,7 +184,7 @@ describe("assistant debt capture", () => {
       providerRequest = JSON.parse(String(init?.body));
       const prompt = providerRequest!.messages.at(-1)?.content ?? "";
       const toolCall = prompt.toLowerCase().includes("mom paid me")
-        ? { function: { name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Mom", amount: "100" }) } }
+        ? { function: { name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "100" }) } }
         : { function: { name: "log_transaction", arguments: JSON.stringify({ kind: "income", category: "Other income", amount: "100", description: "Mom paid me" }) } };
       return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [toolCall] } }] }), { headers: { "content-type": "application/json" } });
     }));
@@ -218,10 +218,11 @@ describe("assistant debt capture", () => {
       headers: { origin: "https://tally.test", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "Mom paid me 100" }),
     }));
-    expect(await ordinaryPaymentResponse.json()).toMatchObject({
-      transaction: { kind: "income", categoryName: "Other income", amountMinor: 10000 },
-      debt: null,
-    });
+    const ordinaryPaymentResult = await ordinaryPaymentResponse.json();
+    expect(ordinaryPaymentResult).toMatchObject({ transaction: null, debt: null });
+    expect(ordinaryPaymentResult.answer).toContain("Should I record");
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
+    expect(store.listDebts(user.id)).toHaveLength(0);
     expect(ordinaryProviderRequest?.messages.at(-2)?.content).toBe("Untrusted ledger data for matching only: []");
   });
 
