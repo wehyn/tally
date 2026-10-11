@@ -14,7 +14,7 @@ vi.mock("../src/components/sign-out-button", () => ({ SignOutButton: () => null 
 
 describe("AppShell mobile navigation", () => {
   it("keeps accessible destinations and icons while showing no text labels", () => {
-    const html = renderToStaticMarkup(createElement(AppShell, {
+    const props = {
       user: {
         id: "user-1",
         username: "Mina",
@@ -23,10 +23,10 @@ describe("AppShell mobile navigation", () => {
         assistantOptIn: false,
         createdAt: "2026-10-11T00:00:00.000Z",
       } satisfies PublicUser,
-      children: null,
       assistantEnabled: false,
       assistantConfigured: false,
-    }));
+    } as Parameters<typeof AppShell>[0];
+    const html = renderToStaticMarkup(createElement(AppShell, props, null));
     const document = new DOMParser().parseFromString(html, "text/html");
     const navigation = document.querySelector('nav[aria-label="Mobile navigation"]');
     const links = Array.from(navigation?.querySelectorAll("a") ?? []);
