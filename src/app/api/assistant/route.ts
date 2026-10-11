@@ -28,7 +28,7 @@ function containsCounterparty(text: string, counterparty: string): boolean {
   const normalizedCounterparty = normalizeWords(counterparty);
   return normalizedCounterparty.length > 0 && ` ${normalizeWords(text)} `.includes(` ${normalizedCounterparty} `);
 }
-function isIncomingDebtRepayment(text: string): boolean {
+function hasIncomingDebtRepaymentWording(text: string): boolean {
   if (/\b(?:paid\s+me|repaid\s+me|repayment)\b/i.test(text)) return true;
   const payment = /\b(?:paid\s+back|repaid|returned)\s+(?:(?:₱|PHP|\$)\s*)?\d|\breturned\s+(?:the|my)\s+money\b/giu;
   return [...text.matchAll(payment)].some((match) => {
@@ -36,6 +36,13 @@ function isIncomingDebtRepayment(text: string): boolean {
     const subject = beforePayment.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*$/u)?.[0];
     return Boolean(subject && !/^(?:i|we|you)$/i.test(subject));
   });
+}
+function isUncertainStatement(text: string): boolean {
+  return text.includes("?") || /\b(?:did not|didn't|does not|doesn't|do not|don't|has not|hasn't|have not|haven't|never|not|maybe|perhaps|possibly|probably|might|may|could|would|will|if|whether|think|thought|unsure|uncertain)\b/i.test(text);
+}
+function isUnconfirmedIncomingDebtPayment(text: string): boolean {
+  return /\b(?:pay|paid|pays|paying)\s+(?:me|back)\b|\b(?:repay|repays|repaid|repayment|return|returns|returned|returning)\b/i.test(text)
+    && isUncertainStatement(text);
 }
 function categoryNameMatches(name: string, categories: AssistantCategory[]): AssistantCategory[] {
   const exact = categories.filter((category) => category.name.toLowerCase() === name.trim().toLowerCase());
@@ -231,7 +238,10 @@ export async function POST(request: Request) {
     const repaymentContextText = ordinaryIncomeFlow ? input.prompt : userMessageText.join(" ");
     const payerSelection = /\b(?:who paid|which person|which person's|which debt)\b/i.test(lastAssistantFollowup);
     const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
-    const repaymentIntent = isIncomingDebtRepayment(repaymentContextText);
+    const repaymentFollowup = /\b(?:what amount|how much|who paid|which person|which debt)\b/i.test(lastAssistantFollowup);
+    const uncertainRepayment = userMessageText.some(isUnconfirmedIncomingDebtPayment)
+      || repaymentFollowup && isUncertainStatement(input.prompt);
+    const repaymentIntent = hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const repaymentNames = repaymentIntent
       ? [...new Set(openOwedToYouDebts.filter((debt) => containsCounterparty(repaymentMatchText, debt.counterparty)).map((debt) => normalizeWords(debt.counterparty)))]
       : [];
@@ -251,6 +261,8 @@ export async function POST(request: Request) {
       } else if (!ordinaryIncomeAccepted) {
         call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } };
       }
+    } else if (uncertainRepayment && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
+      call = { name: "ask_clarification", args: { question: "Was this a completed payment toward an existing debt? Please confirm before I record it." } };
     } else if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
       const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeWords(providerCall.args.counterparty) : "";
       if (repaymentNames.length > 1) {
@@ -391,7 +403,8 @@ export async function POST(request: Request) {
       }
     } else answer = "I couldn't complete that request. Please rephrase it.";
 
-    if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; needsFollowup = false; }
+    if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; needsFollowup = false; }
+    else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; needsFollowup = false; }
     store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, needsFollowup);
     return Response.json({ conversationId, answer, transaction, undoUntil, debt });
   } catch (error) { return respondError(error); }

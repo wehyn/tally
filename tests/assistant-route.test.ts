@@ -379,6 +379,25 @@ describe("assistant debt capture", () => {
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
 
+  it.each(["Mom did not pay me 100", "Did Mom pay me 100?", "Maybe Mom paid me 100", "Did Mom pay back 100?", "Mom did not return 100"])("asks before recording uncertain repayment wording: %s", async (prompt) => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "100" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("couldn't confirm that the payment happened");
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)?.amountMinor).toBe(348600);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
   it("asks which debt to update when the repayment message names multiple people", async () => {
     const momDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 20000 });
     const dadDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Dad", amountMinor: 30000 });
