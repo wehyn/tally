@@ -46,6 +46,21 @@ function renderDashboard() {
 }
 
 describe("DashboardView", () => {
+  it("shows the selected date range and controls without redundant period decoration", () => {
+    const period = renderDashboard().match(/<section class="period-row">([\s\S]*?)<\/section>/)?.[1] ?? "";
+    const inputs = period.match(/<input\b[^>]*>/g) ?? [];
+    const dateInputValues = inputs
+      .filter((input) => /\btype="date"/.test(input))
+      .map((input) => input.match(/\bvalue="([^"]+)"/)?.[1]);
+
+    expect(period).toContain("2026-10-01 — 2026-10-31");
+    expect(period).not.toContain("Showing actuals");
+    expect(period).not.toMatch(/<svg\b/);
+    expect(dateInputValues).toEqual(["2026-10-01", "2026-10-31"]);
+    expect(period).toMatch(/<button\b(?=[^>]*\btype="submit")[^>]*>Apply<\/button>/);
+    expect(period).toMatch(/<button\b(?=[^>]*\btype="button")[^>]*>Month to date<\/button>/);
+  });
+
   it("shows total balance alongside the period summary and Assets", () => {
     const html = renderDashboard();
     const totalBalanceCard = html.match(/<article class="stat-card">[\s\S]*?<\/article>/)?.[0] ?? "";
