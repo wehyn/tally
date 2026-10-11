@@ -15,7 +15,7 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 - V1 uses Philippine pesos (PHP) only. Store and calculate amounts precisely; display them with the peso sign (₱).
 - Interpret relative dates and month boundaries in **Asia/Manila**. An omitted transaction date means today in that timezone.
 - A **financial account** is a user's tracked place for money, such as cash or a bank account. It is separate from the user's sign-in account.
-- A new financial account has an opening balance of ₱0 by default. Users may set or change that balance without creating a transaction. The opening balance affects the current balance, but is not income.
+- A new financial account starts at ₱0 by default. Users may set or change its current balance without creating or changing transactions. Balance adjustments affect the current total, but are not income.
 - A user's first financial account becomes the default account. The user can change that default later. At least one financial account is required before logging a transaction.
 
 ## Ledger records

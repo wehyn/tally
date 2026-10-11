@@ -1,14 +1,14 @@
-const AMOUNT_PATTERN = /^(?:₱\s*)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?$/;
+const AMOUNT_PATTERN = /^(-)?(?:₱\s*)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?$/;
 
-export function parsePHPToMinor(input: string, options: { allowZero?: boolean } = {}): number {
+export function parsePHPToMinor(input: string, options: { allowZero?: boolean; allowNegative?: boolean } = {}): number {
   const value = input.trim();
   const match = AMOUNT_PATTERN.exec(value);
   if (!match) throw new Error("Enter a valid PHP amount with up to two decimal places.");
 
-  const whole = Number(match[1].replaceAll(",", ""));
-  const fraction = Number((match[2] ?? "").padEnd(2, "0"));
-  const minor = whole * 100 + fraction;
-  if (!Number.isSafeInteger(minor) || minor < 0 || (minor === 0 && !options.allowZero)) throw new Error(options.allowZero ? "Amount cannot be negative or exceed the supported range." : "Amount must be greater than zero and within the supported range.");
+  const whole = Number(match[2].replaceAll(",", ""));
+  const fraction = Number((match[3] ?? "").padEnd(2, "0"));
+  const minor = (match[1] ? -1 : 1) * (whole * 100 + fraction);
+  if (!Number.isSafeInteger(minor) || (minor < 0 && !options.allowNegative) || (minor === 0 && !options.allowZero)) throw new Error(options.allowZero ? "Amount cannot be negative or exceed the supported range." : "Amount must be greater than zero and within the supported range.");
   return minor;
 }
 

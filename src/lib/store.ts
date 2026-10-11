@@ -64,7 +64,7 @@ export function createStore(db: Database.Database) {
       CREATE TABLE IF NOT EXISTS financial_accounts (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         name TEXT NOT NULL, type TEXT NOT NULL CHECK(type IN ('cash','bank')), opening_minor INTEGER NOT NULL DEFAULT 0 CHECK(opening_minor >= 0),
-        is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+        balance_adjustment_minor_exact TEXT NOT NULL DEFAULT '0', is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS accounts_one_default ON financial_accounts(user_id) WHERE is_default = 1;
       CREATE TABLE IF NOT EXISTS categories (
@@ -139,6 +139,16 @@ export function createStore(db: Database.Database) {
       );
       CREATE INDEX IF NOT EXISTS contributions_goal ON goal_contributions(goal_id, date DESC);
     `);
+    const accountColumns = db.pragma("table_info(financial_accounts)") as { name: string }[];
+    if (!accountColumns.some((column) => column.name === "balance_adjustment_minor_exact")) {
+      db.transaction(() => {
+        if (!accountColumns.some((column) => column.name === "balance_adjustment_minor")) {
+          db.exec("ALTER TABLE financial_accounts ADD COLUMN balance_adjustment_minor INTEGER NOT NULL DEFAULT 0");
+        }
+        db.exec("ALTER TABLE financial_accounts ADD COLUMN balance_adjustment_minor_exact TEXT NOT NULL DEFAULT '0'");
+        db.exec("UPDATE financial_accounts SET balance_adjustment_minor_exact=CAST(balance_adjustment_minor AS TEXT)");
+      }).immediate();
+    }
     const transactionColumns = db.pragma("table_info(transactions)") as { name: string }[];
     if (!transactionColumns.some((column) => column.name === "time")) db.exec("ALTER TABLE transactions ADD COLUMN time TEXT");
     const categoryColumns = db.pragma("table_info(categories)") as { name: string }[];
@@ -208,16 +218,26 @@ export function createStore(db: Database.Database) {
   }
 
   function listAccounts(userId: string): Account[] {
-    const rows = db.prepare(`SELECT a.id,a.name,a.type,a.opening_minor,a.is_default,
-      a.opening_minor + COALESCE(SUM(CASE
-        WHEN t.kind='income' AND t.account_id=a.id THEN t.amount_minor
-        WHEN t.kind='expense' AND t.account_id=a.id THEN -t.amount_minor
-        WHEN t.kind='transfer' AND t.account_id=a.id THEN -t.amount_minor
-        WHEN t.kind='transfer' AND t.destination_account_id=a.id THEN t.amount_minor ELSE 0 END),0) AS balance_minor
-      FROM financial_accounts a LEFT JOIN transactions t ON t.user_id=a.user_id AND (t.account_id=a.id OR t.destination_account_id=a.id)
-      WHERE a.user_id=? GROUP BY a.id ORDER BY a.created_at,a.rowid`).all(userId) as Record<string, unknown>[];
+    const rows = db.prepare(`SELECT id,name,type,CAST(opening_minor AS TEXT) AS opening_minor,
+      CAST(balance_adjustment_minor_exact AS TEXT) AS balance_adjustment_minor_exact,is_default
+      FROM financial_accounts WHERE user_id=? ORDER BY created_at,rowid`).all(userId) as Record<string, unknown>[];
+    const balances = new Map(rows.map((row) => [String(row.id), BigInt(String(row.opening_minor)) + BigInt(String(row.balance_adjustment_minor_exact))]));
+    const transactions = db.prepare(`SELECT kind,CAST(amount_minor AS TEXT) AS amount_minor,account_id,destination_account_id
+      FROM transactions WHERE user_id=?`).iterate(userId) as Iterable<Record<string, unknown>>;
+    for (const transaction of transactions) {
+      const amount = BigInt(String(transaction.amount_minor));
+      const accountId = String(transaction.account_id);
+      const balance = balances.get(accountId);
+      if (balance !== undefined && transaction.kind === "income") balances.set(accountId, balance + amount);
+      else if (balance !== undefined && (transaction.kind === "expense" || transaction.kind === "transfer")) balances.set(accountId, balance - amount);
+      if (transaction.kind === "transfer" && transaction.destination_account_id != null) {
+        const destinationId = String(transaction.destination_account_id);
+        const destinationBalance = balances.get(destinationId);
+        if (destinationBalance !== undefined) balances.set(destinationId, destinationBalance + amount);
+      }
+    }
     return rows.map((row) => ({ id: String(row.id), name: String(row.name), type: row.type as AccountType,
-      openingMinor: safeMinorNumber(row.opening_minor, "Account opening balance"), balanceMinor: safeMinorNumber(row.balance_minor, "Account balance"), isDefault: Boolean(row.is_default) }));
+      openingMinor: safeMinorNumber(row.opening_minor, "Account opening balance"), balanceMinor: safeMinorNumber(balances.get(String(row.id))!, "Account balance"), isDefault: Boolean(row.is_default) }));
   }
   function assertLedgerTotalsSafe(userId: string): void {
     const totals = db.prepare(`SELECT
@@ -236,13 +256,15 @@ export function createStore(db: Database.Database) {
   function createAccount(userId: string, input: { name: string; type: AccountType; openingMinor: number }): Account {
     const name = input.name.trim();
     if (!name || name.length > 80) throw new Error("Account name must be 1–80 characters.");
-    if (!Number.isSafeInteger(input.openingMinor) || input.openingMinor < 0) throw new Error("Opening balance must be a valid non-negative PHP amount.");
+    if (!Number.isSafeInteger(input.openingMinor)) throw new Error("Set balance must be a valid PHP amount.");
     if (!(["cash", "bank"] as string[]).includes(input.type)) throw new Error("Choose cash or bank.");
     return db.transaction(() => {
       const isDefault = !db.prepare("SELECT 1 FROM financial_accounts WHERE user_id=? LIMIT 1").get(userId);
-      const account = { id: randomUUID(), name, type: input.type, openingMinor: input.openingMinor, balanceMinor: input.openingMinor, isDefault };
-      db.prepare("INSERT INTO financial_accounts(id,user_id,name,type,opening_minor,is_default,created_at) VALUES(?,?,?,?,?,?,?)")
-        .run(account.id, userId, name, input.type, input.openingMinor, isDefault ? 1 : 0, stamp());
+      const openingMinor = Math.max(0, input.openingMinor);
+      const balanceAdjustmentMinor = Math.min(0, input.openingMinor);
+      const account = { id: randomUUID(), name, type: input.type, openingMinor, balanceMinor: input.openingMinor, isDefault };
+      db.prepare("INSERT INTO financial_accounts(id,user_id,name,type,opening_minor,balance_adjustment_minor_exact,is_default,created_at) VALUES(?,?,?,?,?,?,?,?)")
+        .run(account.id, userId, name, input.type, openingMinor, String(balanceAdjustmentMinor), isDefault ? 1 : 0, stamp());
       if (isDefault) db.prepare("UPDATE users SET default_account_id=? WHERE id=?").run(account.id, userId);
       assertLedgerTotalsSafe(userId);
       return account;
@@ -257,14 +279,20 @@ export function createStore(db: Database.Database) {
       db.prepare("UPDATE users SET default_account_id=? WHERE id=?").run(accountId, userId);
     }).immediate();
   }
-  function updateAccount(userId: string, accountId: string, input: { name?: string; openingMinor?: number; type?: AccountType }): void {
+  function updateAccount(userId: string, accountId: string, input: { name?: string; openingMinor?: number; balanceMinor?: number; type?: AccountType }): void {
     db.transaction(() => {
-      const account = db.prepare("SELECT id FROM financial_accounts WHERE id=? AND user_id=?").get(accountId, userId);
+      const account = db.prepare("SELECT id,CAST(balance_adjustment_minor_exact AS TEXT) AS balance_adjustment_minor_exact FROM financial_accounts WHERE id=? AND user_id=?").get(accountId, userId) as { id: string; balance_adjustment_minor_exact: string } | undefined;
       if (!account) throw new Error("Financial account not found.");
       const updates: string[] = [];
       const params: (string | number)[] = [];
       if (input.name !== undefined) { const name = input.name.trim(); if (!name || name.length > 80) throw new Error("Account name must be 1–80 characters."); updates.push("name=?"); params.push(name); }
       if (input.openingMinor !== undefined) { if (!Number.isSafeInteger(input.openingMinor) || input.openingMinor < 0) throw new Error("Opening balance must be non-negative."); updates.push("opening_minor=?"); params.push(input.openingMinor); }
+      if (input.balanceMinor !== undefined) {
+        if (!Number.isSafeInteger(input.balanceMinor)) throw new Error("Set balance must be a valid PHP amount.");
+        const currentBalance = listAccounts(userId).find((entry) => entry.id === accountId)!.balanceMinor;
+        const adjustment = BigInt(account.balance_adjustment_minor_exact) + BigInt(input.balanceMinor) - BigInt(currentBalance);
+        updates.push("balance_adjustment_minor_exact=?"); params.push(adjustment.toString());
+      }
       if (input.type !== undefined) { if (!(input.type === "cash" || input.type === "bank")) throw new Error("Choose cash or bank."); updates.push("type=?"); params.push(input.type); }
       if (updates.length) db.prepare(`UPDATE financial_accounts SET ${updates.join(",")} WHERE id=? AND user_id=?`).run(...params, accountId, userId);
       assertLedgerTotalsSafe(userId);

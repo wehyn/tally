@@ -38,6 +38,103 @@ describe("owner-scoped ledger", () => {
     expect(dashboard.accounts.map((account) => [account.name, account.balanceMinor])).toEqual([["Wallet", 12000], ["Savings", 6000]]);
   });
 
+  it("sets the opposite safe-integer boundary without changing transaction history", () => {
+    const user = store.registerUser("account_balance_boundary", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: Number.MAX_SAFE_INTEGER - 1 });
+    const salary = store.listCategories(user.id).find((category) => category.type === "income")!;
+    const transaction = store.createTransaction(user.id, {
+      kind: "income", amountMinor: 1, accountId: account.id, categoryId: salary.id, description: "Pay", date: "2026-10-09",
+    });
+
+    store.updateAccount(user.id, account.id, { balanceMinor: -Number.MAX_SAFE_INTEGER });
+
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(-Number.MAX_SAFE_INTEGER);
+    expect(store.listTransactions(user.id)).toMatchObject([{ id: transaction.id, kind: "income", amountMinor: 1, accountId: account.id }]);
+  });
+
+  it("keeps balances exact after 1,025 maximum transfers and balance resets", () => {
+    const amountMinor = Number.MAX_SAFE_INTEGER;
+    const user = store.registerUser("account_balance_transfer_range", "hash");
+    const source = store.createAccount(user.id, { name: "Source", type: "cash", openingMinor: amountMinor });
+    const destination = store.createAccount(user.id, { name: "Destination", type: "bank", openingMinor: 0 });
+    const transferIds: string[] = [];
+
+    for (let index = 0; index < 1_025; index++) {
+      const transfer = store.createTransaction(user.id, {
+        kind: "transfer", amountMinor, accountId: source.id, destinationAccountId: destination.id,
+        description: "Balance reset", date: "2026-10-09",
+      });
+      transferIds.push(transfer.id);
+      store.updateAccount(user.id, destination.id, { balanceMinor: 0 });
+      store.updateAccount(user.id, source.id, { balanceMinor: amountMinor });
+    }
+
+    expect(Object.fromEntries(store.listAccounts(user.id).map(({ id, balanceMinor }) => [id, balanceMinor])))
+      .toEqual({ [source.id]: amountMinor, [destination.id]: 0 });
+
+    const expectedAdjustmentMinor = (BigInt(amountMinor) * 1_025n).toString();
+    const adjustments = database.prepare(`SELECT id,typeof(balance_adjustment_minor_exact) AS storage_type,
+      balance_adjustment_minor_exact FROM financial_accounts WHERE user_id=?`).all(user.id) as {
+        id: string; storage_type: string; balance_adjustment_minor_exact: string;
+      }[];
+    expect(Object.fromEntries(adjustments.map(({ id, storage_type, balance_adjustment_minor_exact }) => [id, {
+      storageType: storage_type, value: balance_adjustment_minor_exact,
+    }])))
+      .toEqual({
+        [source.id]: { storageType: "text", value: expectedAdjustmentMinor },
+        [destination.id]: { storageType: "text", value: `-${expectedAdjustmentMinor}` },
+      });
+
+    const transactions = database.prepare(`SELECT id,kind,amount_minor,account_id,destination_account_id
+      FROM transactions WHERE user_id=?`).all(user.id) as {
+        id: string; kind: string; amount_minor: number; account_id: string; destination_account_id: string;
+      }[];
+    expect(transactions).toHaveLength(1_025);
+    expect(new Set(transactions.map(({ id }) => id))).toEqual(new Set(transferIds));
+    expect(transactions.every((transaction) => transaction.kind === "transfer" && transaction.amount_minor === amountMinor
+      && transaction.account_id === source.id && transaction.destination_account_id === destination.id)).toBe(true);
+  }, 30_000);
+
+  it("migrates legacy integer balance adjustments without changing balances or transaction rows", () => {
+    const alice = store.registerUser("legacy_balance_alice", "hash-a");
+    const bob = store.registerUser("legacy_balance_bob", "hash-b");
+    const aliceAccount = store.createAccount(alice.id, { name: "Wallet", type: "cash", openingMinor: 10_000 });
+    const bobAccount = store.createAccount(bob.id, { name: "Savings", type: "bank", openingMinor: 2_000 });
+    const aliceIncome = store.listCategories(alice.id).find((category) => category.type === "income")!;
+    const bobExpense = store.listCategories(bob.id).find((category) => category.type === "expense")!;
+    store.createTransaction(alice.id, {
+      kind: "income", amountMinor: 1_250, accountId: aliceAccount.id, categoryId: aliceIncome.id,
+      description: "Pay", date: "2026-10-09",
+    });
+    store.createTransaction(bob.id, {
+      kind: "expense", amountMinor: 500, accountId: bobAccount.id, categoryId: bobExpense.id,
+      description: "Lunch", date: "2026-10-09",
+    });
+
+    const accountColumns = database.pragma("table_info(financial_accounts)") as { name: string }[];
+    if (accountColumns.some((column) => column.name === "balance_adjustment_minor_exact")) {
+      database.exec("ALTER TABLE financial_accounts DROP COLUMN balance_adjustment_minor_exact");
+    }
+    if (!accountColumns.some((column) => column.name === "balance_adjustment_minor")) {
+      database.exec("ALTER TABLE financial_accounts ADD COLUMN balance_adjustment_minor INTEGER NOT NULL DEFAULT 0");
+    }
+    database.prepare("UPDATE financial_accounts SET balance_adjustment_minor=? WHERE id=?").run(-2_500, aliceAccount.id);
+    database.prepare("UPDATE financial_accounts SET balance_adjustment_minor=? WHERE id=?").run(350, bobAccount.id);
+    const transactionRows = database.prepare("SELECT id,user_id,kind,amount_minor,account_id,category_id FROM transactions ORDER BY id").all();
+
+    store.migrate();
+
+    expect(store.listAccounts(alice.id).map(({ id, balanceMinor }) => [id, balanceMinor])).toEqual([[aliceAccount.id, 8_750]]);
+    expect(store.listAccounts(bob.id).map(({ id, balanceMinor }) => [id, balanceMinor])).toEqual([[bobAccount.id, 1_850]]);
+    expect(database.prepare(`SELECT id,typeof(balance_adjustment_minor_exact) AS storage_type,
+      balance_adjustment_minor_exact FROM financial_accounts ORDER BY id`).all()).toEqual([
+      { id: aliceAccount.id, storage_type: "text", balance_adjustment_minor_exact: "-2500" },
+      { id: bobAccount.id, storage_type: "text", balance_adjustment_minor_exact: "350" },
+    ].sort((a, b) => a.id.localeCompare(b.id)));
+    expect(database.prepare("SELECT id,user_id,kind,amount_minor,account_id,category_id FROM transactions ORDER BY id").all())
+      .toEqual(transactionRows);
+  });
+
   it("calculates asset totals and weights from positive account balances", () => {
     const user = store.registerUser("asset_weights", "hash");
     const cash = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 6000 });
