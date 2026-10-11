@@ -168,7 +168,7 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
             {sectionDebts.map((debt) => <article className={`debt-row ${debt.status}`} key={debt.id}>
               <div className={`debt-row-icon ${direction}`}><Icon size={17}/></div>
               <div className="debt-row-copy"><strong>{debt.counterparty}</strong><span>{debt.dueDate ? `Due ${formatDueDate(debt.dueDate)}` : "No due date"}{debt.note ? ` · ${debt.note}` : ""}</span></div>
-              <div className="debt-row-total"><strong>{formatPHP(debt.amountMinor)}</strong><span className={`debt-status ${debt.status}`}>{debt.status === "open" ? "Outstanding" : "Settled"}</span></div>
+              <div className="debt-row-total"><strong>{formatPHP(debt.amountMinor)}</strong><span className={`debt-status ${debt.status}`}>{debt.status === "open" ? "Outstanding" : "Settled · last outstanding balance"}</span></div>
               <div className="debt-row-actions">
                 <button className="button button-small" disabled={pendingId === debt.id} aria-label={`Edit debt with ${debt.counterparty}`} onClick={() => edit(debt)}><Pencil size={13}/> Edit</button>
                 <button className="button button-small" disabled={pendingId === debt.id} aria-label={debt.status === "open" ? `Mark debt with ${debt.counterparty} settled` : `Reopen debt with ${debt.counterparty}`} onClick={() => setStatus(debt, debt.status === "open" ? "settled" : "open")}>

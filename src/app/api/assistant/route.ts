@@ -22,7 +22,27 @@ function normalizeCategoryName(value: string): string {
   return value.toLowerCase().replace(/\btranspor(?:tation|attion)\b/g, "transport").replace(/[^a-z0-9]+/g, " ").trim();
 }
 function normalizeWords(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+function containsCounterparty(text: string, counterparty: string): boolean {
+  const normalizedCounterparty = normalizeWords(counterparty);
+  return normalizedCounterparty.length > 0 && ` ${normalizeWords(text)} `.includes(` ${normalizedCounterparty} `);
+}
+function hasIncomingDebtRepaymentWording(text: string): boolean {
+  if (/\b(?:paid\s+me|repaid\s+me|repayment)\b/i.test(text)) return true;
+  const payment = /\b(?:paid\s+back|repaid|returned)\s+(?:(?:₱|PHP|\$)\s*)?\d|\breturned\s+(?:the|my)\s+money\b/giu;
+  return [...text.matchAll(payment)].some((match) => {
+    const beforePayment = text.slice(0, match.index).trimEnd();
+    const subject = beforePayment.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*$/u)?.[0];
+    return Boolean(subject && !/^(?:i|we|you)$/i.test(subject));
+  });
+}
+function isUncertainStatement(text: string): boolean {
+  return text.includes("?") || /\b(?:did not|didn't|does not|doesn't|do not|don't|has not|hasn't|have not|haven't|never|not|maybe|perhaps|possibly|probably|might|may|could|would|will|if|whether|think|thought|unsure|uncertain)\b/i.test(text);
+}
+function isUnconfirmedIncomingDebtPayment(text: string): boolean {
+  return /\b(?:pay|paid|pays|paying)\s+(?:me|back)\b|\b(?:repay|repays|repaid|repayment|return|returns|returned|returning)\b/i.test(text)
+    && isUncertainStatement(text);
 }
 function categoryNameMatches(name: string, categories: AssistantCategory[]): AssistantCategory[] {
   const exact = categories.filter((category) => category.name.toLowerCase() === name.trim().toLowerCase());
@@ -192,8 +212,69 @@ export async function POST(request: Request) {
     const userMessageText = userMessages.map((message) => message.content);
     store.addMessage(user.id, conversationId, "user", input.prompt);
     const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
-    const call = directCapture ?? await askProvider({ prompt: input.prompt, history, categories });
-    if (!call) throw new Error("Assistant provider returned no action.");
+    const openOwedToYouDebts = store.listDebts(user.id)
+      .filter((debt) => debt.direction === "owed_to_you" && debt.status === "open")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const openOwedToYou = openOwedToYouDebts.map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
+    const providerCall = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou });
+    if (!providerCall) throw new Error("Assistant provider returned no action.");
+    const lastHistoryMessage = history.at(-1);
+    const lastAssistantFollowup = lastHistoryMessage?.role === "assistant" ? lastHistoryMessage.content : "";
+    const ordinaryIncomeQuestionPattern = /\b(?:should i record|please answer yes)\b.*\bordinary income\b/i;
+    let ordinaryIncomeQuestionIndex = -1;
+    for (let index = history.length - 1; index >= 0; index--) {
+      if (history[index].role === "assistant" && ordinaryIncomeQuestionPattern.test(history[index].content)) {
+        ordinaryIncomeQuestionIndex = index;
+        break;
+      }
+    }
+    const ordinaryIncomeQuestionPending = ordinaryIncomeQuestionPattern.test(lastAssistantFollowup);
+    const ordinaryIncomeConfirmedInHistory = ordinaryIncomeQuestionIndex >= 0 && history.slice(ordinaryIncomeQuestionIndex + 1)
+      .some((message) => message.role === "user" && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content));
+    const ordinaryIncomeFlow = ordinaryIncomeQuestionPending || ordinaryIncomeConfirmedInHistory;
+    const ordinaryIncomeAccepted = ordinaryIncomeConfirmedInHistory || (ordinaryIncomeQuestionPending
+      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt));
+    const ordinaryIncomeDeclined = ordinaryIncomeFlow && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
+    const repaymentContextText = ordinaryIncomeFlow ? input.prompt : userMessageText.join(" ");
+    const payerSelection = /\b(?:who paid|which person|which person's|which debt)\b/i.test(lastAssistantFollowup);
+    const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
+    const repaymentFollowup = /\b(?:what amount|how much|who paid|which person|which debt)\b/i.test(lastAssistantFollowup);
+    const uncertainRepayment = userMessageText.some(isUnconfirmedIncomingDebtPayment)
+      || repaymentFollowup && isUncertainStatement(input.prompt);
+    const repaymentIntent = hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
+    const repaymentNames = repaymentIntent
+      ? [...new Set(openOwedToYouDebts.filter((debt) => containsCounterparty(repaymentMatchText, debt.counterparty)).map((debt) => normalizeWords(debt.counterparty)))]
+      : [];
+    const repaymentDebt = repaymentNames.length === 1
+      ? openOwedToYouDebts.find((debt) => normalizeWords(debt.counterparty) === repaymentNames[0])
+      : undefined;
+    let call = providerCall;
+    if (ordinaryIncomeFlow) {
+      if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
+        const providerCounterparty = typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty.trim() : "";
+        const description = typeof providerCall.args.description === "string" && providerCall.args.description.trim()
+          ? providerCall.args.description.trim()
+          : providerCounterparty ? `${providerCounterparty} paid me` : "";
+        call = { name: "log_transaction", args: { ...providerCall.args, kind: "income", category: "Other income", description } };
+      } else if (ordinaryIncomeDeclined) {
+        call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
+      } else if (!ordinaryIncomeAccepted) {
+        call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } };
+      }
+    } else if (uncertainRepayment && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
+      call = { name: "ask_clarification", args: { question: "Was this a completed payment toward an existing debt? Please confirm before I record it." } };
+    } else if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
+      const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeWords(providerCall.args.counterparty) : "";
+      if (repaymentNames.length > 1) {
+        call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } };
+      } else if (!repaymentDebt) {
+        call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } };
+      } else if (providerCounterparty && providerCounterparty !== normalizeWords(repaymentDebt.counterparty)) {
+        call = { name: "ask_clarification", args: { question: "I couldn't confirm which person paid. Which person's open debt should I update?" } };
+      } else {
+        call = { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
+      }
+    }
 
     let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let undoUntil: string | null = null; let needsFollowup = false;
     if (call.name === "ask_clarification") { answer = safeClarification(call.args.question); needsFollowup = true; }
@@ -225,6 +306,51 @@ export async function POST(request: Request) {
         answer = direction === "owed_to_you"
           ? `${formatPHP(debt.amountMinor)} is owed to you by ${debt.counterparty}. Added it to Debts.`
           : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts.`;
+      }
+    } else if (call.name === "record_debt_payment") {
+      const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
+      const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
+      if (!counterparty || counterparty.length > 80) { answer = "Who paid you?"; needsFollowup = true; }
+      else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); needsFollowup = true; }
+      else {
+        const normalizedCounterparty = normalizeWords(counterparty);
+        const matchingDebt = normalizedCounterparty ? store.listDebts(user.id)
+          .filter((item) => item.direction === "owed_to_you" && item.status === "open" && normalizeWords(item.counterparty) === normalizedCounterparty)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] : undefined;
+        const amountMinor = parsePHPToMinor(amount);
+        if (!matchingDebt) {
+          answer = `I couldn't find an open debt owed to you by ${counterparty}. Should I record ${formatPHP(amountMinor)} as ordinary income instead?`;
+          needsFollowup = true;
+        } else if (amountMinor > matchingDebt.amountMinor) {
+          answer = `That payment is more than the ${formatPHP(matchingDebt.amountMinor)} still owed by ${matchingDebt.counterparty}. How should I handle it?`;
+          needsFollowup = true;
+        } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; needsFollowup = true; }
+        else {
+          const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
+          const accountHint = accountHintFromMessages(userMessageText, accounts);
+          const defaultAccount = accounts.find((candidate) => candidate.isDefault);
+          const account = requestedAccount
+            ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
+            : accountHint.mentioned ? accountHint.account ?? defaultAccount : defaultAccount;
+          const dateHint = priorDateHint(userMessages);
+          const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
+          const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
+          const timeHint = timeHintFromMessages(userMessageText);
+          const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
+          const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
+          const category = fallbackCategory("income", categories);
+          if (!account) { answer = requestedAccount ? `I couldn't find the account “${requestedAccount}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment."; needsFollowup = true; }
+          else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
+          else if (!category) { answer = "Create an income category before recording this repayment."; needsFollowup = true; }
+          else {
+            const description = `${matchingDebt.counterparty} paid me`;
+            const saved = store.recordDebtPayment(user.id, matchingDebt.id, {
+              kind: "income", amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant",
+            });
+            transaction = saved.transaction; debt = saved.debt;
+            answer = `Saved ${formatPHP(transaction.amountMinor)} from ${matchingDebt.counterparty} in ${transaction.categoryName} · ${transaction.accountName} · ${transaction.date} ${transaction.time}. ${debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to you.`}`;
+          }
+        }
       }
     } else if (call.name === "log_transaction") {
       const kindHint = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;
@@ -277,6 +403,8 @@ export async function POST(request: Request) {
       }
     } else answer = "I couldn't complete that request. Please rephrase it.";
 
+    if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; needsFollowup = false; }
+    else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; needsFollowup = false; }
     store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, needsFollowup);
     return Response.json({ conversationId, answer, transaction, undoUntil, debt });
   } catch (error) { return respondError(error); }

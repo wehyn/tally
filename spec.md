@@ -53,8 +53,8 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 - Users can manually create, view, edit, and delete their own income, expense, and transfer records. Income and expense records have an amount, date, account, category, and optional description. The selected category determines whether a record is income or expense. Transfers identify source and destination accounts and are managed from Accounts.
 - Seed every user with income categories **Salary** and **Other income**, and expense categories **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, and **Other**. Users can add, rename, and choose icons for categories in **Transactions → Manage categories**.
 - A user can privately track current debts in two directions: **owed to you** and **you owe**. Each record has a counterparty, positive PHP amount, optional due date and note, and open or settled status. Users can create, edit, settle, reopen, and delete only their own records.
-- Debt amounts are maintained manually as current outstanding amounts; v1 has no repayment schedule or debt payment history. A real receipt or repayment must be recorded separately in Transactions, and the debt amount/status updated by the user.
-- Debt records do not create or change financial accounts, transactions, balances, income, spending, or dashboard analytics. They remain a private register separate from the personal ledger.
+- An open debt's amount represents the current outstanding balance. A settled debt retains its last positive amount for display; status is authoritative. V1 has no repayment schedule or per-payment debt history. Manual repayments are recorded as transactions, and the user updates or settles the debt.
+- Creating or editing a debt does not change accounts, transactions, balances, income, spending, or analytics. Ask Tally's received-repayment action is the exception: it writes income and updates the matching debt together while keeping both records private to their owner.
 - Accounts, categories, transactions, and debt records are private to their owner, including when another user is the admin.
 
 ### 3. Dashboard and analytics
@@ -86,13 +86,16 @@ Use Asia/Manila for relative dates, the current day, and month boundaries. Openi
 - Use the user's default account when none is named, and use a best-guess category when none is named. The user can edit the category on the result card or later.
 - Respect an explicitly named account and date. Interpret relative dates in Asia/Manila; when no date is specified, use today in that timezone.
 - If required information cannot be inferred from the prompt or user settings, ask only for the missing information. Do not save an incomplete transaction.
-- After saving, show a transaction card with amount, category, account, and date, plus a description when provided. Provide an approximately 10-second Undo action for that entry.
+- After an ordinary assistant transaction, show a card with amount, category, account, and date, plus a description when provided. Provide an approximately 10-second Undo action for that entry. Compound debt repayments have no generic Undo because it would remove income without restoring the debt.
 - Users can edit their own saved records after the Undo period. Deletion after the approximately 10-second assistant Undo window is permanent in the app. Manual entry remains available to users who do not opt in to AI.
 
-#### Debt capture
+#### Debt capture and repayments
 
 - For a clear debt statement, such as “Mom owes me 3486” or “I owe Mom 3486,” create an open debt in the correct direction in the private debt register. Ask only when the counterparty, direction, or amount is unclear.
-- Debt capture never creates a transaction or changes account balances or analytics. Respect an explicitly stated due date or note when provided.
+- For a received repayment against an open debt owed to the user, record income and reduce the oldest matching debt in one action. Use the named account or the user's default account and the **Other income** category.
+- If no debt matches or the payment exceeds the oldest matching debt's outstanding amount, ask before saving. Do not create another debt for a repayment. Existing duplicate debt records are not merged.
+- Creating a debt never creates a transaction or changes account balances or analytics. Respect an explicitly stated due date or note when creating a debt.
+- The transaction and debt are not linked after creation. Editing or deleting the transaction later does not update the debt; the user must adjust the debt separately.
 
 #### Factual questions and conversation history
 
