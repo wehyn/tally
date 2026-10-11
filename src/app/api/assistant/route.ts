@@ -192,7 +192,11 @@ export async function POST(request: Request) {
     const userMessageText = userMessages.map((message) => message.content);
     store.addMessage(user.id, conversationId, "user", input.prompt);
     const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
-    const call = directCapture ?? await askProvider({ prompt: input.prompt, history, categories });
+    const openOwedToYou = store.listDebts(user.id)
+      .filter((debt) => debt.direction === "owed_to_you" && debt.status === "open")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
+    const call = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou });
     if (!call) throw new Error("Assistant provider returned no action.");
 
     let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let undoUntil: string | null = null; let needsFollowup = false;
@@ -225,6 +229,50 @@ export async function POST(request: Request) {
         answer = direction === "owed_to_you"
           ? `${formatPHP(debt.amountMinor)} is owed to you by ${debt.counterparty}. Added it to Debts.`
           : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts.`;
+      }
+    } else if (call.name === "record_debt_payment") {
+      const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
+      const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
+      if (!counterparty || counterparty.length > 80) { answer = "Who paid you?"; needsFollowup = true; }
+      else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); needsFollowup = true; }
+      else {
+        const normalizedCounterparty = normalizeWords(counterparty);
+        const matchingDebt = store.listDebts(user.id)
+          .filter((item) => item.direction === "owed_to_you" && item.status === "open" && normalizeWords(item.counterparty) === normalizedCounterparty)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+        const amountMinor = parsePHPToMinor(amount);
+        if (!matchingDebt) {
+          answer = `I couldn't find an open debt owed to you by ${counterparty}. Should I record ${formatPHP(amountMinor)} as ordinary income instead?`;
+          needsFollowup = true;
+        } else if (amountMinor > matchingDebt.amountMinor) {
+          answer = `That payment is more than the ${formatPHP(matchingDebt.amountMinor)} still owed by ${matchingDebt.counterparty}. How should I handle it?`;
+          needsFollowup = true;
+        } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; needsFollowup = true; }
+        else {
+          const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
+          const accountHint = accountHintFromMessages(userMessageText, accounts);
+          const defaultAccount = accounts.find((candidate) => candidate.isDefault);
+          const account = requestedAccount
+            ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
+            : accountHint.mentioned ? accountHint.account ?? defaultAccount : defaultAccount;
+          const dateHint = priorDateHint(userMessages);
+          const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
+          const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
+          const timeHint = timeHintFromMessages(userMessageText);
+          const time = timeHint && isTime(timeHint) ? timeHint : timeInManila();
+          const category = fallbackCategory("income", categories);
+          if (!account) { answer = requestedAccount ? `I couldn't find the account “${requestedAccount}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment."; needsFollowup = true; }
+          else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
+          else if (!category) { answer = "Create an income category before recording this repayment."; needsFollowup = true; }
+          else {
+            const description = `${matchingDebt.counterparty} paid me`;
+            const saved = store.recordDebtPayment(user.id, matchingDebt.id, {
+              kind: "income", amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant",
+            });
+            transaction = saved.transaction; debt = saved.debt;
+            answer = `Saved ${formatPHP(transaction.amountMinor)} from ${matchingDebt.counterparty} in ${transaction.categoryName} · ${transaction.accountName} · ${transaction.date} ${transaction.time}. ${debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to you.`}`;
+          }
+        }
       }
     } else if (call.name === "log_transaction") {
       const kindHint = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;

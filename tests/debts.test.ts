@@ -109,4 +109,24 @@ describe("personal debt register", () => {
     expect(() => store.updateDebt(user.id, debt.id, { status: "paid" as never })).toThrow(/status/i);
     expect(() => store.updateDebt(user.id, debt.id, { dueDate: "not-a-date" })).toThrow(/date/i);
   });
+
+  it("rolls back debt changes when repayment income is invalid or exceeds the debt", () => {
+    const owner = store.registerUser("debt_repayment_owner", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const incomeCategory = store.listCategories(owner.id).find((category) => category.name === "Other income")!;
+    const expenseCategory = store.listCategories(owner.id).find((category) => category.name === "Other")!;
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 10000 });
+    const transaction = {
+      kind: "income" as const, amountMinor: 5000, accountId: account.id, categoryId: incomeCategory.id,
+      description: "Mina paid me", date: "2026-10-11", source: "assistant" as const,
+    };
+
+    expect(() => store.recordDebtPayment(owner.id, debt.id, { ...transaction, categoryId: expenseCategory.id })).toThrow(/category/i);
+    expect(store.listDebts(owner.id)).toMatchObject([{ id: debt.id, amountMinor: 10000, status: "open" }]);
+    expect(store.listTransactions(owner.id)).toEqual([]);
+
+    expect(() => store.recordDebtPayment(owner.id, debt.id, { ...transaction, amountMinor: 10001 })).toThrow(/exceed/i);
+    expect(store.listDebts(owner.id)).toMatchObject([{ id: debt.id, amountMinor: 10000, status: "open" }]);
+    expect(store.listTransactions(owner.id)).toEqual([]);
+  });
 });

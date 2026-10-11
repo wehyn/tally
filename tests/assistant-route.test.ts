@@ -5,6 +5,8 @@ import { providerDisclosureHash } from "../src/lib/provider";
 import { todayInManila } from "../src/lib/dates";
 import { POST } from "../src/app/api/assistant/route";
 
+type ProviderRequest = { messages: { role: string; content: string }[]; tools: { function: { name: string } }[] };
+
 const mocks = vi.hoisted(() => ({ getStore: vi.fn(), requireUser: vi.fn() }));
 
 vi.mock("@/lib/db", () => ({ getStore: mocks.getStore }));
@@ -174,45 +176,52 @@ describe("assistant transaction capture", () => {
 });
 
 describe("assistant debt capture", () => {
-  it("sends debt direction guidance to the AI and keeps ordinary payments as transactions", async () => {
-    let debtSystemPrompt = "";
+  it("records a repayment as income and reduces the matching debt", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
+    const account = store.listAccounts(user.id)[0];
+    let providerRequest: ProviderRequest | undefined;
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const requestBody = JSON.parse(String(init?.body));
-      const prompt = requestBody.messages.at(-1).content;
-      if (prompt.toLowerCase().startsWith("for debts")) debtSystemPrompt = requestBody.messages[0].content;
-      const toolCall = prompt.toLowerCase().startsWith("for debts")
-        ? { function: { name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "1000" }) } }
-        : { function: { name: "log_transaction", arguments: JSON.stringify({ kind: "income", category: "Salary", amount: "1000", description: "Mom paid me" }) } };
+      providerRequest = JSON.parse(String(init?.body));
+      const prompt = providerRequest!.messages.at(-1)?.content ?? "";
+      const toolCall = prompt.toLowerCase().includes("mom paid me")
+        ? { function: { name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Mom", amount: "100" }) } }
+        : { function: { name: "log_transaction", arguments: JSON.stringify({ kind: "income", category: "Other income", amount: "100", description: "Mom paid me" }) } };
       return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [toolCall] } }] }), { headers: { "content-type": "application/json" } });
     }));
 
-    const firstResponse = await POST(new Request("https://tally.test/api/assistant", {
-      method: "POST",
-      headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "Mom owes me 3486" }),
-    }));
-    const { conversationId } = await firstResponse.json();
     const response = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",
       headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "for debts mom paid me 1000", conversationId }),
+      body: JSON.stringify({ prompt: "Mom paid me 100" }),
     }));
+    const result = await response.json();
+
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000, accountName: account.name, categoryName: "Other income", description: "Mom paid me" });
+    expect(result.undoUntil).toBeNull();
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
+    expect(result.debt).toMatchObject({ id: debt.id, direction: "owed_to_you", counterparty: "Mom", amountMinor: 338600, status: "open" });
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(providerRequest?.messages[0].content).not.toContain("Mom");
+    expect(providerRequest?.messages.at(-2)?.content).toContain('"counterparty":"Mom","amount":"₱3,486.00"');
+    expect(providerRequest?.tools.map((tool) => tool.function.name)).toContain("record_debt_payment");
+
+    store.deleteDebt(user.id, debt.id);
+    let ordinaryProviderRequest: Pick<ProviderRequest, "messages"> | undefined;
+    vi.mocked(fetch).mockImplementationOnce(async (_url: string | URL | Request, init?: RequestInit) => {
+      ordinaryProviderRequest = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+        name: "log_transaction", arguments: JSON.stringify({ kind: "income", category: "Other income", amount: "100", description: "Mom paid me" }),
+      } }] } }] }), { headers: { "content-type": "application/json" } });
+    });
     const ordinaryPaymentResponse = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",
       headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "Mom paid me 1000", conversationId }),
+      body: JSON.stringify({ prompt: "Mom paid me 100" }),
     }));
-
-    expect((await response.json()).debt).toMatchObject({
-      direction: "owed_to_you",
-      counterparty: "Mom",
-      amountMinor: 100000,
-    });
-    expect(debtSystemPrompt).toContain("“Mom paid me 1,000” means owed_to_you");
-    expect(debtSystemPrompt).toContain("“I paid Mom 1,000” means you_owe");
     expect(await ordinaryPaymentResponse.json()).toMatchObject({
-      transaction: { kind: "income", categoryName: "Salary", amountMinor: 100000 },
+      transaction: { kind: "income", categoryName: "Other income", amountMinor: 10000 },
       debt: null,
     });
+    expect(ordinaryProviderRequest?.messages.at(-2)?.content).toBe("Untrusted ledger data for matching only: []");
   });
 });

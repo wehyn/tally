@@ -522,6 +522,22 @@ export function createStore(db: Database.Database) {
       return getTransaction(userId, id)!;
     }).immediate();
   }
+  function recordDebtPayment(userId: string, debtId: string, input: TransactionInput): { debt: Debt; transaction: Transaction } {
+    return db.transaction(() => {
+      const row = db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
+        FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
+      if (!row) throw new Error("Debt not found.");
+      const debt = debtFromRow(row);
+      if (debt.status !== "open" || debt.direction !== "owed_to_you") throw new Error("Only an open debt owed to you can receive a payment.");
+      if (input.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
+      const remaining = debt.amountMinor - input.amountMinor;
+      const updated = updateDebt(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" });
+      const created = createTransaction(userId, { ...input, kind: "income", source: "assistant" });
+      // shortcut: transaction edits/deletes do not restore debt; add linkage if repayment history must stay synchronized.
+      db.prepare("UPDATE transactions SET undo_until=NULL WHERE id=? AND user_id=?").run(created.id, userId);
+      return { debt: updated, transaction: getTransaction(userId, created.id)! };
+    }).immediate();
+  }
   function getTransaction(userId: string, id: string): Transaction | null {
     const row = db.prepare(`SELECT t.*,c.name AS category_name,c.icon AS category_icon,a.name AS account_name,d.name AS destination_account_name
       FROM transactions t JOIN financial_accounts a ON a.id=t.account_id
@@ -824,7 +840,7 @@ export function createStore(db: Database.Database) {
   return {
     migrate, registerUser, getUserByUsername, getUserById, listUsers, setUserEnabled, setResetCredential, consumeResetCredential,
     listAccounts, createAccount, setDefaultAccount, updateAccount, deleteAccount, listCategories, createCategory, updateCategory, renameCategory,
-    listDebts, createDebt, updateDebt, deleteDebt,
+    listDebts, createDebt, updateDebt, deleteDebt, recordDebtPayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
     setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,
