@@ -61,3 +61,7 @@ The app recreates WAL/SHM sidecars on startup. Verify the restored date, users, 
 ## Current boundaries
 
 PHP only; money is stored as integer minor units. Dates use Asia/Manila. The assistant is optional and uses typed tool calls; Tally validates ownership and computes any financial facts itself. CLI/Hermes messaging integrations, OCR, budgets, credit cards, multiple currencies, local AI, bank sync, and automatic recommendations are not part of v1.
+
+### Assistant debt repayments
+
+When someone with an open debt owed to you pays you, Ask Tally records the money as **Other income** in the named account or your default account and reduces the oldest matching debt. It asks before saving if no debt matches or the payment exceeds that debt. Existing duplicate debts are not merged. This combined action has no quick Undo; if you later edit or delete its transaction, adjust the debt separately.

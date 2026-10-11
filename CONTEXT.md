@@ -31,15 +31,16 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 ## Debt register
 
 - A **debt record** tracks a current amount either **owed to you** or **you owe**. It belongs to one user and includes a counterparty, positive PHP amount, optional due date and note, and an open or settled status.
-- Debt records are private to their owner and do not create or change financial accounts, transactions, balances, income, spending, or dashboard analytics.
-- The recorded amount is the current outstanding amount; Tally does not record a repayment schedule or payment history. When money is actually received or paid, record it separately as a transaction and update or settle the debt record manually.
+- Debt records are private to their owner and do not directly create or change financial accounts, transactions, balances, income, spending, or dashboard analytics.
+- The recorded amount is the current outstanding amount; Tally does not record a repayment schedule or per-payment debt history. Manual repayments remain separate transactions and debt edits. Ask Tally's received-repayment action is described under **In-app assistant**.
 - Users may edit, reopen, settle, or permanently delete only their own debt records.
 
 ## In-app assistant
 
 - The assistant is optional and uses the hosted Codex-LB API only after the user opts in. Explain what prompts and finance data are sent, and send only the minimum relevant data. Provider credentials stay on the server. Assistant actions must use app-calculated data and user-scoped operations, not direct database access.
 - For a complete prompt such as “Jollibee lunch 250,” save the transaction immediately, then show what was saved: amount, category, financial account, and date, plus the description when provided. Infer income or expense from the category and never ask the user to choose a type when the category is clear. Use the user's default account unless the prompt names another account. Use a best-guess category when omitted, and let the user correct it.
-- Ask only for information needed to save a complete record that cannot be inferred from the prompt or user settings. A short Undo action is available after assistant logging; the owner can also edit or delete the transaction later.
+- For a received repayment against an open debt owed to the user, record income and reduce the oldest matching debt together. Use the named or default account and **Other income**. Ask before saving when no debt matches or the payment exceeds that debt. The action has no generic Undo; later transaction edits or deletion do not change the debt.
+- Ask only for information needed to save a complete record that cannot be inferred from the prompt or user settings. Ordinary assistant transactions have a short Undo action; the owner can also edit or delete them later.
 - Answer finance questions from the owner's recorded actuals and state the applicable date range. Do not invent totals or present unsupported recommendations.
 - Assistant conversation history is private to its owner and can be deleted separately from finance records.
 
