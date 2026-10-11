@@ -224,4 +224,37 @@ describe("assistant debt capture", () => {
     });
     expect(ordinaryProviderRequest?.messages.at(-2)?.content).toBe("Untrusted ledger data for matching only: []");
   });
+
+  it("matches a non-Latin counterparty without reducing another person's debt", async () => {
+    const unrelatedDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "王", amountMinor: 20000 });
+    const matchingDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "李", amountMinor: 348600 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "李", amount: "100" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "李 paid me 100" }),
+    }));
+    const result = await response.json();
+
+    expect(result.debt).toMatchObject({ id: matchingDebt.id, amountMinor: 338600, status: "open" });
+    expect(store.listDebts(user.id).find((debt) => debt.id === unrelatedDebt.id)).toMatchObject({ amountMinor: 20000, status: "open" });
+  });
+
+  it("uses the provider's validated time when the time wording is not parsed locally", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Mom", amount: "100", time: "15:30" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom paid me 100 around half past three" }),
+    }));
+
+    expect((await response.json()).transaction.time).toBe("15:30");
+  });
 });

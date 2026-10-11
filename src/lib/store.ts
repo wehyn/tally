@@ -531,6 +531,7 @@ export function createStore(db: Database.Database) {
       if (debt.status !== "open" || debt.direction !== "owed_to_you") throw new Error("Only an open debt owed to you can receive a payment.");
       if (input.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
       const remaining = debt.amountMinor - input.amountMinor;
+      // Settled records retain their last positive balance; status is authoritative.
       const updated = updateDebt(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" });
       const created = createTransaction(userId, { ...input, kind: "income", source: "assistant" });
       // shortcut: transaction edits/deletes do not restore debt; add linkage if repayment history must stay synchronized.

@@ -129,4 +129,19 @@ describe("personal debt register", () => {
     expect(store.listDebts(owner.id)).toMatchObject([{ id: debt.id, amountMinor: 10000, status: "open" }]);
     expect(store.listTransactions(owner.id)).toEqual([]);
   });
+
+  it("marks a fully repaid debt settled and retains its last positive balance", () => {
+    const owner = store.registerUser("debt_fully_repaid_owner", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const incomeCategory = store.listCategories(owner.id).find((category) => category.name === "Other income")!;
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 10000 });
+
+    const payment = store.recordDebtPayment(owner.id, debt.id, {
+      kind: "income", amountMinor: 10000, accountId: account.id, categoryId: incomeCategory.id,
+      description: "Mina paid me", date: "2026-10-11", source: "assistant",
+    });
+
+    expect(payment.debt).toMatchObject({ id: debt.id, amountMinor: 10000, status: "settled" });
+    expect(payment.transaction).toMatchObject({ kind: "income", amountMinor: 10000, undoUntil: null });
+  });
 });

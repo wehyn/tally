@@ -22,7 +22,7 @@ function normalizeCategoryName(value: string): string {
   return value.toLowerCase().replace(/\btranspor(?:tation|attion)\b/g, "transport").replace(/[^a-z0-9]+/g, " ").trim();
 }
 function normalizeWords(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 function categoryNameMatches(name: string, categories: AssistantCategory[]): AssistantCategory[] {
   const exact = categories.filter((category) => category.name.toLowerCase() === name.trim().toLowerCase());
@@ -237,9 +237,9 @@ export async function POST(request: Request) {
       else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); needsFollowup = true; }
       else {
         const normalizedCounterparty = normalizeWords(counterparty);
-        const matchingDebt = store.listDebts(user.id)
+        const matchingDebt = normalizedCounterparty ? store.listDebts(user.id)
           .filter((item) => item.direction === "owed_to_you" && item.status === "open" && normalizeWords(item.counterparty) === normalizedCounterparty)
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] : undefined;
         const amountMinor = parsePHPToMinor(amount);
         if (!matchingDebt) {
           answer = `I couldn't find an open debt owed to you by ${counterparty}. Should I record ${formatPHP(amountMinor)} as ordinary income instead?`;
@@ -259,7 +259,8 @@ export async function POST(request: Request) {
           const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
           const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
           const timeHint = timeHintFromMessages(userMessageText);
-          const time = timeHint && isTime(timeHint) ? timeHint : timeInManila();
+          const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
+          const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
           const category = fallbackCategory("income", categories);
           if (!account) { answer = requestedAccount ? `I couldn't find the account “${requestedAccount}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment."; needsFollowup = true; }
           else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
