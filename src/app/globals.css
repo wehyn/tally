@@ -301,3 +301,16 @@ button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:
 .bill-icon-choice .bill-brand-logo{width:22px;height:22px}
 .bill-icon-preview .bill-brand-logo{width:22px;height:22px}
 .bill-row-icon .bill-brand-logo{width:18px;height:18px}
+.account-menu-trigger{width:44px;height:44px;padding:0;border:0;border-radius:999px;background:transparent;display:flex;align-items:center;justify-content:center;gap:2px;cursor:pointer;color:#718078}
+.account-menu-trigger:hover{background:#f1f4ef;color:var(--ink)}
+.account-menu-trigger .avatar-small{width:27px;height:27px;font-size:11px}
+.account-menu-panel[popover]{position:fixed;inset:76px clamp(24px,4vw,56px) auto auto;margin:0;width:220px;max-width:calc(100vw - 24px);padding:8px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:0 14px 42px rgba(26,53,38,.16)}
+.account-menu-heading{display:grid;gap:2px;padding:9px 10px 11px;border-bottom:1px solid var(--line)}
+.account-menu-heading strong{font-size:12px}
+.account-menu-heading span{color:var(--muted);font-size:10px}
+.account-menu-links{display:grid;gap:3px;padding-top:6px}
+.account-menu-link{height:44px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:9px;color:#69766f;font-size:12px;font-weight:550}
+.account-menu-link:hover{background:#f1f4ef;color:var(--ink)}
+.account-menu-link[aria-current=page]{background:var(--accent-soft);color:var(--accent-strong);font-weight:650}
+.account-menu-link:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:900px){.account-menu-panel[popover]{inset:66px 15px auto auto}}
