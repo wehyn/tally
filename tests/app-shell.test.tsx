@@ -13,7 +13,7 @@ vi.mock("../src/components/assistant-widget", () => ({ AssistantWidget: () => nu
 vi.mock("../src/components/sign-out-button", () => ({ SignOutButton: () => null }));
 
 describe("AppShell mobile navigation", () => {
-  it("keeps accessible destinations and icons while showing no text labels", () => {
+  it("keeps primary destinations in mobile navigation and puts Settings in the account menu", () => {
     const props = {
       user: {
         id: "user-1",
@@ -44,11 +44,15 @@ describe("AppShell mobile navigation", () => {
       { href: "/bills", label: "Bills", current: null, icon: "lucide-calendar-days", text: "" },
       { href: "/debts", label: "Debts", current: "page", icon: "lucide-hand-coins", text: "" },
       { href: "/goals", label: "Shared goals", current: null, icon: "lucide-target", text: "" },
-      { href: "/settings", label: "Settings", current: null, icon: "lucide-settings", text: "" },
     ]);
+
+    const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/settings");
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/admin");
+    expect(Array.from(document.querySelectorAll('nav[aria-label="Account navigation"] a')).map((link) => link.getAttribute("href"))).toEqual(["/settings"]);
   });
 
-  it("keeps Administration out of the mobile navigation for admins", () => {
+  it("keeps Administration out of mobile navigation and in the admin account menu", () => {
     const props = {
       user: {
         id: "admin-1",
@@ -64,8 +68,13 @@ describe("AppShell mobile navigation", () => {
     const html = renderToStaticMarkup(createElement(AppShell, props, null));
     const document = new DOMParser().parseFromString(html, "text/html");
     const links = Array.from(document.querySelectorAll('nav[aria-label="Mobile navigation"] a'));
+    const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
 
-    expect(links).toHaveLength(7);
+    expect(links).toHaveLength(6);
+    expect(links.map((link) => link.getAttribute("href"))).not.toContain("/settings");
     expect(links.map((link) => link.getAttribute("href"))).not.toContain("/admin");
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/settings");
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/admin");
+    expect(Array.from(document.querySelectorAll('nav[aria-label="Account navigation"] a')).map((link) => link.getAttribute("href"))).toEqual(["/settings", "/admin"]);
   });
 });
