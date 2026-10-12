@@ -13,13 +13,6 @@ type CategoryManagerProps = {
   collapsible?: boolean;
 };
 
-function scrollCategoryManagerIntoView(element: HTMLElement | null) {
-  element?.scrollIntoView({
-    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    block: "start",
-  });
-}
-
 export function CategoryManager({ categories, onChange, collapsible = false }: CategoryManagerProps) {
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const categoryManagerRef = useRef<HTMLElement | null>(null);
@@ -33,7 +26,29 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (categoriesOpen && window.matchMedia("(prefers-reduced-motion: reduce)").matches) scrollCategoryManagerIntoView(categoryManagerRef.current);
+    if (!categoriesOpen || !categoryManagerRef.current) return;
+    const manager = categoryManagerRef.current;
+    const disclosure = manager.querySelector<HTMLElement>(".category-manager-disclosure");
+    const keepManagerInView = () => {
+      const top = window.scrollY + manager.getBoundingClientRect().top;
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      window.scrollTo(0, Math.min(top, maxScroll));
+    };
+    if (!disclosure || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      keepManagerInView();
+      return;
+    }
+    const observer = new ResizeObserver(keepManagerInView);
+    const stopFollowingExpansion = (event: TransitionEvent) => {
+      if (event.target === disclosure && event.propertyName === "grid-template-rows") observer.disconnect();
+    };
+    disclosure.addEventListener("transitionend", stopFollowingExpansion);
+    observer.observe(manager);
+    keepManagerInView();
+    return () => {
+      observer.disconnect();
+      disclosure.removeEventListener("transitionend", stopFollowingExpansion);
+    };
   }, [categoriesOpen]);
 
   function startCreate() {
@@ -122,9 +137,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
     <button className="category-manager-toggle" type="button" aria-expanded={categoriesOpen} aria-controls="category-manager-content" onClick={() => setCategoriesOpen((expanded) => !expanded)}>
       <FolderPlus size={16}/><span>Manage categories</span><span className="category-summary-count">{categories.length}</span><ChevronDown className={`category-manager-chevron${categoriesOpen ? " open" : ""}`} size={15} aria-hidden="true"/>
     </button>
-    <div className={`category-manager-disclosure${categoriesOpen ? " open" : ""}`} id="category-manager-content" aria-hidden={!categoriesOpen} inert={!categoriesOpen} onTransitionEnd={(event) => {
-      if (categoriesOpen && event.target === event.currentTarget && event.propertyName === "grid-template-rows") scrollCategoryManagerIntoView(categoryManagerRef.current);
-    }}>
+    <div className={`category-manager-disclosure${categoriesOpen ? " open" : ""}`} id="category-manager-content" aria-hidden={!categoriesOpen} inert={!categoriesOpen}>
       <div className="category-manager-disclosure-clip"><div className="category-manager-inner">{managerContent}</div></div>
     </div>
   </article>;
