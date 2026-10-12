@@ -301,6 +301,27 @@ button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:
 .bill-icon-choice .bill-brand-logo{width:22px;height:22px}
 .bill-icon-preview .bill-brand-logo{width:22px;height:22px}
 .bill-row-icon .bill-brand-logo{width:18px;height:18px}
+.transaction-layout-table{min-width:800px;table-layout:fixed}
+.transaction-column-head{border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:11px}
+.transaction-column-head th{border-bottom:0;background:#f8f9f8}
+.transaction-column-head th:first-child{border-radius:11px 0 0 11px}
+.transaction-column-head th:last-child{border-radius:0 11px 11px 0}
+.transaction-col-category{width:165px}
+.transaction-col-account{width:180px}
+.transaction-col-amount{width:130px}
+.transaction-col-actions{width:150px}
+.transaction-date-groups{display:grid;gap:17px;min-width:800px}
+.transaction-date-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;padding:9px 162px 9px 12px;border-radius:11px;background:#f8f9f8;color:#657168;font-size:11px;font-weight:400;line-height:1.4}
+.transaction-date-label{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;font-weight:620}
+.transaction-date-label time{overflow:hidden;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}
+.transaction-date-label>span{color:#929d95;font-weight:500}
+.transaction-day-total{font-size:12px;font-weight:630;font-variant-numeric:tabular-nums;white-space:nowrap}
+.transaction-group-card{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
+.transaction-group-table{margin:0}
+.transaction-category-badge{gap:5px;max-width:100%;overflow:hidden;white-space:nowrap}
+.transaction-category-badge svg{flex:0 0 auto}
+.transaction-category-badge>span{overflow:hidden;text-overflow:ellipsis}
+.transaction-account-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .account-menu-trigger{width:44px;height:44px;padding:0;border:0;border-radius:999px;background:transparent;display:flex;align-items:center;justify-content:center;gap:2px;cursor:pointer;color:#718078}
 .account-menu-trigger:hover{background:#f1f4ef;color:var(--ink)}
 .account-menu-trigger .avatar-small{width:27px;height:27px;font-size:11px}
