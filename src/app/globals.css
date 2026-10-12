@@ -325,7 +325,10 @@ button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:
 .account-menu-trigger{width:44px;height:44px;padding:0;border:0;border-radius:999px;background:transparent;display:flex;align-items:center;justify-content:center;gap:2px;cursor:pointer;color:#718078}
 .account-menu-trigger:hover{background:#f1f4ef;color:var(--ink)}
 .account-menu-trigger .avatar-small{width:27px;height:27px;font-size:11px}
-.account-menu-panel[popover]{position:fixed;inset:76px clamp(24px,4vw,56px) auto auto;margin:0;width:220px;max-width:calc(100vw - 24px);padding:8px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:0 14px 42px rgba(26,53,38,.16)}
+.sidebar-account-trigger.account-menu-trigger{width:34px;height:34px;flex:0 0 34px}
+.mobile-account-trigger{display:none}
+.mobile-controls{display:contents}
+.account-menu-panel[popover]{position:fixed;inset:auto auto 56px 12px;margin:0;width:220px;max-width:calc(100vw - 24px);padding:8px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:0 14px 42px rgba(26,53,38,.16)}
 .account-menu-heading{display:grid;gap:2px;padding:9px 10px 11px;border-bottom:1px solid var(--line)}
 .account-menu-heading strong{min-width:0;overflow-wrap:anywhere;font-size:12px}
 .account-menu-heading span{color:var(--muted);font-size:10px}
@@ -334,7 +337,7 @@ button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:
 .account-menu-link:hover{background:#f1f4ef;color:var(--ink)}
 .account-menu-link[aria-current=page]{background:var(--accent-soft);color:var(--accent-strong);font-weight:650}
 .account-menu-link:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:900px){.account-menu-panel[popover]{inset:66px 15px auto auto}}
+@media(max-width:900px){.account-menu-panel[popover]{inset:calc(64px + env(safe-area-inset-top)) 15px auto auto}}
 
 .section-destinations{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px}
 .section-destination{display:flex;min-width:0;min-height:96px;align-items:center;gap:14px;padding:17px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);transition:background .15s,border-color .15s,transform .15s}
@@ -349,5 +352,21 @@ button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:
 .category-manager-collapsible{scroll-margin-top:86px}
 .mobile-nav a{gap:2px;align-content:center;text-align:center}
 .mobile-nav a span{color:inherit;font-size:9px;font-weight:620;line-height:1.2}
+@media(max-width:900px){
+.topbar{display:none}
+.page-content{padding:86px 22px calc(90px + env(safe-area-inset-bottom))}
+.mobile-account-trigger{position:fixed;z-index:30;top:calc(12px + env(safe-area-inset-top));right:15px;display:flex;background:var(--surface);box-shadow:0 3px 12px rgba(30,54,43,.1)}
+.mobile-controls{position:fixed;z-index:20;left:0;right:0;bottom:calc(12px + env(safe-area-inset-bottom));margin-inline:auto;display:flex;align-items:center;gap:10px;width:min(calc(100vw - 32px),560px);height:62px}
+.mobile-nav{position:static;inset:auto;transform:none;width:auto;min-width:0;flex:1;height:62px;padding-bottom:0}
+.assistant-widget{position:static;inset:auto;right:auto;bottom:auto;width:54px;flex:0 0 54px}
+.assistant-widget.composing,.assistant-widget.chat{position:fixed;right:16px;bottom:calc(86px + env(safe-area-inset-bottom))}
+}
+@media(max-width:620px){
+.page-content{padding:82px 15px calc(90px + env(safe-area-inset-bottom))}
+.mobile-account-trigger{right:12px}
+.mobile-controls{width:min(calc(100vw - 24px),560px)}
+.assistant-widget.composing,.assistant-widget.chat{right:12px}
+.account-menu-panel[popover]{inset:calc(60px + env(safe-area-inset-top)) 12px auto auto}
+}
 @media(max-width:620px){.section-destinations{grid-template-columns:1fr;gap:10px}.section-destination{min-height:84px;padding:14px}.section-destination-icon{width:37px;height:37px}}
 @media(prefers-reduced-motion:reduce){.section-destination,.section-destination-arrow{transition:none}}
