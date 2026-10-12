@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, ChevronDown, LayoutDashboard, Settings, Shield, Wallet } from "lucide-react";
+import { CalendarDays, LayoutDashboard, Settings, Shield, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import type { PublicUser } from "@/lib/store";
 import { SignOutButton } from "./sign-out-button";
@@ -28,6 +28,7 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
   const accountEntries = user.role === "admin" ? [...accountNavigation, { href: "/admin", label: "Administration", icon: Shield }] : accountNavigation;
   const pageLabel = [...pageLabels, ...accountEntries].find((item) => active === item.href || active.startsWith(`${item.href}/`))?.label ?? "Home";
   const isCurrentSection = (routes: string[]) => routes.some((route) => active === route || active.startsWith(`${route}/`));
+  const accountMenuTrigger = (className: string) => <button type="button" className={`${className} account-menu-trigger`} popoverTarget="account-menu" aria-label={`${user.username} account menu`}><span className="avatar avatar-small" aria-hidden="true">{user.username.slice(0,1).toUpperCase()}</span></button>;
   return <div className={`app-frame ${active === "/debts" ? "debts-shell" : ""}`}>
     <aside className="sidebar">
       <Link href="/dashboard" className="brand"><span className="brand-mark">t</span><span>Tally</span></Link>
@@ -40,10 +41,11 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
       </nav>
       <div className="sidebar-spacer"/>
       <div className="sidebar-note"><span className="privacy-dot"/>Private by default</div>
-      <div className="sidebar-user"><div className="avatar">{user.username.slice(0,1).toUpperCase()}</div><div className="user-lines"><strong>{user.username}</strong><span>{user.role === "admin" ? "Administrator" : "Personal ledger"}</span></div><SignOutButton/></div>
+      <div className="sidebar-user">{accountMenuTrigger("sidebar-account-trigger")}<div className="user-lines"><strong>{user.username}</strong><span>{user.role === "admin" ? "Administrator" : "Personal ledger"}</span></div><SignOutButton/></div>
     </aside>
     <div className="main-column">
-      <header className="topbar"><div className="mobile-brand"><span className="brand-mark">t</span><span>Tally</span></div><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{pageLabel}</strong></div><div className="topbar-right"><span className="today-chip">PHP · Asia/Manila</span><button type="button" className="account-menu-trigger" popoverTarget="account-menu" aria-label={`${user.username} account menu`}><span className="avatar avatar-small" aria-hidden="true">{user.username.slice(0,1).toUpperCase()}</span><ChevronDown size={13} aria-hidden="true"/></button></div></header>
+      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{pageLabel}</strong></div></header>
+      {accountMenuTrigger("mobile-account-trigger")}
       <div id="account-menu" className="account-menu-panel" popover="auto">
         <div className="account-menu-heading"><strong>{user.username}</strong><span>{user.role === "admin" ? "Administrator" : "Personal ledger"}</span></div>
         <nav className="account-menu-links" aria-label="Account navigation">
@@ -52,10 +54,12 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
       </div>
       <main className="page-content">{children}</main>
     </div>
-    <nav className="mobile-nav" aria-label="Mobile navigation">{navigation.map(({ href, label, icon: Icon, routes }) => {
-      const selected = isCurrentSection(routes);
-      return <Link key={href} href={href} className={selected ? "selected" : ""} aria-label={label} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={19} aria-hidden="true"/><span>{label}</span></Link>;
-    })}</nav>
-    <AssistantWidget enabled={assistantEnabled} configured={assistantConfigured} />
+    <div className="mobile-controls">
+      <nav className="mobile-nav" aria-label="Mobile navigation">{navigation.map(({ href, label, icon: Icon, routes }) => {
+        const selected = isCurrentSection(routes);
+        return <Link key={href} href={href} className={selected ? "selected" : ""} aria-label={label} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={19} aria-hidden="true"/><span>{label}</span></Link>;
+      })}</nav>
+      <AssistantWidget enabled={assistantEnabled} configured={assistantConfigured} />
+    </div>
   </div>;
 }
