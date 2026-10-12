@@ -46,6 +46,9 @@ describe("AppShell mobile navigation", () => {
       { href: "/goals", label: "Shared goals", current: null, icon: "lucide-target", text: "" },
     ]);
 
+    const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/settings");
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/admin");
     expect(Array.from(document.querySelectorAll('nav[aria-label="Account navigation"] a')).map((link) => link.getAttribute("href"))).toEqual(["/settings"]);
   });
 
@@ -65,10 +68,13 @@ describe("AppShell mobile navigation", () => {
     const html = renderToStaticMarkup(createElement(AppShell, props, null));
     const document = new DOMParser().parseFromString(html, "text/html");
     const links = Array.from(document.querySelectorAll('nav[aria-label="Mobile navigation"] a'));
+    const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
 
     expect(links).toHaveLength(6);
     expect(links.map((link) => link.getAttribute("href"))).not.toContain("/settings");
     expect(links.map((link) => link.getAttribute("href"))).not.toContain("/admin");
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/settings");
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/admin");
     expect(Array.from(document.querySelectorAll('nav[aria-label="Account navigation"] a')).map((link) => link.getAttribute("href"))).toEqual(["/settings", "/admin"]);
   });
 });

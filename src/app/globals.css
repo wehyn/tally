@@ -306,7 +306,7 @@ button:focus-visible,a.button:focus-visible,[role=option]:focus-visible{outline:
 .account-menu-trigger .avatar-small{width:27px;height:27px;font-size:11px}
 .account-menu-panel[popover]{position:fixed;inset:76px clamp(24px,4vw,56px) auto auto;margin:0;width:220px;max-width:calc(100vw - 24px);padding:8px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:0 14px 42px rgba(26,53,38,.16)}
 .account-menu-heading{display:grid;gap:2px;padding:9px 10px 11px;border-bottom:1px solid var(--line)}
-.account-menu-heading strong{font-size:12px}
+.account-menu-heading strong{min-width:0;overflow-wrap:anywhere;font-size:12px}
 .account-menu-heading span{color:var(--muted);font-size:10px}
 .account-menu-links{display:grid;gap:3px;padding-top:6px}
 .account-menu-link{height:44px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:9px;color:#69766f;font-size:12px;font-weight:550}
