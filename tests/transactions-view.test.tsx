@@ -63,7 +63,8 @@ describe("TransactionsView", () => {
         destinationAccountName: "Savings",
       }),
     ];
-    const rows = [...renderTransactions(transactions).querySelectorAll(".list-table tbody tr")];
+    const container = renderTransactions(transactions);
+    const rows = [...container.querySelectorAll(".list-table tbody tr")];
 
     expect(rows.map((row) => row.querySelector(".table-title")?.textContent)).toEqual([
       "Lunch",
@@ -89,10 +90,11 @@ describe("TransactionsView", () => {
       expect(cell?.firstElementChild).toBe(iconWrapper);
     });
 
-    expect(rows[0].querySelectorAll("td")[1].textContent).toContain("Oct 11, 2026");
-    expect(rows[0].querySelectorAll("td")[1].querySelector(".table-muted")?.textContent).toBe("12:30");
+    expect(container.querySelector(".transaction-date-heading time")?.textContent).toBe("October 11, 2026");
+    expect(rows[0].querySelectorAll("td")[1].textContent).toContain("Food");
+    expect(rows[0].querySelectorAll("td")[0].querySelector(".table-muted")?.textContent).toBe("12:30");
     expect(rows[0].querySelectorAll("td")[2].textContent).toBe("Wallet");
-    expect(rows[0].querySelector(".table-number")?.textContent).toBe("−₱25.00");
+    expect(rows[0].querySelectorAll("td")[3].textContent).toBe("−₱25.00");
     expect(rows[0].querySelector('[aria-label="Edit Lunch"]')).not.toBeNull();
     expect(rows[0].querySelector('[aria-label="Permanently delete Lunch"]')).not.toBeNull();
     expect(rows[2].querySelector('a[href="/accounts"]')?.textContent).toBe("Manage");
