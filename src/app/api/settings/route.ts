@@ -4,7 +4,7 @@ import { getStore } from "@/lib/db";
 import { providerDisclosureHash, providerPublicConfig, providerConfig } from "@/lib/provider";
 const schema = z.object({ assistantOptIn: z.boolean(), confirmedDisclosureHash: z.string().optional() });
 export async function GET() {
-  try { const user = await requireUser(); const disclosureHash = providerDisclosureHash(); return Response.json({ assistantOptIn: disclosureHash ? getStore().getAssistantOptIn(user.id, disclosureHash) : false, provider: providerPublicConfig(), disclosureHash }); }
+  try { const user = await requireUser(); const disclosureHash = providerDisclosureHash(); const store = getStore(); return Response.json({ assistantOptIn: disclosureHash ? store.getAssistantOptIn(user.id, disclosureHash) : false, provider: providerPublicConfig(), disclosureHash, shortcutCredentialActive: store.hasShortcutCredential(user.id) }); }
   catch (error) { return respondError(error); }
 }
 export async function PATCH(request: Request) {

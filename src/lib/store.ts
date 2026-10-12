@@ -59,7 +59,7 @@ export function createStore(db: Database.Database) {
         id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('admin','user')), enabled INTEGER NOT NULL DEFAULT 1,
         assistant_opt_in INTEGER NOT NULL DEFAULT 0, reset_token_hash TEXT, reset_expires_at TEXT,
-        default_account_id TEXT, created_at TEXT NOT NULL
+        default_account_id TEXT, shortcut_credential_hash TEXT, created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS financial_accounts (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -139,6 +139,11 @@ export function createStore(db: Database.Database) {
       );
       CREATE INDEX IF NOT EXISTS contributions_goal ON goal_contributions(goal_id, date DESC);
     `);
+    const userColumns = db.pragma("table_info(users)") as { name: string }[];
+    if (!userColumns.some((column) => column.name === "shortcut_credential_hash")) {
+      db.exec("ALTER TABLE users ADD COLUMN shortcut_credential_hash TEXT");
+    }
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_shortcut_credential_hash ON users(shortcut_credential_hash) WHERE shortcut_credential_hash IS NOT NULL");
     const accountColumns = db.pragma("table_info(financial_accounts)") as { name: string }[];
     if (!accountColumns.some((column) => column.name === "balance_adjustment_minor_exact")) {
       db.transaction(() => {
@@ -215,6 +220,17 @@ export function createStore(db: Database.Database) {
       db.prepare("UPDATE users SET password_hash = ?, reset_token_hash = NULL, reset_expires_at = NULL WHERE id = ?").run(newPasswordHash, userId);
       return true;
     }).immediate();
+  }
+  function setShortcutCredentialHash(userId: string, hash: string | null): void {
+    const result = db.prepare("UPDATE users SET shortcut_credential_hash=? WHERE id=?").run(hash, userId);
+    if (!result.changes) throw new Error("User not found.");
+  }
+  function findEnabledUserByShortcutCredentialHash(hash: string): { id: string } | null {
+    const row = db.prepare("SELECT id FROM users WHERE shortcut_credential_hash=? AND enabled=1").get(hash) as { id: string } | undefined;
+    return row ?? null;
+  }
+  function hasShortcutCredential(userId: string): boolean {
+    return Boolean(db.prepare("SELECT 1 FROM users WHERE id=? AND shortcut_credential_hash IS NOT NULL").get(userId));
   }
 
   function listAccounts(userId: string): Account[] {
@@ -868,6 +884,7 @@ export function createStore(db: Database.Database) {
 
   return {
     migrate, registerUser, getUserByUsername, getUserById, listUsers, setUserEnabled, setResetCredential, consumeResetCredential,
+    setShortcutCredentialHash, findEnabledUserByShortcutCredentialHash, hasShortcutCredential,
     listAccounts, createAccount, setDefaultAccount, updateAccount, deleteAccount, listCategories, createCategory, updateCategory, renameCategory,
     listDebts, createDebt, updateDebt, deleteDebt, recordDebtPayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
