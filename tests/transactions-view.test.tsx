@@ -3,6 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Transaction } from "../src/lib/store";
 
@@ -98,6 +99,52 @@ describe("TransactionsView", () => {
     expect(rows[0].querySelector('[aria-label="Edit Lunch"]')).not.toBeNull();
     expect(rows[0].querySelector('[aria-label="Permanently delete Lunch"]')).not.toBeNull();
     expect(rows[2].querySelector('a[href="/accounts"]')?.textContent).toBe("Manage");
+  });
+
+  it("groups visible transactions by date and calculates each signed net without transfers", async () => {
+    const transactions = [
+      makeTransaction({ id: "new-expense", description: "Dinner", date: "2026-10-12", time: "18:30", amountMinor: 1_000 }),
+      makeTransaction({ id: "new-income", kind: "income", description: "Payday", date: "2026-10-12", time: "09:00", amountMinor: 5_000 }),
+      makeTransaction({ id: "old-transfer", kind: "transfer", categoryId: undefined, categoryName: null, categoryIcon: null, description: "Move to savings", date: "2026-10-11", time: "18:00", amountMinor: 2_000, destinationAccountName: "Savings" }),
+      makeTransaction({ id: "old-expense", description: "Groceries", date: "2026-10-11", time: "12:30", amountMinor: 3_500 }),
+    ];
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const user = userEvent.setup();
+
+    try {
+      await act(async () => root.render(createElement(TransactionsView, {
+        initial: transactions,
+        initialAccounts: [],
+        initialCategories: [],
+      })));
+
+      const groups = [...container.querySelectorAll(".transaction-date-group")];
+      expect(groups.map((group) => group.querySelector("time")?.textContent)).toEqual([
+        "October 12, 2026",
+        "October 11, 2026",
+      ]);
+      expect(groups.map((group) => group.querySelector(".transaction-date-label span")?.textContent)).toEqual(["· 2", "· 2"]);
+      expect(groups.map((group) => group.querySelector(".transaction-day-total")?.textContent)).toEqual(["+₱40.00", "-₱35.00"]);
+      expect(groups.map((group) => [...group.querySelectorAll(".table-title")].map((title) => title.textContent))).toEqual([
+        ["Dinner", "Payday"],
+        ["Move to savings", "Groceries"],
+      ]);
+
+      const search = container.querySelector<HTMLInputElement>(".search-input");
+      expect(search).not.toBeNull();
+      await act(async () => user.type(search!, "Dinner"));
+
+      const filteredGroups = [...container.querySelectorAll(".transaction-date-group")];
+      expect(filteredGroups.map((group) => group.querySelector("time")?.textContent)).toEqual(["October 12, 2026"]);
+      expect(filteredGroups[0].querySelector(".transaction-date-label span")?.textContent).toBe("· 1");
+      expect(filteredGroups[0].querySelector(".transaction-day-total")?.textContent).toBe("-₱10.00");
+      expect([...filteredGroups[0].querySelectorAll(".table-title")].map((title) => title.textContent)).toEqual(["Dinner"]);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
   });
 
   it("keeps the Undo action for an assistant transaction with time remaining", async () => {
