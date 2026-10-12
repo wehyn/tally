@@ -33,6 +33,11 @@ function containsCounterparty(text: string, counterparty: string): boolean {
   const normalizedCounterparty = normalizeWords(counterparty);
   return normalizedCounterparty.length > 0 && ` ${normalizeWords(text)} `.includes(` ${normalizedCounterparty} `);
 }
+function debtNoteMatches(text: string, note: string): boolean {
+  // shortcut: matches full note phrases after one leading filler; broaden when users need partial note matching.
+  const normalizedNote = normalizeWords(note).replace(/^(?:about|for|the|a|an)\s+/, "");
+  return Boolean(normalizedNote && containsCounterparty(text, normalizedNote));
+}
 function hasIncomingDebtRepaymentWording(text: string): boolean {
   if (/\b(?:paid\s+me|repaid\s+me|repayment)\b/i.test(text)) return true;
   const payment = /\b(?:paid\s+back|repaid|returned)\s+(?:(?:₱|PHP|\$)\s*)?\d|\breturned\s+(?:the|my)\s+money\b/giu;
@@ -245,9 +250,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const repaymentNames = repaymentIntent
       ? [...new Set(openOwedToYouDebts.filter((debt) => containsCounterparty(repaymentMatchText, debt.counterparty)).map((debt) => normalizeWords(debt.counterparty)))]
       : [];
-    const repaymentDebt = repaymentNames.length === 1
-      ? openOwedToYouDebts.find((debt) => normalizeWords(debt.counterparty) === repaymentNames[0])
-      : undefined;
+    const repaymentCandidates = repaymentNames.length === 1
+      ? openOwedToYouDebts.filter((debt) => normalizeWords(debt.counterparty) === repaymentNames[0])
+      : [];
+    const repaymentNoteMatches = repaymentCandidates.filter((debt) => debt.note && debtNoteMatches(repaymentMatchText, debt.note));
+    const repaymentDebt = repaymentNoteMatches.length === 1 ? repaymentNoteMatches[0] : repaymentCandidates[0];
     let call = providerCall;
     if (ordinaryIncomeFlow) {
       if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
@@ -314,7 +321,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); needsFollowup = true; }
       else {
         const normalizedCounterparty = normalizeWords(counterparty);
-        const matchingDebt = normalizedCounterparty ? store.listDebts(user.id)
+        const matchingDebt = repaymentDebt && normalizeWords(repaymentDebt.counterparty) === normalizedCounterparty
+          ? repaymentDebt
+          : normalizedCounterparty ? store.listDebts(user.id)
           .filter((item) => item.direction === "owed_to_you" && item.status === "open" && normalizeWords(item.counterparty) === normalizedCounterparty)
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] : undefined;
         const amountMinor = parsePHPToMinor(amount);
