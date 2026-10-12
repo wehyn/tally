@@ -60,7 +60,7 @@ describe("DashboardView", () => {
       .filter((input) => /\btype="date"/.test(input))
       .map((input) => input.match(/\bvalue="([^"]+)"/)?.[1]);
 
-    expect(period).toContain("2026-10-01 — 2026-10-31");
+    expect(period).toContain("Oct 01, 2026 — Oct 31, 2026");
     expect(period).not.toContain("Showing actuals");
     expect(period).not.toMatch(/<svg\b/);
     expect(dateInputValues).toEqual(["2026-10-01", "2026-10-31"]);
