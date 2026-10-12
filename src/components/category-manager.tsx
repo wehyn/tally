@@ -133,7 +133,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
     )}
   </>;
 
-  if (collapsible) return <article className="panel category-manager-collapsible" ref={categoryManagerRef}>
+  if (collapsible) return <article id="category-manager" className="panel category-manager-collapsible" ref={categoryManagerRef}>
     <button className="category-manager-toggle" type="button" aria-expanded={categoriesOpen} aria-controls="category-manager-content" onClick={() => setCategoriesOpen((expanded) => !expanded)}>
       <FolderPlus size={16}/><span>Manage categories</span><span className="category-summary-count">{categories.length}</span><ChevronDown className={`category-manager-chevron${categoriesOpen ? " open" : ""}`} size={15} aria-hidden="true"/>
     </button>
