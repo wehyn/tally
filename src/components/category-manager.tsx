@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, FolderPlus, Pencil, Plus, X } from "lucide-react";
 import { CATEGORY_ICON_OPTIONS, type CategoryIconId } from "@/lib/category-icons";
@@ -13,8 +13,17 @@ type CategoryManagerProps = {
   collapsible?: boolean;
 };
 
+const subscribeToCategoryHash = (listener: () => void) => {
+  window.addEventListener("hashchange", listener);
+  return () => window.removeEventListener("hashchange", listener);
+};
+const isCategoryManagerTargeted = () => window.location.hash === "#category-manager";
+const getServerCategoryHash = () => false;
+
 export function CategoryManager({ categories, onChange, collapsible = false }: CategoryManagerProps) {
-  const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [categoriesOpenOverride, setCategoriesOpenOverride] = useState<boolean | null>(null);
+  const categoryManagerTargeted = useSyncExternalStore(subscribeToCategoryHash, isCategoryManagerTargeted, getServerCategoryHash);
+  const isOpen = categoriesOpenOverride ?? categoryManagerTargeted;
   const categoryManagerRef = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Category | null>(null);
@@ -26,7 +35,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!categoriesOpen || !categoryManagerRef.current) return;
+    if (!isOpen || !categoryManagerRef.current) return;
     const manager = categoryManagerRef.current;
     const disclosure = manager.querySelector<HTMLElement>(".category-manager-disclosure");
     const keepManagerInView = () => {
@@ -49,7 +58,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
       observer.disconnect();
       disclosure.removeEventListener("transitionend", stopFollowingExpansion);
     };
-  }, [categoriesOpen]);
+  }, [isOpen]);
 
   function startCreate() {
     setEditing(null);
@@ -133,11 +142,11 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
     )}
   </>;
 
-  if (collapsible) return <article className="panel category-manager-collapsible" ref={categoryManagerRef}>
-    <button className="category-manager-toggle" type="button" aria-expanded={categoriesOpen} aria-controls="category-manager-content" onClick={() => setCategoriesOpen((expanded) => !expanded)}>
-      <FolderPlus size={16}/><span>Manage categories</span><span className="category-summary-count">{categories.length}</span><ChevronDown className={`category-manager-chevron${categoriesOpen ? " open" : ""}`} size={15} aria-hidden="true"/>
+  if (collapsible) return <article id="category-manager" className="panel category-manager-collapsible" ref={categoryManagerRef}>
+    <button className="category-manager-toggle" type="button" aria-expanded={isOpen} aria-controls="category-manager-content" onClick={() => setCategoriesOpenOverride((override) => !(override ?? categoryManagerTargeted))}>
+      <FolderPlus size={16}/><span>Manage categories</span><span className="category-summary-count">{categories.length}</span><ChevronDown className={`category-manager-chevron${isOpen ? " open" : ""}`} size={15} aria-hidden="true"/>
     </button>
-    <div className={`category-manager-disclosure${categoriesOpen ? " open" : ""}`} id="category-manager-content" aria-hidden={!categoriesOpen} inert={!categoriesOpen}>
+    <div className={`category-manager-disclosure${isOpen ? " open" : ""}`} id="category-manager-content" aria-hidden={!isOpen} inert={!isOpen}>
       <div className="category-manager-disclosure-clip"><div className="category-manager-inner">{managerContent}</div></div>
     </div>
   </article>;

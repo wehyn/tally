@@ -38,15 +38,14 @@ describe("AppShell mobile navigation", () => {
       icon: Array.from(link.querySelector("svg")?.classList ?? []).find((name) => name.startsWith("lucide-")) ?? null,
       text: link.textContent?.trim() ?? "",
     }))).toEqual([
-      { href: "/dashboard", label: "Overview", current: null, icon: "lucide-layout-dashboard", text: "" },
-      { href: "/transactions", label: "Transactions", current: null, icon: "lucide-arrow-left-right", text: "" },
-      { href: "/accounts", label: "Accounts", current: null, icon: "lucide-wallet", text: "" },
-      { href: "/bills", label: "Bills", current: null, icon: "lucide-calendar-days", text: "" },
-      { href: "/debts", label: "Debts", current: "page", icon: "lucide-hand-coins", text: "" },
-      { href: "/goals", label: "Shared goals", current: null, icon: "lucide-target", text: "" },
+      { href: "/dashboard", label: "Home", current: null, icon: "lucide-layout-dashboard", text: "Home" },
+      { href: "/money", label: "Money", current: null, icon: "lucide-wallet", text: "Money" },
+      { href: "/plan", label: "Plan", current: "location", icon: "lucide-calendar-days", text: "Plan" },
     ]);
 
     const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
+    expect(primaryLinks.map((link) => link.getAttribute("href"))).toEqual(["/dashboard", "/money", "/plan"]);
+    expect(primaryLinks[2].getAttribute("aria-current")).toBe("location");
     expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/settings");
     expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/admin");
     expect(Array.from(document.querySelectorAll('nav[aria-label="Account navigation"] a')).map((link) => link.getAttribute("href"))).toEqual(["/settings"]);
@@ -70,7 +69,7 @@ describe("AppShell mobile navigation", () => {
     const links = Array.from(document.querySelectorAll('nav[aria-label="Mobile navigation"] a'));
     const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
 
-    expect(links).toHaveLength(6);
+    expect(links).toHaveLength(3);
     expect(links.map((link) => link.getAttribute("href"))).not.toContain("/settings");
     expect(links.map((link) => link.getAttribute("href"))).not.toContain("/admin");
     expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/settings");
