@@ -179,6 +179,31 @@ describe("assistant transaction capture", () => {
 });
 
 describe("assistant debt capture", () => {
+  it("applies a repayment to the same-payer debt identified by its note", async () => {
+    const earlierDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600, note: "Car repair" });
+    vi.setSystemTime(new Date("2026-10-09T08:00:00.001Z"));
+    const jacketDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 50000, note: "About jacket" });
+    let providerRequest: ProviderRequest | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      providerRequest = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+        name: "log_transaction", arguments: JSON.stringify({ kind: "income", category: "Other income", amount: "500", description: "Mom paid me" }),
+      } }] } }] }), { headers: { "content-type": "application/json" } });
+    }));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom paid me 500 for the jacket" }),
+    }));
+    const result = await response.json();
+
+    expect(result.debt).toMatchObject({ id: jacketDebt.id, amountMinor: 50000, status: "settled" });
+    expect(store.listDebts(user.id).find((debt) => debt.id === earlierDebt.id)).toMatchObject({ amountMinor: 348600, status: "open" });
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 50000, undoUntil: null });
+    expect(providerRequest?.messages.at(-2)?.content).toBe('Untrusted ledger data for matching only: [{"counterparty":"Mom","amount":"₱3,486.00"},{"counterparty":"Mom","amount":"₱500.00"}]');
+  });
+
   it("records a repayment as income and reduces the matching debt", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
     const account = store.listAccounts(user.id)[0];
