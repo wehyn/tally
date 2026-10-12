@@ -65,6 +65,9 @@ describe("assistant transaction capture", () => {
     const result = await response.json();
 
     expect(response.status).toBe(200);
+    expect(result).toMatchObject({
+      answer: expect.any(String), conversationId: expect.any(String), undoUntil: expect.any(String), debt: null,
+    });
     expect(result.transaction).toMatchObject({
       kind: "expense",
       amountMinor: 50000,

@@ -384,6 +384,40 @@ describe("owner-scoped ledger", () => {
   });
 });
 
+describe("Shortcut credential storage", () => {
+  it("migrates legacy users with a hash field", () => {
+    const legacy = new Database(":memory:");
+    legacy.exec(`CREATE TABLE users (
+      id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('admin','user')), enabled INTEGER NOT NULL DEFAULT 1,
+      assistant_opt_in INTEGER NOT NULL DEFAULT 0, reset_token_hash TEXT, reset_expires_at TEXT,
+      default_account_id TEXT, created_at TEXT NOT NULL
+    )`);
+
+    createStore(legacy).migrate();
+
+    const columns = (legacy.pragma("table_info(users)") as { name: string }[]).map(({ name }) => name);
+    legacy.close();
+    expect(columns).toContain("shortcut_credential_hash");
+  });
+
+  it("resolves only an enabled owner and removes a revoked hash", () => {
+    const admin = store.registerUser("shortcut_hash_admin", "admin-hash");
+    const owner = store.registerUser("shortcut_hash_owner", "owner-hash");
+
+    store.setShortcutCredentialHash(owner.id, "stored-sha256-hash");
+
+    expect(database.prepare("SELECT shortcut_credential_hash FROM users WHERE id=?").get(owner.id)).toEqual({
+      shortcut_credential_hash: "stored-sha256-hash",
+    });
+    expect(store.findEnabledUserByShortcutCredentialHash("stored-sha256-hash")).toEqual({ id: owner.id });
+    store.setUserEnabled(admin.id, owner.id, false);
+    expect(store.findEnabledUserByShortcutCredentialHash("stored-sha256-hash")).toBeNull();
+    store.setShortcutCredentialHash(owner.id, null);
+    expect(store.hasShortcutCredential(owner.id)).toBe(false);
+  });
+});
+
 describe("recurring bills", () => {
   it("persists a selected icon and defaults omitted icons to Calendar", () => {
     const user = store.registerUser("bill_icons", "hash");
