@@ -126,6 +126,7 @@ describe("TransactionsView", () => {
         "October 11, 2026",
       ]);
       expect(groups.map((group) => group.querySelector(".transaction-date-label span")?.textContent)).toEqual(["· 2", "· 2"]);
+      expect(groups.map((group) => group.querySelector(".transaction-date-label span")?.getAttribute("aria-label"))).toEqual(["2 transactions", "2 transactions"]);
       expect(groups.map((group) => group.querySelector(".transaction-day-total")?.textContent)).toEqual(["+₱40.00", "-₱35.00"]);
       expect(groups.map((group) => [...group.querySelectorAll(".table-title")].map((title) => title.textContent))).toEqual([
         ["Dinner", "Payday"],
@@ -139,7 +140,9 @@ describe("TransactionsView", () => {
       const filteredGroups = [...container.querySelectorAll(".transaction-date-group")];
       expect(filteredGroups.map((group) => group.querySelector("time")?.textContent)).toEqual(["October 12, 2026"]);
       expect(filteredGroups[0].querySelector(".transaction-date-label span")?.textContent).toBe("· 1");
+      expect(filteredGroups[0].querySelector(".transaction-date-label span")?.getAttribute("aria-label")).toBe("1 transaction");
       expect(filteredGroups[0].querySelector(".transaction-day-total")?.textContent).toBe("-₱10.00");
+      expect(filteredGroups[0].querySelector(".transaction-day-total")?.getAttribute("aria-label")).toBe("Daily net -₱10.00");
       expect([...filteredGroups[0].querySelectorAll(".table-title")].map((title) => title.textContent)).toEqual(["Dinner"]);
     } finally {
       await act(async () => root.unmount());

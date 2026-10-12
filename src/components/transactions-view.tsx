@@ -50,8 +50,8 @@ export function TransactionsView({initial,initialAccounts,initialCategories}:{in
           const total=formatPHPFromMinorString(group.totalMinor.toString());
           return <section className="transaction-date-group" key={group.date}>
             <h3 className="transaction-date-heading">
-              <span className="transaction-date-label"><time dateTime={group.date}>{transactionDateFormatter.format(new Date(`${group.date}T00:00:00Z`))}</time><span aria-label={`${group.transactions.length} transactions`}>· {group.transactions.length}</span></span>
-              <span className={`transaction-day-total ${group.totalMinor>0n?"positive":group.totalMinor<0n?"negative":""}`} aria-label={`Daily net ${total}`}>{group.totalMinor>0n?`+${total}`:total}</span>
+              <span className="transaction-date-label"><time dateTime={group.date}>{transactionDateFormatter.format(new Date(`${group.date}T00:00:00Z`))}</time><span aria-label={`${group.transactions.length} ${group.transactions.length===1?"transaction":"transactions"}`}>· {group.transactions.length}</span></span>
+              <span className={`transaction-day-total ${group.totalMinor>0n?"positive":group.totalMinor<0n?"negative":""}`} aria-label={`Daily net ${group.totalMinor>0n?`+${total}`:total}`}>{group.totalMinor>0n?`+${total}`:total}</span>
             </h3>
             <div className="transaction-group-card"><table className="list-table transaction-layout-table transaction-group-table">
               <colgroup><col className="transaction-col-name"/><col className="transaction-col-category"/><col className="transaction-col-account"/><col className="transaction-col-amount"/><col className="transaction-col-actions"/></colgroup>
