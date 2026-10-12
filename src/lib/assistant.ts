@@ -12,11 +12,25 @@ export function assertAssistantAccess(store: ReturnType<typeof getStore>, userId
   if (!store.getAssistantOptIn(userId, providerDisclosureHash() ?? undefined)) throw new HttpError(403, "Enable the assistant in Settings after reviewing the current provider disclosure.");
   if (!providerConfig()) throw new HttpError(503, "The Codex-LB provider and privacy disclosure are not fully configured.");
 }
-function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>) {
-  const period = `From ${facts.start} to ${facts.end}`;
-  if (facts.requestedCategory) return `${period}, recorded spending in ${facts.requestedCategory} was ${formatPHP(facts.categoryAmountMinor ?? 0)}.`;
-  const topCategories = facts.byCategory.slice(0, 3).map((item) => `${item.name}: ${formatPHP(item.amountMinor)}`).join(" · ");
-  return `${period}, recorded income was ${formatPHP(facts.incomeMinor)} and spending was ${formatPHP(facts.spendingMinor)}.${topCategories ? ` Top spending categories: ${topCategories}.` : " No expenses were recorded in this period."}`;
+function formatAssistantDate(date: string, month: "short" | "long" = "short"): string {
+  const options: Intl.DateTimeFormatOptions = month === "long" ? { month, timeZone: "UTC" } : { month, day: "numeric", timeZone: "UTC" };
+  return new Intl.DateTimeFormat("en-US", options).format(new Date(`${date}T00:00:00Z`));
+}
+function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>, prompt: string) {
+  if (/\b(?:assets?|balances?|account totals?)\b/i.test(prompt)) {
+    return `Account Balances\n\n${facts.accounts.map((account) => `${account.name}: ${formatPHP(account.balanceMinor)}`).join("\n") || "No accounts yet."}`;
+  }
+  const currentPeriod = monthToDateRange();
+  const period = facts.start === currentPeriod.start && facts.end === currentPeriod.end
+    ? `This ${formatAssistantDate(facts.end, "long")}`
+    : `From ${formatAssistantDate(facts.start)} to ${formatAssistantDate(facts.end)}`;
+  if (facts.requestedCategory) return `${period}\n\n${facts.requestedCategory}: ${formatPHP(facts.categoryAmountMinor ?? 0)}`;
+  const topCategories = facts.byCategory.slice(0, 3).map((item) => `${item.name}: ${formatPHP(item.amountMinor)}`).join("\n");
+  const asksIncome = /\b(?:income|earnings?|salary|earned|received)\b/i.test(prompt);
+  const asksSpending = /\b(?:spend(?:ing)?|spent|expenses?|purchases?)\b/i.test(prompt);
+  if (asksSpending && !asksIncome) return `${period}\n\nTotal Spent: ${formatPHP(facts.spendingMinor)}${topCategories ? `\n${topCategories}` : ""}`;
+  if (asksIncome && !asksSpending) return `${period}\n\nTotal Income: ${formatPHP(facts.incomeMinor)}`;
+  return `${period}\n\nTotal Income: ${formatPHP(facts.incomeMinor)}\nTotal Spent: ${formatPHP(facts.spendingMinor)}${topCategories ? `\n${topCategories}` : ""}`;
 }
 function safeClarification(value: unknown): string {
   if (typeof value !== "string" || value.trim().length < 3 || value.length > 240) return "What amount or category should I use?";
@@ -293,7 +307,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else {
         const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
         const facts = store.getFinanceFacts(user.id, start, end, category);
-        answer = answerForFacts(facts);
+        answer = answerForFacts(facts, input.prompt);
       }
     } else if (call.name === "log_debt") {
       const direction = call.args.direction === "owed_to_you" || call.args.direction === "you_owe" ? call.args.direction : null;
@@ -357,7 +371,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
               kind: "income", amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant",
             });
             transaction = saved.transaction; debt = saved.debt;
-            answer = `Saved ${formatPHP(transaction.amountMinor)} from ${matchingDebt.counterparty} in ${transaction.categoryName} · ${transaction.accountName} · ${transaction.date} ${transaction.time}. ${debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to you.`}`;
+            const debtStatus = debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to you.`;
+            answer = `Saved ${formatPHP(transaction.amountMinor)} from ${matchingDebt.counterparty}.\n${transaction.categoryName} · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\n${debtStatus}`;
           }
         }
       }
@@ -407,7 +422,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           const amountMinor = parsePHPToMinor(amount);
           const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: resolvedCategory.id, date, time, source: "assistant" });
           transaction = saved; undoUntil = saved.undoUntil;
-          answer = `Saved ${formatPHP(saved.amountMinor)}${saved.description ? ` for ${saved.description}` : ""} in ${saved.categoryName} · ${saved.accountName} · ${saved.date} ${saved.time}.`;
+          answer = `Saved ${formatPHP(saved.amountMinor)}${saved.description ? ` for ${saved.description}` : ""}.\n${saved.categoryName} · ${saved.accountName}\n${formatAssistantDate(saved.date)} ${saved.time}.`;
         }
       }
     } else answer = "I couldn't complete that request. Please rephrase it.";
