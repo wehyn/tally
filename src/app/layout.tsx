@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: "A private, self-hosted finance tracker.",
   manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, title: "Tally" },
-  icons: { apple: "/apple-touch-icon.png" },
+  icons: { apple: [{ url: "/apple-touch-icon.png?v=2", sizes: "180x180", type: "image/png" }] },
   other: { "apple-mobile-web-app-capable": "yes" },
 };
 export const viewport: Viewport = { width: "device-width", initialScale: 1, maximumScale: 1, userScalable: false, viewportFit: "cover", themeColor: "#f5f6f2" };
