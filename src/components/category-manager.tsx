@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, FolderPlus, Pencil, Plus, X } from "lucide-react";
 import { CATEGORY_ICON_OPTIONS, type CategoryIconId } from "@/lib/category-icons";
@@ -15,6 +15,7 @@ type CategoryManagerProps = {
 
 export function CategoryManager({ categories, onChange, collapsible = false }: CategoryManagerProps) {
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const categoryManagerRef = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Category | null>(null);
   const [name, setName] = useState("");
@@ -23,6 +24,32 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!categoriesOpen || !categoryManagerRef.current) return;
+    const manager = categoryManagerRef.current;
+    const disclosure = manager.querySelector<HTMLElement>(".category-manager-disclosure");
+    const keepManagerInView = () => {
+      const top = window.scrollY + manager.getBoundingClientRect().top;
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      window.scrollTo(0, Math.min(top, maxScroll));
+    };
+    if (!disclosure || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      keepManagerInView();
+      return;
+    }
+    const observer = new ResizeObserver(keepManagerInView);
+    const stopFollowingExpansion = (event: TransitionEvent) => {
+      if (event.target === disclosure && event.propertyName === "grid-template-rows") observer.disconnect();
+    };
+    disclosure.addEventListener("transitionend", stopFollowingExpansion);
+    observer.observe(manager);
+    keepManagerInView();
+    return () => {
+      observer.disconnect();
+      disclosure.removeEventListener("transitionend", stopFollowingExpansion);
+    };
+  }, [categoriesOpen]);
 
   function startCreate() {
     setEditing(null);
@@ -106,7 +133,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
     )}
   </>;
 
-  if (collapsible) return <article className="panel category-manager-collapsible">
+  if (collapsible) return <article className="panel category-manager-collapsible" ref={categoryManagerRef}>
     <button className="category-manager-toggle" type="button" aria-expanded={categoriesOpen} aria-controls="category-manager-content" onClick={() => setCategoriesOpen((expanded) => !expanded)}>
       <FolderPlus size={16}/><span>Manage categories</span><span className="category-summary-count">{categories.length}</span><ChevronDown className={`category-manager-chevron${categoriesOpen ? " open" : ""}`} size={15} aria-hidden="true"/>
     </button>
