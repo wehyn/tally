@@ -69,11 +69,8 @@ function repaymentAmountFromPrompt(prompt: string): number | undefined {
   const dateFreeText = prompt.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/gi, " ")
     .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?\b/gi, " ")
     .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b/gi, " ");
-  const currency = [...dateFreeText.matchAll(new RegExp(`(?:₱|PHP)\\s*(${amountPattern})|(${amountPattern})\\s*(?:PHP|pesos?)\\b`, "gi"))];
   const tiedToPayment = [...dateFreeText.matchAll(new RegExp(`\\b(?:paid\\s+(?:me|back)|repaid(?:\\s+me)?|returned)\\s+(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.;!?])`, "gi"))];
-  const match = tiedToPayment.length === 1 ? tiedToPayment[0]
-    : tiedToPayment.length > 1 ? undefined : currency.length === 1 ? currency[0] : undefined;
-  const raw = match?.[1] ?? match?.[2];
+  const raw = tiedToPayment.length === 1 ? tiedToPayment[0][1] : undefined;
   if (!raw) return undefined;
   try { return parsePHPToMinor(raw) || undefined; } catch { return undefined; }
 }

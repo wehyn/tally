@@ -179,21 +179,21 @@ describe("assistant transaction capture", () => {
 });
 
 describe("assistant debt capture", () => {
-  it("does not use a provider-inferred repayment amount when the user omitted it", async () => {
-    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+  it.each([["Ari paid me", "200"], ["Ari paid me; my balance was ₱500", "500"]])("does not use a provider-inferred repayment amount when the user omitted it: %s", async (prompt, amount) => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 100000 });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
-      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount: "200" }),
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount }),
     } }] } }] }), { headers: { "content-type": "application/json" } })));
 
     const response = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "Ari paid me" }),
+      body: JSON.stringify({ prompt }),
     }));
     const result = await response.json();
 
     expect(result).toMatchObject({ transaction: null, debt: null });
     expect(result.answer).toContain("What amount");
-    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 20000, status: "open" }]);
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 100000, status: "open" }]);
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
   });
 
