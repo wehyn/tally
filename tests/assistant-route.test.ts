@@ -179,6 +179,381 @@ describe("assistant transaction capture", () => {
 });
 
 describe("assistant debt capture", () => {
+  it.each([["Ari paid me", "200"], ["Ari paid me; my balance was ₱500", "500"]])("does not use a provider-inferred repayment amount when the user omitted it: %s", async (prompt, amount) => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 100000 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("What amount");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 100000, status: "open" }]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it("asks before writing when the provider amount differs from the user's amount", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount: "200" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Ari paid me 100" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("re-enter the repayment amount");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 20000, status: "open" }]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it("uses the amount tied to a repayment instead of an unrelated currency amount", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 100000 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount: "500" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Ari paid me 100; my balance was ₱500" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("re-enter the repayment amount");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 100000, status: "open" }]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it("does not accept yes as a replacement for an amount after an amount mismatch", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    const providerResponse = () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount: "100" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount: "200" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })).mockResolvedValueOnce(providerResponse()));
+
+    const first = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Ari paid me 100" }),
+    }));
+    const { conversationId } = await first.json();
+    const second = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Yes", conversationId }),
+    }));
+    const result = await second.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("What amount");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 20000, status: "open" }]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it("answers clear open debt list questions locally", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Mika", amountMinor: 10000 });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Show my open debt list and total amount owed to me" }),
+    }));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Ari: ₱200.00");
+    expect(result.answer).toContain("Total owed to you: ₱200.00");
+    expect(result.answer).not.toContain("Mika");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["Show all debts and total amount", "Show all debts including settled and total amount"])("includes open and settled records for all-debt wording: %s", async (prompt) => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    const settledDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 10000 });
+    store.recordDebtPayment(user.id, settledDebt.id, {
+      kind: "income", amountMinor: 10000, description: "Mika paid me", accountId: store.listAccounts(user.id)[0].id,
+      categoryId: store.listCategories(user.id).find((category) => category.type === "income")!.id,
+      date: "2026-10-13", time: "12:00", source: "assistant",
+    });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }));
+    const result = await response.json();
+
+    expect(result.answer).toContain("All debts");
+    expect(result.answer).toContain("Ari: ₱200.00 (open)");
+    expect(result.answer).toContain("Mika: ₱100.00 (settled; last outstanding balance)");
+    expect(result.answer).toContain("Total outstanding: ₱200.00");
+    expect(result.answer).toContain("Total last outstanding balance: ₱100.00");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["Who owes me money?", "How much do people owe me?", "What debt do I owe?"])("answers common debt questions locally: %s", async (prompt) => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Mika", amountMinor: 10000 });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }));
+    const result = await response.json();
+
+    expect(result.answer).toContain(prompt.includes("do I owe") ? "Mika: ₱100.00" : "Ari: ₱200.00");
+    if (prompt.startsWith("How much")) expect(result.answer).toContain("Total owed to you: ₱200.00");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("answers combined account balance and amount-owed questions locally", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "What is my account balance and how much do people owe me?" }),
+    }));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Account Balances");
+    expect(result.answer).toContain("Total owed to you: ₱200.00");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("answers the combined total-balance wording and asks who I owe locally", async () => {
+    store.createAccount(user.id, { name: "Savings", type: "bank", openingMinor: 12500 });
+    store.createAccount(user.id, { name: "Cash", type: "cash", openingMinor: 7500 });
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Mika", amountMinor: 10000 });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const totalResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "What is my total balance and how much do people owe me?" }),
+    }));
+    const totalResult = await totalResponse.json();
+    expect(totalResult.answer).toContain("Account Balances");
+    expect(totalResult.answer).toContain("Savings: ₱125.00");
+    expect(totalResult.answer).toContain("Cash: ₱75.00");
+    expect(totalResult.answer).toContain("Total Account Balance: ₱200.00");
+    expect(totalResult.answer).toContain("Total owed to you: ₱200.00");
+
+    const whoResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Who do I owe?" }),
+    }));
+    const whoResult = await whoResponse.json();
+    expect(whoResult.answer).toContain("Mika: ₱100.00");
+    expect(whoResult.answer).not.toContain("Ari");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("formats a debt total larger than Number.MAX_SAFE_INTEGER", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 5_000_000_000_000_000 });
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 5_000_000_000_000_000 });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "How much do people owe me?" }),
+    }));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Total owed to you: ₱100,000,000,000,000.00");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("labels settled debt totals as historical balances", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    store.recordDebtPayment(user.id, debt.id, {
+      kind: "income", amountMinor: 20000, description: "Ari paid me", accountId: store.listAccounts(user.id)[0].id,
+      categoryId: store.listCategories(user.id).find((category) => category.type === "income")!.id,
+      date: "2026-10-09", time: "12:00", source: "assistant",
+    });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Show my settled debts and total balance" }),
+    }));
+    const result = await response.json();
+
+    expect(result.answer).toContain("last outstanding balance");
+    expect(result.answer).toContain("Total last outstanding balance: ₱200.00");
+    expect(result.answer).not.toContain("Total owed to you");
+    expect(result.answer).not.toContain("Settled debts owed to you");
+  });
+
+  it("does not let an old ordinary-income question capture a new repayment", async () => {
+    const mikaDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 40000 });
+    const providerResponse = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }],
+    }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerResponse("record_debt_payment", { counterparty: "Riley", amount: "100" }))
+      .mockResolvedValueOnce(providerResponse("record_debt_payment", { counterparty: "Mika", amount: "100" })));
+
+    const first = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Riley paid me 100" }),
+    }));
+    const { conversationId } = await first.json();
+    const second = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mika paid me 100", conversationId }),
+    }));
+    const result = await second.json();
+
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000 });
+    expect(result.debt).toMatchObject({ id: mikaDebt.id, amountMinor: 30000 });
+  });
+
+  it("does not let an accepted ordinary-income choice capture a repayment after account clarification", async () => {
+    const mikaDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 40000 });
+    const providerResponse = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }],
+    }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerResponse("record_debt_payment", { counterparty: "Riley", amount: "100" }))
+      .mockResolvedValueOnce(providerResponse("log_transaction", { kind: "income", category: "Other income", amount: "100", account: "Missing", description: "Riley paid me" }))
+      .mockResolvedValueOnce(providerResponse("record_debt_payment", { counterparty: "Mika", amount: "100", account: "Missing" }))
+      .mockResolvedValueOnce(providerResponse("record_debt_payment", { counterparty: "Mika", amount: "100", account: "Wallet" })));
+
+    const first = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Riley paid me 100" }),
+    }));
+    const { conversationId } = await first.json();
+    const confirmation = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Yes", conversationId }),
+    }));
+    expect((await confirmation.json()).answer).toContain("couldn't find the account");
+    const accountQuestion = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mika paid me 100", conversationId }),
+    }));
+    expect((await accountQuestion.json()).answer).toContain("couldn't find the account");
+    const payment = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Wallet", conversationId }),
+    }));
+    const result = await payment.json();
+
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000 });
+    expect(result.debt).toMatchObject({ id: mikaDebt.id, amountMinor: 30000 });
+  });
+
+  it("uses the stated amount through an active repayment account clarification", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 40000 });
+    const providerResponse = (account: string) => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Mika", amount: "100", account }),
+    } }] } }] }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerResponse("Missing"))
+      .mockResolvedValueOnce(providerResponse("Wallet")));
+
+    const first = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mika paid me 100" }),
+    }));
+    const { conversationId } = await first.json();
+    const accountQuestion = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Wallet", conversationId }),
+    }));
+    const result = await accountQuestion.json();
+
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000, accountName: "Wallet" });
+    expect(result.debt).toMatchObject({ id: debt.id, amountMinor: 30000, status: "open" });
+  });
+
+  it.each(["Ari paid me on October 13", "Ari paid me ₱100 on Oct 13"])("does not treat a date as the repayment amount: %s", async (prompt) => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount: prompt.includes("₱100") ? "100" : "200", date: "2026-10-13" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }));
+    const result = await response.json();
+
+    if (prompt.includes("₱100")) {
+      expect(result.debt).toMatchObject({ id: debt.id, amountMinor: 10000, status: "open" });
+    } else {
+      expect(result).toMatchObject({ transaction: null, debt: null });
+      expect(result.answer).toContain("What amount");
+      expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 20000, status: "open" }]);
+    }
+  });
+
+  it("carries the latest repayment amount through an active date clarification", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
+    const responseWith = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name, arguments: JSON.stringify(args),
+    } }] } }] }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(responseWith("record_debt_payment", { counterparty: "Ari", amount: "100" }))
+      .mockResolvedValueOnce(responseWith("record_debt_payment", { counterparty: "Ari", amount: "100", date: "2026-10-13" })));
+
+    const first = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Ari paid me ₱100; date" }),
+    }));
+    const { conversationId } = await first.json();
+    const second = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "October 13", conversationId }),
+    }));
+    const result = await second.json();
+
+    expect(result.transaction).toMatchObject({ amountMinor: 10000, date: "2026-10-13" });
+    expect(result.debt).toMatchObject({ id: debt.id, amountMinor: 10000, status: "open" });
+  });
+
+  it("uses the latest repayment rather than an older payer's amount through account clarification", async () => {
+    const mikaDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 30000 });
+    const responseWith = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name, arguments: JSON.stringify(args),
+    } }] } }] }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(responseWith("record_debt_payment", { counterparty: "Riley", amount: "250" }))
+      .mockResolvedValueOnce(responseWith("log_transaction", { kind: "income", amount: "250", category: "Other income", account: "Missing" }))
+      .mockResolvedValueOnce(responseWith("record_debt_payment", { counterparty: "Mika", amount: "250", account: "Missing" })));
+    const first = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Riley paid me 250" }),
+    }));
+    const { conversationId } = await first.json();
+    const ordinaryAccountQuestion = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Yes", conversationId }),
+    }));
+    expect((await ordinaryAccountQuestion.json()).answer).toContain("couldn't find the account");
+    const mikaPrompt = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mika paid me", conversationId }),
+    }));
+    const result = await mikaPrompt.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("What amount");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: mikaDebt.id, amountMinor: 30000, status: "open" }]);
+  });
+
   it("applies a repayment to the same-payer debt identified by its note", async () => {
     const earlierDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600, note: "Car repair" });
     vi.setSystemTime(new Date("2026-10-09T08:00:00.001Z"));
@@ -389,7 +764,7 @@ describe("assistant debt capture", () => {
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
   });
 
-  it.each(["Mom paid back 100", "Mom returned 100"])("recognizes incoming repayment wording: %s", async (prompt) => {
+  it.each(["Mom paid back 100", "Mom returned 100", "Mom paid me back ₱100"])("recognizes incoming repayment wording: %s", async (prompt) => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
       name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "100" }),
