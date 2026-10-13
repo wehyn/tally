@@ -14,6 +14,7 @@ import { CategoryGlyph } from "./category-glyph";
 type Draft = { amount: string; description: string; accountId: string; categoryId: string; date: string; time: string };
 const blank = (accounts: Account[]): Draft => ({amount:"",description:"",accountId:accounts.find(a=>a.isDefault)?.id??accounts[0]?.id??"",categoryId:"",date:todayInManila(),time:timeInManila()});
 const transactionDateFormatter = new Intl.DateTimeFormat("en-US", { timeZone:"UTC", month:"long", day:"numeric", year:"numeric" });
+const transactionTimeFormatter = new Intl.DateTimeFormat("en-US", { timeZone:"UTC", hour:"numeric", minute:"2-digit", hour12:true });
 export function TransactionsView({initial,initialAccounts,initialCategories}:{initial:Transaction[];initialAccounts:Account[];initialCategories:Category[]}){
   const router=useRouter();
   const [transactions,setTransactions]=useState(initial);const [accounts,setAccounts]=useState(initialAccounts);const [categories,setCategories]=useState(initialCategories);
@@ -41,29 +42,29 @@ export function TransactionsView({initial,initialAccounts,initialCategories}:{in
   return <div className="page-stack"><section className="page-heading-row page-heading-actions-only"><h1 className="sr-only">Transactions</h1><button className="button button-primary" onClick={startNew}><Plus size={16}/> Add transaction</button></section>
     <article className="panel"><div className="content-toolbar"><div><h2 style={{margin:"0 0 4px",fontSize:14}}>Ledger activity</h2><span className="page-note">Income and expenses affect totals; transfers only move money.</span></div><label style={{position:"relative",display:"flex",alignItems:"center"}}><Search size={15} style={{position:"absolute",left:11,color:"#9aa49e"}}/><input className="search-input" style={{paddingLeft:34}} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search this ledger"/></label></div>
       {error&&!open&&<p className="error-text" role="alert" style={{marginTop:12}}>{error}</p>}
-      <div className="table-wrap transaction-groups-wrap" style={{marginTop:16}}>
+      <div className="table-wrap transaction-groups-wrap" style={{marginTop:8}}>
         <table aria-hidden="true" className="list-table transaction-layout-table transaction-column-head">
           <colgroup><col className="transaction-col-name"/><col className="transaction-col-category"/><col className="transaction-col-account"/><col className="transaction-col-amount"/><col className="transaction-col-actions"/></colgroup>
           <thead><tr><th>Transaction</th><th>Category</th><th>Account</th><th className="table-number">Amount</th><th><span className="sr-only">Actions</span></th></tr></thead>
         </table>
         {dateGroups.length>0&&<div className="transaction-date-groups">{dateGroups.map(group=>{
           const total=formatPHPFromMinorString(group.totalMinor.toString());
-          return <section className="transaction-date-group" key={group.date}>
+          return <section className="transaction-date-group transaction-group-card" key={group.date}>
             <h3 className="transaction-date-heading">
               <span className="transaction-date-label"><time dateTime={group.date}>{transactionDateFormatter.format(new Date(`${group.date}T00:00:00Z`))}</time><span aria-label={`${group.transactions.length} ${group.transactions.length===1?"transaction":"transactions"}`}>· {group.transactions.length}</span></span>
               <span className={`transaction-day-total ${group.totalMinor>0n?"positive":group.totalMinor<0n?"negative":""}`} aria-label={`Daily net ${group.totalMinor>0n?`+${total}`:total}`}>{group.totalMinor>0n?`+${total}`:total}</span>
             </h3>
-            <div className="transaction-group-card"><table className="list-table transaction-layout-table transaction-group-table">
+            <table className="list-table transaction-layout-table transaction-group-table">
               <colgroup><col className="transaction-col-name"/><col className="transaction-col-category"/><col className="transaction-col-account"/><col className="transaction-col-amount"/><col className="transaction-col-actions"/></colgroup>
               <thead className="sr-only"><tr><th scope="col">Transaction</th><th scope="col">Category</th><th scope="col">Account</th><th scope="col">Amount</th><th scope="col">Actions</th></tr></thead>
               <tbody>{group.transactions.map(tx=><tr key={tx.id}>
-                <td><div className="transaction-title-cell"><div className={`activity-icon ${tx.kind}`} aria-hidden="true">{tx.kind==="transfer"?<ArrowLeftRight size={16}/>:<CategoryGlyph icon={tx.categoryIcon} size={16}/>}</div><div><div className="table-title">{tx.description||tx.categoryName||(tx.kind==="transfer"?"Transfer":tx.kind)}</div>{tx.time&&<div className="table-muted">{tx.time}</div>}</div></div></td>
+                <td><div className="transaction-title-cell"><div className={`activity-icon ${tx.kind}`} aria-hidden="true">{tx.kind==="transfer"?<ArrowLeftRight size={16}/>:<CategoryGlyph icon={tx.categoryIcon} size={16}/>}</div><div><div className="table-title">{tx.description||tx.categoryName||(tx.kind==="transfer"?"Transfer":tx.kind)}</div>{tx.time&&<div className="table-muted">{transactionTimeFormatter.format(new Date(`1970-01-01T${tx.time}:00Z`))}</div>}<div className="transaction-mobile-meta" aria-hidden="true"><span className="transaction-mobile-category">{tx.categoryName??(tx.kind==="transfer"?"Transfer":"Uncategorized")}</span><span className="transaction-mobile-account">{tx.accountName}{tx.kind==="transfer"&&tx.destinationAccountName?` · To ${tx.destinationAccountName}`:""}</span></div></div></div></td>
                 <td><span className={`badge transaction-category-badge ${tx.kind==="income"?"badge-green":tx.kind==="expense"?"badge-coral":"badge-violet"}`}>{tx.kind==="transfer"?<ArrowLeftRight size={13}/>:<CategoryGlyph icon={tx.categoryIcon} size={13}/>}<span>{tx.categoryName??(tx.kind==="transfer"?"Transfer":"Uncategorized")}</span></span></td>
                 <td><div className="transaction-account-name">{tx.accountName}</div>{tx.kind==="transfer"&&tx.destinationAccountName&&<div className="table-muted">To {tx.destinationAccountName}</div>}</td>
                 <td className={`table-number ${tx.kind==="expense"?"negative":tx.kind==="income"?"positive":""}`}>{tx.kind==="expense"?"−":tx.kind==="income"?"+":""}{formatPHP(tx.amountMinor)}</td>
                 <td><div className="table-actions">{tx.kind==="transfer"?<Link className="button button-small" href="/accounts" aria-label="Manage transfer in Accounts">Manage</Link>:<>{tx.source==="assistant"&&isUndoAvailable(tx.undoUntil,now)&&<button className="button button-text button-small" onClick={()=>remove(tx,true)}>Undo</button>}<button className="icon-button" aria-label={`Edit ${tx.description||tx.categoryName||"transaction"}`} onClick={()=>startEdit(tx)}><Pencil size={15}/></button><button className="icon-button" aria-label={`Permanently delete ${tx.description||tx.categoryName||"transaction"}`} onClick={()=>requestRemove(tx)}><Trash2 size={15}/></button></>}</div></td>
               </tr>)}</tbody>
-            </table></div>
+            </table>
           </section>;
         })}</div>}
         {!shown.length&&<div className="panel-empty"><strong>{transactions.length?"No matching transactions":"Your ledger is ready"}</strong>{transactions.length?"Try a different search.":"Add your first income or expense."}</div>}

@@ -92,10 +92,17 @@ describe("TransactionsView", () => {
     });
 
     expect(container.querySelector(".transaction-date-heading time")?.textContent).toBe("October 11, 2026");
+    const groupCard = container.querySelector(".transaction-group-card");
+    expect(groupCard?.contains(container.querySelector(".transaction-date-heading"))).toBe(true);
+    expect(groupCard?.contains(container.querySelector(".transaction-group-table"))).toBe(true);
     expect(rows[0].querySelectorAll("td")[1].textContent).toContain("Food");
-    expect(rows[0].querySelectorAll("td")[0].querySelector(".table-muted")?.textContent).toBe("12:30");
+    expect(rows[0].querySelectorAll("td")[0].querySelector(".table-muted")?.textContent).toBe("12:30 PM");
     expect(rows[0].querySelectorAll("td")[2].textContent).toBe("Wallet");
     expect(rows[0].querySelectorAll("td")[3].textContent).toBe("−₱25.00");
+    expect(rows[0].querySelector(".transaction-mobile-category")?.textContent).toBe("Food");
+    expect(rows[0].querySelector(".transaction-mobile-account")?.textContent).toBe("Wallet");
+    expect(rows[0].querySelector(".transaction-mobile-meta")?.getAttribute("aria-hidden")).toBe("true");
+    expect(rows[2].querySelector(".transaction-mobile-account")?.textContent).toBe("Wallet · To Savings");
     expect(rows[0].querySelector('[aria-label="Edit Lunch"]')).not.toBeNull();
     expect(rows[0].querySelector('[aria-label="Permanently delete Lunch"]')).not.toBeNull();
     expect(rows[2].querySelector('a[href="/accounts"]')?.textContent).toBe("Manage");
