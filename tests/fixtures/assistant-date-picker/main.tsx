@@ -10,7 +10,7 @@ function Fixture() {
   const [category, setCategory] = useState("food");
 
   return <main className="assistant-widget chat">
-    <section className="assistant-widget-panel has-composer" aria-label="Assistant fixture">
+    <section className="assistant-widget-panel has-composer" data-open="true" aria-label="Assistant fixture">
       <header className="assistant-widget-header">Assistant fixture</header>
       <div className="assistant-widget-messages" aria-label="Conversation" data-testid="assistant-messages">
         <AssistantDatePicker
