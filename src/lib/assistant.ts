@@ -70,8 +70,12 @@ function repaymentAmountFromPrompt(prompt: string): number | undefined {
     .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?\b/gi, " ")
     .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b/gi, " ");
   const incoming = new RegExp(`\\b(?:paid\\s+(?:me(?:\\s+back)?|back)|repaid(?:\\s+me)?|returned)\\s+(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.;!?])`, "gi");
-  const outgoing = new RegExp(`\\b(?:i|we)\\s+(?:paid|repaid|returned|settled)\\s+(?!back\\b)(?:to\\s+)?(?:[\\p{L}\\p{N}'’.-]+\\s+){0,4}(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.;!?])`, "giu");
-  const tiedToPayment = [...dateFreeText.matchAll(incoming), ...dateFreeText.matchAll(outgoing)];
+  const incomingMatches = [...dateFreeText.matchAll(incoming)].filter((match) => {
+    const subject = dateFreeText.slice(0, match.index).trimEnd().match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*$/u)?.[0];
+    return !/^(?:i|we)$/i.test(subject ?? "");
+  });
+  const outgoing = new RegExp(`\\b(?:i|we)\\s+(?:paid\\s+back|paid|repaid|returned|settled)\\s+(?:to\\s+)?(?:[\\p{L}\\p{N}'’.-]+\\s+){0,4}(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.;!?])`, "giu");
+  const tiedToPayment = [...incomingMatches, ...dateFreeText.matchAll(outgoing)];
   const raw = tiedToPayment.length === 1 ? tiedToPayment[0][1] : undefined;
   if (!raw) return undefined;
   try { return parsePHPToMinor(raw) || undefined; } catch { return undefined; }
@@ -96,10 +100,12 @@ function normalizeCategoryName(value: string): string {
 function normalizeWords(value: string): string {
   return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
+function normalizeCounterparty(value: string): string {
+  return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}-]+/gu, " ").replace(/\s+/g, " ").trim();
+}
 function containsCounterparty(text: string, counterparty: string): boolean {
-  const preserveHyphens = (value: string) => value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}-]+/gu, " ").replace(/\s+/g, " ").trim();
-  const normalizedCounterparty = preserveHyphens(counterparty);
-  return normalizedCounterparty.length > 0 && ` ${preserveHyphens(text)} `.includes(` ${normalizedCounterparty} `);
+  const normalizedCounterparty = normalizeCounterparty(counterparty);
+  return normalizedCounterparty.length > 0 && ` ${normalizeCounterparty(text)} `.includes(` ${normalizedCounterparty} `);
 }
 function debtNoteMatches(text: string, note: string): boolean {
   // shortcut: matches full note phrases after one leading filler; broaden when users need partial note matching.
@@ -123,7 +129,8 @@ function isUnconfirmedIncomingDebtPayment(text: string): boolean {
     && isUncertainStatement(text);
 }
 function isUnconfirmedOutgoingDebtPayment(text: string): boolean {
-  return hasOutgoingDebtRepaymentWording(text) && isUncertainStatement(text);
+  return hasOutgoingDebtRepaymentWording(text)
+    && (isUncertainStatement(text) || /\b(?:did|do|does)\s+(?:i|we)\s+(?:pay|paid|repaid|return|settle)\b/i.test(text));
 }
 function hasOutgoingDebtRepaymentWording(text: string): boolean {
   return /\b(?:i|we)\s+(?:(?:didn't|did not|never|maybe|might not)\s+)?(?:paid|pay|repaid|returned|settled)\b|\b(?:i|we)\s+paid\s+back\b/i.test(text);
@@ -131,7 +138,10 @@ function hasOutgoingDebtRepaymentWording(text: string): boolean {
 function isUncertainNewDebtStatement(text: string): boolean {
   return /\b(?:maybe|perhaps|possibly|probably|might|may|could|would|if|whether|think|thought|unsure|uncertain)\b/i.test(text)
     || /\b(?:doesn't|does not|don't|do not|didn't|did not|never|no longer|not)\b.{0,35}\b(?:owe|owes|owed|borrow|borrowed|lend|lent|loan|debt)\b/i.test(text)
-    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent)\b.{0,35}\b(?:nothing|no money|no debt|no amount|not anything)\b/i.test(text);
+    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent)\b.{0,35}\b(?:nothing|no money|no debt|no amount|not anything)\b/i.test(text)
+    || /^\s*(?:does|do|did|is|are|was|were|can|could|would|should)\b.{0,120}\b(?:owe|owes|owed|borrow|borrowed|lend|lent|loan|debt)\b/i.test(text)
+    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent)\b.{0,100}\b\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\s*\?\s*$/i.test(text)
+    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent)\b.{0,100}\b(?:right|correct)\s*\?\s*$/i.test(text);
 }
 function isConfirmedDebtFollowUp(messages: string[]): boolean {
   const latest = messages.at(-1)?.trim() ?? "";
@@ -141,16 +151,27 @@ function isConfirmedDebtFollowUp(messages: string[]): boolean {
 function explicitNewDebtIntent(message: string): { direction: "owed_to_you" | "you_owe"; counterparty: string } | undefined {
   const text = message.trim().replace(/^(?:please\s+)?(?:record|log|add|track|enter)\s+(?:that\s+|a\s+debt(?:\s+that)?\s*)?/i, "")
     .replace(/^(?:maybe|perhaps|possibly|probably|i think)\s+/i, "");
+  const cleanName = (value: string) => value.replace(/^my\s+/i, "").replace(/[,:;.!?]+$/, "").trim();
   const owedToYou = /^(.+?)\s+ow(?:e|es|ed)\s+(?:me|us)\b/i.exec(text);
   if (owedToYou) {
-    const counterparty = owedToYou[1].replace(/^my\s+/i, "").replace(/[,:;.!?]+$/, "").trim();
+    const counterparty = cleanName(owedToYou[1]);
     if (counterparty) return { direction: "owed_to_you", counterparty };
   }
   const youOwe = /^(?:i|we)\s+ow(?:e|ed)\s+(.+?)(?=\s+(?:(?:₱|php|\$)\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?\b|\s+(?:for|due|on|because)\b|$)/i.exec(text);
   if (youOwe) {
-    const counterparty = youOwe[1].replace(/^my\s+/i, "").replace(/[,:;.!?]+$/, "").trim();
+    const counterparty = cleanName(youOwe[1]);
     if (counterparty) return { direction: "you_owe", counterparty };
   }
+  const amount = "(?:(?:₱|PHP|\\$)\\s*)?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d{1,2})?";
+  const afterCounterparty = "(?=\\s+(?:for|due|on|because|about)\\b|\\s+and\\s+(?:then\\s+)?(?:add|record|put|log|include|create)\\b|[,;.!?]|$)";
+  const borrowed = new RegExp(`^(?:i|we)\\s+borrow(?:ed)?\\s+${amount}\\s+from\\s+(.+?)${afterCounterparty}`, "i").exec(text);
+  if (borrowed) return { direction: "you_owe", counterparty: cleanName(borrowed[1]) };
+  const fronted = new RegExp(`^(?:i|we)\\s+fronted\\s+${amount}\\s+(?:for|to)\\s+(.+?)${afterCounterparty}`, "i").exec(text);
+  if (fronted) return { direction: "owed_to_you", counterparty: cleanName(fronted[1]) };
+  const borrowedFromMe = new RegExp(`^(.+?)\\s+borrowed\\s+${amount}\\s+from\\s+(?:me|us)\\b`, "i").exec(text);
+  if (borrowedFromMe) return { direction: "owed_to_you", counterparty: cleanName(borrowedFromMe[1]) };
+  const lent = new RegExp(`^(?:i|we)\\s+lent\\s+(.+?)\\s+${amount}${afterCounterparty}`, "i").exec(text);
+  if (lent) return { direction: "owed_to_you", counterparty: cleanName(lent[1]) };
   return undefined;
 }
 function latestExplicitNewDebtIntent(messages: string[]): { direction: "owed_to_you" | "you_owe"; counterparty: string } | undefined {
@@ -309,8 +330,9 @@ function directCategoryCapture(prompt: string, categories: AssistantCategory[]):
 }
 const unclearDebtCounterparty = /^(?:(?:some|any|every)one(?:\s+else)?|(?:some|any|every)body(?:\s+else)?|nobody|no\s+one|people|(?:some|the)\s+people|(?:some|any|a|the|other)\s+person|unknown|unspecified|maybe|perhaps|probably|possibly|all|both|they|them|you|us)$/i;
 function directDebtCapture(prompt: string): { name: string; args: Record<string, unknown> } | null {
-  const text = prompt.trim().replace(/^(?:please\s+)?(?:record|log|add|track|enter)\s+(?:that\s+|a\s+debt(?:\s+that)?\s*)?/i, "").replace(/[.!?]+$/, "");
-  if (isUncertainNewDebtStatement(text)) return null;
+  const rawText = prompt.trim().replace(/^(?:please\s+)?(?:record|log|add|track|enter)\s+(?:that\s+|a\s+debt(?:\s+that)?\s*)?/i, "");
+  if (isUncertainNewDebtStatement(rawText)) return null;
+  const text = rawText.replace(/[.!?]+$/, "");
   const amount = "((?:₱\\s*)?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d{1,2})?)";
   const patterns: { pattern: RegExp; direction: "owed_to_you" | "you_owe" }[] = [
     { pattern: new RegExp(`^(.+?)\\s+ow(?:e|es|ed)\\s+me\\s+${amount}$`, "i"), direction: "owed_to_you" },
@@ -398,10 +420,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const repaymentIntent = incomingRepaymentIntent || outgoingRepaymentIntent;
     const repaymentDebts = incomingRepaymentIntent ? openOwedToYouDebts : outgoingRepaymentIntent ? openYouOweDebts : [];
     const repaymentNames = repaymentIntent
-      ? [...new Set(repaymentDebts.filter((debt) => containsCounterparty(repaymentMatchText, debt.counterparty)).map((debt) => normalizeWords(debt.counterparty)))]
+      ? [...new Set(repaymentDebts.filter((debt) => containsCounterparty(repaymentMatchText, debt.counterparty)).map((debt) => normalizeCounterparty(debt.counterparty)))]
       : [];
     const repaymentCandidates = repaymentNames.length === 1
-      ? repaymentDebts.filter((debt) => normalizeWords(debt.counterparty) === repaymentNames[0])
+      ? repaymentDebts.filter((debt) => normalizeCounterparty(debt.counterparty) === repaymentNames[0])
       : [];
     const repaymentNoteMatches = repaymentCandidates.filter((debt) => debt.note && debtNoteMatches(repaymentMatchText, debt.note));
     const repaymentDebt = repaymentNoteMatches.length === 1 ? repaymentNoteMatches[0] : repaymentCandidates[0];
@@ -411,7 +433,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const currentAmountFollowup = /\b(?:what amount|how much)\b/i.test(lastAssistantFollowup);
     const statedRepaymentAmount = repaymentAmountFromPrompt(input.prompt)
       ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
-      ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && accountOrDateClarificationPending && latestRepaymentPrompt
+      ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
     let call = providerCall;
     if (ordinaryIncomeFlow) {
@@ -429,7 +451,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     } else if (uncertainRepayment && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
       call = { name: "ask_clarification", args: { question: "Was this a completed payment toward an existing debt? Please confirm before I record it." } };
     } else if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
-      const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeWords(providerCall.args.counterparty) : "";
+      const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeCounterparty(providerCall.args.counterparty) : "";
       if (repaymentNames.length > 1) {
         call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } };
       } else if (!statedRepaymentAmount) {
@@ -440,7 +462,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } };
       } else if (!repaymentDebt && outgoingRepaymentIntent) {
         call = { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
-      } else if (repaymentDebt && providerCounterparty && providerCounterparty !== normalizeWords(repaymentDebt.counterparty)) {
+      } else if (repaymentDebt && providerCounterparty && providerCounterparty !== normalizeCounterparty(repaymentDebt.counterparty)) {
         call = { name: "ask_clarification", args: { question: `I couldn't confirm which person ${incomingRepaymentIntent ? "paid you" : "you paid"}. Which person's open debt should I update?` } };
       } else if (repaymentDebt && incomingRepaymentIntent) {
         call = { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
@@ -456,7 +478,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     } else if (debtTransactionQuestion && (debtTransactionRequested || debtTransactionOptOut) && statedDebtIntent) {
       const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
         && item.direction === statedDebtIntent.direction
-        && normalizeWords(item.counterparty) === normalizeWords(statedDebtIntent.counterparty));
+        && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty));
       call = matchingDebts.length === 1
         ? { name: "log_debt", args: { ...providerCall.args, direction: statedDebtIntent.direction, counterparty: matchingDebts[0].counterparty, amount: providerCall.args.amount ?? String(matchingDebts[0].amountMinor / 100), recordTransaction: debtTransactionRequested } }
         : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
@@ -490,13 +512,13 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; needsFollowup = true; }
       else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; needsFollowup = true; }
       else if (uncertainNewDebt) { answer = "I'm not sure whether this is a confirmed debt. Do you want me to record it?"; needsFollowup = true; }
-      else if (statedDebtIntent && (statedDebtIntent.direction !== direction || normalizeWords(statedDebtIntent.counterparty) !== normalizeWords(counterparty))) {
+      else if (statedDebtIntent && (statedDebtIntent.direction !== direction || normalizeCounterparty(statedDebtIntent.counterparty) !== normalizeCounterparty(counterparty))) {
         answer = "The proposed debt does not match the person or direction in your request. Which debt should I record?";
         needsFollowup = true;
       }
       else {
         const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
-          && item.direction === direction && normalizeWords(item.counterparty) === normalizeWords(counterparty)) : [];
+          && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)) : [];
         const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
         if (!amountMinor) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
         else if (isExistingDebtFollowup && existingDebts.length !== 1) {
@@ -572,11 +594,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       if (!counterparty || counterparty.length > 80) { answer = "Who paid you?"; needsFollowup = true; }
       else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); needsFollowup = true; }
       else {
-        const normalizedCounterparty = normalizeWords(counterparty);
-        const matchingDebt = repaymentDebt && normalizeWords(repaymentDebt.counterparty) === normalizedCounterparty
+        const normalizedCounterparty = normalizeCounterparty(counterparty);
+        const matchingDebt = repaymentDebt && normalizeCounterparty(repaymentDebt.counterparty) === normalizedCounterparty
           ? repaymentDebt
           : normalizedCounterparty ? store.listDebts(user.id)
-          .filter((item) => item.direction === "owed_to_you" && item.status === "open" && normalizeWords(item.counterparty) === normalizedCounterparty)
+          .filter((item) => item.direction === "owed_to_you" && item.status === "open" && normalizeCounterparty(item.counterparty) === normalizedCounterparty)
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] : undefined;
         const amountMinor = parsePHPToMinor(amount);
         if (!matchingDebt) {
@@ -631,7 +653,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       if (!outgoingRepaymentIntent) { answer = "Tell me who you paid and how much before I update a debt."; needsFollowup = true; }
       else if (!counterparty || counterparty.length > 80) { answer = "Who did you pay?"; needsFollowup = true; }
       else if (!amount) { answer = safeClarification("What amount did you pay?"); needsFollowup = true; }
-      else if (!repaymentDebt || normalizeWords(repaymentDebt.counterparty) !== normalizeWords(counterparty)) {
+      else if (!repaymentDebt || normalizeCounterparty(repaymentDebt.counterparty) !== normalizeCounterparty(counterparty)) {
         answer = `I couldn't find an open debt you owe to ${counterparty}. I can record this as an ordinary expense.`;
         needsFollowup = true;
       } else {
