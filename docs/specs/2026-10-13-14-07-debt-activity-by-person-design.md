@@ -13,6 +13,7 @@ The assistant also has four matching risks: a due date can be mistaken for the a
 ## Goals
 
 - When the assistant records a new `owed_to_you` debt, record one equal expense from the selected account in the same atomic store operation.
+- Let the user explicitly opt out of that expense in natural language while still recording the debt.
 - Record each repayment as linked income while reducing the exact open debt by the same amount in one atomic operation.
 - Group debts by counterparty within the existing **Owed to you** and **You owe** sections. Show each debt separately under its person, with its advance and repayment transactions in date order and with their existing categories.
 - Keep the user's latest explicit account and expense category choices authoritative through clarification turns.
@@ -43,9 +44,10 @@ Linked expense and repayment transactions cannot be deleted or have their amount
 
 ### Assistant behavior
 
-- For a clear statement that another person owes the user, call `log_debt` only. Save one same-amount expense and one debt; do not create a duplicate transaction.
+- Include a `recordTransaction` boolean in the `log_debt` tool. It defaults to `true`; set it to `false` only when the user clearly opts out of adding a transaction. Do not infer an opt-out from missing account/category details. If the debt request or opt-out is ambiguous, ask without writing.
+- For a clear statement that another person owes the user, call `log_debt` only. When `recordTransaction` is true, save one same-amount expense and debt atomically; when false, save only the debt, without changing account balances or requiring an account/category. Do not create a duplicate transaction.
 - For a debt the user owes, save only the debt.
-- Use an explicitly named account/category and the latest clear user clarification. Otherwise use the default account and the existing expense fallback category. If required account or category setup is missing, ask before writing either record.
+- Use an explicitly named account/category and the latest clear user clarification. Otherwise use the default account and the existing expense fallback category. If required account or category setup is missing while `recordTransaction` is true, ask before writing either record.
 - Use a transaction date stated for the advance; otherwise use today. A due date is stored only as the debt due date and never becomes the expense date by itself.
 - If the provider selects a different direction or a counterparty not named in the active user context, ask for clarification without writing. If explicit user wording contradicts provider direction, ask rather than creating the wrong balance movement.
 - Preserve the exact normalized payer and oldest-open-debt behavior for repayments. A repayment with uncertain wording, no match, multiple named counterparties, a conflicting payer, or an excessive amount creates no transaction and changes no debt.
@@ -54,7 +56,7 @@ Linked expense and repayment transactions cannot be deleted or have their amount
 
 Within each direction section, group debt rows by trimmed, case-insensitive counterparty. A person group shows its total open amount and record count. Each debt stays a separate item so multiple obligations to the same person remain distinct. Its activity lists the linked advance expense and repayments from oldest to newest, including date, category, and signed amount. Settled items use the existing last-outstanding-balance label and do not contribute to the group's open total.
 
-Manual debts and pre-migration debts with no linked transactions remain visible in their person's group and show that they have no linked transaction history yet. The Debts page loads this activity through the existing debt read path. When the assistant creates a debt or records a repayment, the existing debt-update event refreshes the grouped activity; ledger updates continue through the existing ledger event.
+Manual debts, explicit debt-only assistant entries, and pre-migration debts with no linked transactions remain visible in their person's group and show that they have no linked transaction history. The Debts page loads this activity through the existing debt read path. When the assistant creates a debt or records a repayment, the existing debt-update event refreshes the grouped activity; ledger updates continue through the existing ledger event.
 
 ### Failure handling and compatibility
 
@@ -67,15 +69,16 @@ Manual debts and pre-migration debts with no linked transactions remain visible 
 ## Acceptance criteria
 
 1. Saying “Mom owes me 500 for lunch” with a default account creates one open Mom debt and one linked ₱500 expense categorized as Food; the account decreases by ₱500 and no Undo is offered.
-2. A missing account or invalid expense category creates neither the debt nor the transaction.
-3. Saying “Mom paid me 250” on a ₱500 open debt creates one linked ₱250 income transaction and leaves ₱250 open. A second valid ₱250 payment settles the debt, retains the last positive balance for display, and leaves total account balance increased by ₱250 for each payment.
-4. With multiple open debts for Mom, each repayment links to the exact debt selected by the existing oldest-open and note rules. Each debt displays only its own linked movements.
-5. The Debts page groups case-insensitive Mom records under one person heading, keeps separate debt items, shows linked expenses and payments in date order, and preserves each movement's income/expense category.
-6. Manual debt form entries and legacy records remain visible without automatically generated or guessed transaction links.
-7. While a debt exists, its linked transaction cannot be deleted or changed in amount/kind, and the debt direction cannot be flipped. Deleting the debt preserves the transaction rows and clears their links.
-8. A due date never becomes the expense date unless the user also gives it as the advance date; an omitted advance date uses today.
-9. A newer explicit account/category clarification wins over an older provider choice. A conflicting provider direction or counterparty results in a clarification and no writes.
-10. Existing repayment behavior remains owner-scoped and atomic, and settled status remains authoritative.
+2. Saying “Mom owes me 500, but don’t add it to transactions” creates the Mom debt only: no transaction is written, the account balance is unchanged, and no account or category is required.
+3. Missing account/category details do not opt out: when an expense is the default, missing required setup creates neither the debt nor the transaction.
+4. Saying “Mom paid me 250” on a ₱500 open debt creates one linked ₱250 income transaction and leaves ₱250 open. A second valid ₱250 payment settles the debt, retains the last positive balance for display, and leaves total account balance increased by ₱250 for each payment.
+5. With multiple open debts for Mom, each repayment links to the exact debt selected by the existing oldest-open and note rules. Each debt displays only its own linked movements.
+6. The Debts page groups case-insensitive Mom records under one person heading, keeps separate debt items, shows linked expenses and payments in date order, and preserves each movement's income/expense category.
+7. Manual debt form entries, explicit debt-only assistant entries, and legacy records remain visible without automatically generated or guessed transaction links.
+8. While a debt exists, its linked transaction cannot be deleted or changed in amount/kind, and the debt direction cannot be flipped. Deleting the debt preserves the transaction rows and clears their links.
+9. A due date never becomes the expense date unless the user also gives it as the advance date; an omitted advance date uses today.
+10. A newer explicit account/category clarification wins over an older provider choice. A conflicting provider direction or counterparty results in a clarification and no writes.
+11. Existing repayment behavior remains owner-scoped and atomic, and settled status remains authoritative.
 
 ## Verification
 
