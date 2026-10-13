@@ -109,6 +109,12 @@
 .debt-panel-heading p{margin:3px 0 0;color:#929c95;font-size:10px}
 .debt-panel-heading .button{flex:0 0 auto;margin:0}@media(max-width:620px){.debt-panel-heading .button{min-height:40px}}
 .debt-list{display:grid;max-height:min(70vh,640px);overflow-y:auto}
+.debt-person-group{min-width:0;padding:12px 0;border-top:1px solid #e9eee9}
+.debt-person-group:first-child{padding-top:0;border-top:0}
+.debt-person-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:1px 0 5px}
+.debt-person-heading h3{margin:0;color:#45564a;font-size:12px;font-weight:700}
+.debt-person-heading p{display:flex;align-items:baseline;gap:7px;margin:0;color:#8a968d;font-size:9px;white-space:nowrap}
+.debt-person-heading p strong{color:#617c69;font-size:10px;font-variant-numeric:tabular-nums}
 .debt-row{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:9px 11px;padding:13px 0;border-top:1px solid #f0f2ee}
 .debt-row:first-child{border-top:0}
 .debt-row.settled{opacity:.76}
@@ -121,6 +127,15 @@
 .debt-status{font-size:9px}
 .debt-status.open{color:#42825e}
 .debt-status.settled{color:#89948c}
+.debt-activity{grid-column:2/-1;min-width:0}
+.debt-activity-list{display:grid;gap:5px;margin:0;padding:0;list-style:none}
+.debt-activity-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;background:#f7f9f6}
+.debt-activity-item>div{display:grid;min-width:0;gap:2px}
+.debt-activity-item time{color:#7f8c82;font-size:9px;font-variant-numeric:tabular-nums}
+.debt-activity-item span{overflow-wrap:anywhere;color:#8e9990;font-size:9px;line-height:1.4}
+.debt-activity-item strong{color:#536d5a;font-size:10px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.debt-activity-item.expense strong{color:#9b695d}
+.debt-no-history{margin:0;color:#929c95;font-size:9px;font-style:italic}
 .debt-row-actions{grid-column:2/-1;display:flex;justify-content:flex-end;flex-wrap:wrap;gap:5px}
 .debt-row-actions .button{min-height:30px;margin:0;padding:0 9px;font-size:10px}
 .debt-row-actions .button-danger{width:31px;padding:0}
@@ -136,7 +151,7 @@
 .debts-page button:focus-visible{outline:2px solid #75ad8d;outline-offset:2px}
 @media(max-width:1080px){.debt-panels{grid-template-columns:1fr}.debt-panel{padding:18px}.debt-row{grid-template-columns:36px minmax(0,1fr) auto}.debt-row-actions{grid-column:2/-1}}
 @media(max-width:900px){.mobile-nav{justify-content:space-around;overflow:visible;overscroll-behavior-x:contain}.mobile-nav a{min-width:0;flex:1 0 0}.debts-page{gap:18px}.debt-panels{gap:13px}}
-@media(max-width:620px){.debt-summary-grid{gap:9px}.debt-summary-card{min-height:102px;gap:9px;padding:12px}.debt-summary-icon{width:33px;height:33px;border-radius:10px}.debt-summary-copy>strong{font-size:18px;letter-spacing:-.4px}.debt-summary-copy>span{font-size:10px}.debt-summary-copy>small{font-size:9px}.debt-toolbar{align-items:flex-start;flex-wrap:wrap}.debt-filter-group{gap:4px}.debt-filter-group .button{min-height:40px;padding:0 9px;font-size:10px}.debt-count{align-self:center;margin-left:auto}.debt-panel{padding:15px}.debt-row{grid-template-columns:32px minmax(0,1fr) auto;gap:8px;padding:12px 0}.debt-row-icon{width:31px;height:31px}.debt-row-copy>span{font-size:9px}.debt-row-actions{gap:4px}.debt-row-actions .button{min-height:44px;padding:0 8px}.debt-row-actions .button-danger{width:44px;padding:0}.debt-accounting-note{font-size:10px;padding:10px 11px}.debt-modal .form-grid{grid-template-columns:1fr}.debt-modal .form-grid>.field-label{grid-column:1/-1}.debt-modal .modal-heading p{font-size:10px}}
+@media(max-width:620px){.debt-summary-grid{gap:9px}.debt-summary-card{min-height:102px;gap:9px;padding:12px}.debt-summary-icon{width:33px;height:33px;border-radius:10px}.debt-summary-copy>strong{font-size:18px;letter-spacing:-.4px}.debt-summary-copy>span{font-size:10px}.debt-summary-copy>small{font-size:9px}.debt-toolbar{align-items:flex-start;flex-wrap:wrap}.debt-filter-group{gap:4px}.debt-filter-group .button{min-height:40px;padding:0 9px;font-size:10px}.debt-count{align-self:center;margin-left:auto}.debt-panel{padding:15px}.debt-row{grid-template-columns:32px minmax(0,1fr) auto;gap:8px;padding:12px 0}.debt-row-icon{width:31px;height:31px}.debt-row-copy>span{font-size:9px}.debt-person-heading{align-items:flex-start;flex-direction:column;gap:2px}.debt-activity-item{padding:7px}.debt-row-actions{gap:4px}.debt-row-actions .button{min-height:44px;padding:0 8px}.debt-row-actions .button-danger{width:44px;padding:0}.debt-accounting-note{font-size:10px;padding:10px 11px}.debt-modal .form-grid{grid-template-columns:1fr}.debt-modal .form-grid>.field-label{grid-column:1/-1}.debt-modal .modal-heading p{font-size:10px}}
 @media(max-width:360px){.debt-summary-card{align-items:flex-start;flex-direction:column;gap:5px;padding:10px}.debt-summary-copy>strong{font-size:17px}}
 
 /* Dashboard assets */

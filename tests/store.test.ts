@@ -577,4 +577,31 @@ describe("recurring bills", () => {
     const category = store.listCategories(bob.id).find((entry) => entry.type === "expense")!;
     expect(() => store.createBill(alice.id, { name: "Bad", amountMinor: 1, frequency: "weekly", nextDueDate: todayInManila(), accountId: account.id, categoryId: category.id })).toThrow(/expense category/i);
   });
+
+  it("migrates legacy transaction rows with null debt links and does not infer a matching debt", () => {
+    const user = store.registerUser("legacy_debt_activity", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const transaction = store.createTransaction(user.id, {
+      kind: "expense", amountMinor: 5_000, accountId: account.id, categoryId: food.id,
+      description: "Owed by Mina", date: "2026-10-10",
+    });
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 5_000 });
+
+    database.exec("DROP INDEX IF EXISTS transactions_one_debt_advance");
+    const columns = database.pragma("table_info(transactions)") as { name: string }[];
+    if (columns.some((column) => column.name === "debt_id")) database.exec("ALTER TABLE transactions DROP COLUMN debt_id");
+    store.migrate();
+
+    const migratedColumns = database.pragma("table_info(transactions)") as { name: string }[];
+    expect(migratedColumns.some((column) => column.name === "debt_id")).toBe(true);
+    expect(database.prepare("SELECT debt_id FROM transactions WHERE id=?").get(transaction.id)).toEqual({ debt_id: null });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ activity: [] });
+
+    const linked = store.recordDebtAdvance(user.id,
+      { direction: "owed_to_you", counterparty: "Rina", amountMinor: 1_000 },
+      { kind: "expense", amountMinor: 1_000, accountId: account.id, categoryId: food.id, description: "Lunch", date: "2026-10-11" });
+    database.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(linked.debt.id, user.id);
+    expect(database.prepare("SELECT debt_id FROM transactions WHERE id=?").get(linked.transaction.id)).toEqual({ debt_id: null });
+  });
 });
