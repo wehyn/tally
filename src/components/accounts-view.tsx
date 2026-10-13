@@ -6,6 +6,7 @@ import { todayInManila, timeInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
+import { ModalPresence } from "./modal-presence";
 
 type AccountDraft = { name: string; type: "cash" | "bank"; balance: string };
 type TransferDraft = { amount: string; description: string; accountId: string; destinationAccountId: string; date: string; time: string };
@@ -189,8 +190,8 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
   }
 
   return <div className="page-stack">
-    <section className="page-heading-row page-heading-actions-only">
-      <h1 className="sr-only">Accounts</h1>
+    <section className="page-heading-row">
+      <h1>Accounts</h1>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="button" disabled={accounts.length < 2} onClick={createTransfer}><ArrowLeftRight size={15}/> Transfer</button>
         <button className="button button-primary" onClick={create}><Plus size={16}/> New account</button>
@@ -222,14 +223,14 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
       <div className="activity-row"><div className="activity-icon transfer"><ArrowLeftRight size={17}/></div><div className="activity-copy"><strong>Transfer</strong><span>Moves money between your accounts without changing income or spending totals.</span></div></div>
     </div></article>
 
-    {open && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="account-title">
+    <ModalPresence open={open} onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="account-title">
       <div className="modal-heading"><div><h2 id="account-title">{editing ? "Edit account" : "New financial account"}</h2><p>{editing ? "Set the current balance; transaction history stays unchanged." : "Initial balance is not recorded as income."}</p></div><button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
       <form onSubmit={save}><div className="form-grid"><label className="field-label span-2">Account name<input autoFocus required maxLength={80} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Everyday cash"/></label><label className="field-label">Type<select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value as AccountDraft["type"] })}><option value="cash">Cash</option><option value="bank">Bank</option></select></label><label className="field-label">Set balance<input inputMode="text" required value={draft.balance} onChange={(e) => setDraft({ ...draft, balance: e.target.value })} placeholder="0.00"/></label></div>
         {error && <p className="error-text" role="alert" style={{ marginTop: 12 }}>{error}</p>}<div className="modal-footer"><button type="button" className="button" onClick={() => setOpen(false)}>Cancel</button><button disabled={busy} className="button button-primary">{busy ? "Saving…" : editing ? "Save changes" : "Create account"}</button></div>
       </form>
-    </section></div>}
+    </section></ModalPresence>
 
-    {transferOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setTransferOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
+    <ModalPresence open={transferOpen} onMouseDown={(e) => { if (e.target === e.currentTarget) setTransferOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
       <div className="modal-heading"><div><h2 id="transfer-title">{editingTransfer ? "Edit transfer" : "Transfer between accounts"}</h2><p>Balances update together. Transfers are excluded from income and spending.</p></div><button className="modal-close" aria-label="Close" onClick={() => setTransferOpen(false)}><X size={16}/></button></div>
       <form onSubmit={saveTransfer}><div className="form-grid"><label className="field-label">Amount in PHP<input autoFocus required inputMode="decimal" value={transferDraft.amount} onChange={(e) => setTransferDraft({ ...transferDraft, amount: e.target.value })} placeholder="250.00"/></label>
         <label className="field-label">Date<input type="date" required value={transferDraft.date} onChange={(e) => setTransferDraft({ ...transferDraft, date: e.target.value })}/></label>
@@ -238,7 +239,7 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
         <label className="field-label">To account<select required value={transferDraft.destinationAccountId} onChange={(e) => setTransferDraft({ ...transferDraft, destinationAccountId: e.target.value })}><option value="">Choose account</option>{accounts.filter((account) => account.id !== transferDraft.accountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
         <label className="field-label span-2">Description (optional)<input maxLength={180} value={transferDraft.description} onChange={(e) => setTransferDraft({ ...transferDraft, description: e.target.value })} placeholder="Add a note"/></label>
       </div>{transferError && <p className="error-text" role="alert" style={{ marginTop: 12 }}>{transferError}</p>}<div className="modal-footer"><button type="button" className="button" onClick={() => setTransferOpen(false)}>Cancel</button><button disabled={transferBusy} className="button button-primary">{transferBusy ? "Saving…" : editingTransfer ? "Save changes" : "Transfer"}</button></div></form>
-    </section></div>}
-    {confirmation && <ConfirmDialog request={confirmation} onClose={() => setConfirmation(null)}/>}
+    </section></ModalPresence>
+    <ConfirmDialog request={confirmation} onClose={() => setConfirmation(null)}/>
   </div>;
 }

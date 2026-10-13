@@ -7,6 +7,7 @@ import { BILL_ICON_LOGO_PATHS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_
 import type { Account, Bill, Category } from "@/lib/store";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
+import { ModalPresence } from "./modal-presence";
 
 const billIcons: { key: BillIcon; label: string; Icon?: LucideIcon }[] = [
   { key: "calendar", label: "Calendar", Icon: CalendarDays }, { key: "home", label: "Home", Icon: Home },
@@ -111,12 +112,12 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
   }
 
   return <div className="page-stack">
-    <section className="page-heading-row page-heading-actions-only"><h1 className="sr-only">Bills</h1><button className="button button-primary" onClick={create}><Plus size={16}/> Add a bill</button></section>
+    <section className="page-heading-row"><h1>Bills</h1><button className="button button-primary" onClick={create}><Plus size={16}/> Add a bill</button></section>
     {notice && <div className="notice-box warning" role="status">{notice}</div>}
     {error && !open && <p className="error-text" role="alert">{error}</p>}
     <section className="panel"><div className="panel-heading"><div><h2>Upcoming</h2><p>Active bills, ordered by next due date.</p></div></div>{list(active)}</section>
     <details className="panel archived-disclosure"><summary className="panel-heading"><div><h2>Archived</h2><p>Archived bills stay visible and editable; they do not post.</p></div><ChevronDown className="archived-chevron" size={16} aria-hidden="true"/></summary>{list(archived, true)}</details>
-    {open && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="bill-title">
+    <ModalPresence open={open} onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="bill-title">
       <div className="modal-heading"><div><h2 id="bill-title">{editing ? "Edit bill" : "Add a bill"}</h2><p>Set the next scheduled occurrence and saved expense details.</p></div><button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
       <form onSubmit={save}><div className="form-grid">
         <label className="field-label span-2">Bill name<input required autoFocus maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Internet subscription"/></label>
@@ -135,6 +136,6 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
         <label className="field-label">Account<select required value={draft.accountId} onChange={(event) => setDraft({ ...draft, accountId: event.target.value })}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
         <label className="field-label">Expense category<select required value={draft.categoryId} onChange={(event) => setDraft({ ...draft, categoryId: event.target.value })}>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
       </div>{error && <p className="error-text" role="alert" style={{ marginTop: 12 }}>{error}</p>}<div className="modal-footer"><button type="button" className="button" onClick={() => setOpen(false)}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? "Saving…" : editing ? "Save changes" : "Create bill"}</button></div></form>
-    </section></div>}
+    </section></ModalPresence>
   </div>;
 }

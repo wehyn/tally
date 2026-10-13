@@ -6,6 +6,7 @@ import { ChevronDown, FolderPlus, Pencil, Plus, X } from "lucide-react";
 import { CATEGORY_ICON_OPTIONS, type CategoryIconId } from "@/lib/category-icons";
 import type { Category } from "@/lib/store";
 import { CategoryGlyph } from "./category-glyph";
+import { ModalPresence } from "./modal-presence";
 
 type CategoryManagerProps = {
   categories: Category[];
@@ -124,8 +125,8 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
       })}
     </div>
     {notice && <p className="form-notice" role="status">{notice}</p>}
-    {open && typeof document !== "undefined" && createPortal(
-      <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setOpen(false); }}>
+    {typeof document !== "undefined" && createPortal(
+      <ModalPresence open={open} onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setOpen(false); }}>
         <section className="modal-card category-modal" role="dialog" aria-modal="true" aria-labelledby="category-modal-title">
           <div className="modal-heading"><div><h2 id="category-modal-title">{editing ? "Edit category" : "Add a category"}</h2><p>{editing ? "Update its name or choose a new icon." : "Make your ledger feel like yours."}</p></div><button className="modal-close" type="button" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
           <form onSubmit={(event) => void save(event)}>
@@ -137,7 +138,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
             <div className="modal-actions"><button className="button button-secondary" type="button" disabled={saving} onClick={() => setOpen(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving}>{saving ? "Saving…" : editing ? "Save changes" : "Add category"}</button></div>
           </form>
         </section>
-      </div>,
+      </ModalPresence>,
       document.body,
     )}
   </>;
