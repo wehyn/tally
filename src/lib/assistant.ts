@@ -2,7 +2,7 @@ import { z } from "zod";
 import { HttpError } from "@/lib/api";
 import { getStore } from "@/lib/db";
 import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } from "@/lib/dates";
-import { formatPHP, parsePHPToMinor } from "@/lib/money";
+import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
 import type { Account, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 
@@ -31,6 +31,58 @@ function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanc
   if (asksSpending && !asksIncome) return `${period}\n\nTotal Spent: ${formatPHP(facts.spendingMinor)}${topCategories ? `\n${topCategories}` : ""}`;
   if (asksIncome && !asksSpending) return `${period}\n\nTotal Income: ${formatPHP(facts.incomeMinor)}`;
   return `${period}\n\nTotal Income: ${formatPHP(facts.incomeMinor)}\nTotal Spent: ${formatPHP(facts.spendingMinor)}${topCategories ? `\n${topCategories}` : ""}`;
+}
+function debtQuestion(prompt: string): boolean {
+  return /\b(?:list|show|display)\b.*\b(?:debts?|people who owe|people i owe|people who currently owe)\b/i.test(prompt)
+    || /\b(?:open debt list|debt list|list of debts)\b/i.test(prompt)
+    || /\b(?:who owes me(?: money)?|how much do (?:people|they) owe me|what debt do i owe|who do i owe|how much do i owe|how much is owed to me)\b/i.test(prompt);
+}
+function answerForDebts(debts: Debt[], prompt: string, accounts: Account[]): string {
+  const direction = /\b(?:owed to me|owe me|owes me|people who owe me|people who currently owe me)\b/i.test(prompt) ? "owed_to_you"
+    : /\b(?:i owe|we owe|owed by me|people i owe)\b/i.test(prompt) ? "you_owe" : undefined;
+  const asksBothStatuses = /\b(?:open|outstanding)\b.*\bsettled\b|\bsettled\b.*\b(?:open|outstanding)\b/i.test(prompt);
+  const asksAllWithoutStatus = /\ball\b/i.test(prompt) && !/\b(?:open|outstanding|settled)\b/i.test(prompt);
+  const status = asksBothStatuses || asksAllWithoutStatus ? "all" : /\bsettled\b/i.test(prompt) ? "settled" : "open";
+  const matches = debts.filter((debt) => (status === "all" || debt.status === status) && (!direction || debt.direction === direction));
+  const title = status === "all" ? `All debts${direction === "owed_to_you" ? " owed to you" : direction === "you_owe" ? " you owe" : ""}`
+    : status === "settled" ? "Settled debts (last outstanding balances)"
+    : `Open debts${direction === "owed_to_you" ? " owed to you" : direction === "you_owe" ? " you owe" : ""}`;
+  const lines = matches.map((debt) => `${debt.counterparty}: ${formatPHP(debt.amountMinor)}${status === "all"
+    ? debt.status === "settled" ? " (settled; last outstanding balance)" : " (open)"
+    : status === "settled" ? " (last outstanding balance)" : ""}`);
+  const amount = matches.reduce((total, debt) => total + BigInt(debt.amountMinor), 0n);
+  const totalLabel = status === "settled" ? "Total last outstanding balance"
+    : direction === "owed_to_you" ? "Total owed to you" : direction === "you_owe" ? "Total you owe" : "Total debt balance";
+  const asksTotal = /\b(?:total|amount|balance|how much)\b/i.test(prompt);
+  const allStatusTotals = status === "all" ? `\nTotal outstanding: ${formatPHPFromMinorString(matches.filter((debt) => debt.status === "open").reduce((total, debt) => total + BigInt(debt.amountMinor), 0n).toString())}\nTotal last outstanding balance: ${formatPHPFromMinorString(matches.filter((debt) => debt.status === "settled").reduce((total, debt) => total + BigInt(debt.amountMinor), 0n).toString())}` : "";
+  const asksAccountBalance = /\b(?:account|wallet|cash)\b|\bmy\b.*\bbalance\b|\bbalances\b/i.test(prompt);
+  const accountTotal = accounts.reduce((total, account) => total + BigInt(account.balanceMinor), 0n);
+  const accountBalances = asksAccountBalance
+    ? `Account Balances\n\n${accounts.map((account) => `${account.name}: ${formatPHP(account.balanceMinor)}`).join("\n") || "No accounts yet."}\nTotal Account Balance: ${formatPHPFromMinorString(accountTotal.toString())}`
+    : "";
+  const debtTotals = asksTotal ? status === "all" ? allStatusTotals : `\n${totalLabel}: ${formatPHPFromMinorString(amount.toString())}` : "";
+  return `${title}\n\n${lines.join("\n") || "None."}${debtTotals}${accountBalances ? `\n\n${accountBalances}` : ""}`;
+}
+function repaymentAmountFromPrompt(prompt: string): number | undefined {
+  const amountPattern = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d{1,2})?";
+  const dateFreeText = prompt.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/gi, " ")
+    .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?\b/gi, " ")
+    .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b/gi, " ");
+  const currency = [...dateFreeText.matchAll(new RegExp(`(?:₱|PHP)\\s*(${amountPattern})|(${amountPattern})\\s*(?:PHP|pesos?)\\b`, "gi"))];
+  const tiedToPayment = [...dateFreeText.matchAll(new RegExp(`\\b(?:paid\\s+(?:me|back)|repaid(?:\\s+me)?|returned)\\s+(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.!?])`, "gi"))];
+  const match = currency.length === 1 ? currency[0] : currency.length ? undefined : tiedToPayment.length === 1 ? tiedToPayment[0] : undefined;
+  const raw = match?.[1] ?? match?.[2];
+  if (!raw) return undefined;
+  try { return parsePHPToMinor(raw) || undefined; } catch { return undefined; }
+}
+function bareAmountFromPrompt(prompt: string): number | undefined {
+  const match = /^\s*(₱\s*)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*(?:php|pesos?)?\s*[.!]?\s*$/i.exec(prompt);
+  if (!match) return undefined;
+  try { return parsePHPToMinor(`${match[1] ?? ""}${match[2]}${match[3] ? `.${match[3]}` : ""}`); } catch { return undefined; }
+}
+function parseProviderAmount(value: unknown): number | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  try { return parsePHPToMinor(String(value)); } catch { return undefined; }
 }
 function safeClarification(value: unknown): string {
   if (typeof value !== "string" || value.trim().length < 3 || value.length > 240) return "What amount or category should I use?";
@@ -230,6 +282,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     ];
     const userMessageText = userMessages.map((message) => message.content);
     store.addMessage(user.id, conversationId, "user", input.prompt);
+    if (debtQuestion(input.prompt)) {
+      const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
+      store.addMessage(user.id, conversationId, "assistant", answer);
+      return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
+    }
     const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
     const openOwedToYouDebts = store.listDebts(user.id)
       .filter((debt) => debt.direction === "owed_to_you" && debt.status === "open")
@@ -248,9 +305,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       }
     }
     const ordinaryIncomeQuestionPending = ordinaryIncomeQuestionPattern.test(lastAssistantFollowup);
-    const ordinaryIncomeConfirmedInHistory = ordinaryIncomeQuestionIndex >= 0 && history.slice(ordinaryIncomeQuestionIndex + 1)
-      .some((message) => message.role === "user" && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content));
-    const ordinaryIncomeFlow = ordinaryIncomeQuestionPending || ordinaryIncomeConfirmedInHistory;
+    const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? history.slice(ordinaryIncomeQuestionIndex + 1) : [];
+    const ordinaryIncomeConfirmedInHistory = afterOrdinaryIncomeQuestion.some((message) => message.role === "user"
+      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content))
+      && !afterOrdinaryIncomeQuestion.some((message) => message.role === "user" && hasIncomingDebtRepaymentWording(message.content));
+    const ordinaryIncomeFlow = !hasIncomingDebtRepaymentWording(input.prompt)
+      && (ordinaryIncomeConfirmedInHistory || ordinaryIncomeQuestionPending);
     const ordinaryIncomeAccepted = ordinaryIncomeConfirmedInHistory || (ordinaryIncomeQuestionPending
       && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt));
     const ordinaryIncomeDeclined = ordinaryIncomeFlow && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
@@ -269,6 +329,13 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       : [];
     const repaymentNoteMatches = repaymentCandidates.filter((debt) => debt.note && debtNoteMatches(repaymentMatchText, debt.note));
     const repaymentDebt = repaymentNoteMatches.length === 1 ? repaymentNoteMatches[0] : repaymentCandidates[0];
+    const accountOrDateClarificationPending = /(?:couldn't find the account|set a default financial account|create a financial account first|what date should i use)/i.test(lastAssistantFollowup);
+    const latestRepaymentPrompt = [...history].reverse().find((message) => message.role === "user" && hasIncomingDebtRepaymentWording(message.content));
+    const currentAmountFollowup = /\b(?:what amount|how much)\b/i.test(lastAssistantFollowup);
+    const statedRepaymentAmount = repaymentAmountFromPrompt(input.prompt)
+      ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
+      ?? (!hasIncomingDebtRepaymentWording(input.prompt) && accountOrDateClarificationPending && latestRepaymentPrompt
+        ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
     let call = providerCall;
     if (ordinaryIncomeFlow) {
       if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment"].includes(providerCall.name)) {
@@ -288,6 +355,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeWords(providerCall.args.counterparty) : "";
       if (repaymentNames.length > 1) {
         call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } };
+      } else if (!statedRepaymentAmount) {
+        call = { name: "ask_clarification", args: { question: "What amount should I use for the repayment?" } };
+      } else if (parseProviderAmount(providerCall.args.amount) !== statedRepaymentAmount) {
+        call = { name: "ask_clarification", args: { question: `I understood ${formatPHP(statedRepaymentAmount)}. Please re-enter the repayment amount if that is correct.` } };
       } else if (!repaymentDebt) {
         call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } };
       } else if (providerCounterparty && providerCounterparty !== normalizeWords(repaymentDebt.counterparty)) {
