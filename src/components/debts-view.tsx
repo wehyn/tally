@@ -6,6 +6,7 @@ import type { Debt, DebtDirection, DebtStatus } from "@/lib/store";
 import { formatPHP, formatPHPFromMinorString, minorToInput } from "@/lib/money";
 import { DEBTS_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
+import { ModalPresence } from "./modal-presence";
 
 type DebtDraft = { direction: DebtDirection; counterparty: string; amount: string; dueDate: string; note: string };
 type StatusFilter = DebtStatus | "all";
@@ -147,8 +148,8 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
   }
 
   return <div className="page-stack debts-page">
-    <section className="page-heading-row page-heading-actions-only">
-      <h1 className="sr-only">Debts</h1>
+    <section className="page-heading-row">
+      <h1>Debts</h1>
       <button className="button button-primary" onClick={() => create()}><Plus size={16}/> Add debt</button>
     </section>
 
@@ -223,7 +224,7 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
 
     <p className="page-note debt-accounting-note">Debt balances are separate from account totals. Assistant advances are added to Transactions only when you ask; completed repayments update the linked debt and transaction together. Record other money movements in Transactions.</p>
 
-    {dialogOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setDialogOpen(false); }}>
+    <ModalPresence open={dialogOpen} onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setDialogOpen(false); }}>
       <section className="modal-card debt-modal" role="dialog" aria-modal="true" aria-labelledby="debt-dialog-title">
         <div className="modal-heading"><div><h2 id="debt-dialog-title">{editing ? "Edit debt" : "Add a debt"}</h2><p>Manual debt entries do not change accounts. Record each actual money movement in Transactions.</p></div><button className="modal-close" aria-label="Close" disabled={busy} onClick={() => setDialogOpen(false)}><X size={16}/></button></div>
         <form onSubmit={save}>
@@ -238,7 +239,7 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
           <div className="modal-footer"><button type="button" className="button" disabled={busy} onClick={() => setDialogOpen(false)}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? "Saving…" : editing ? "Save changes" : "Add debt"}</button></div>
         </form>
       </section>
-    </div>}
-    {confirmation && <ConfirmDialog request={confirmation} onClose={() => setConfirmation(null)}/>}
+    </ModalPresence>
+    <ConfirmDialog request={confirmation} onClose={() => setConfirmation(null)}/>
   </div>;
 }

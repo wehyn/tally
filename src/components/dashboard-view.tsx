@@ -45,7 +45,7 @@ export function DashboardView({ initial }: { initial: Dashboard }) {
   const totalBalanceMinor = Number(totalBalanceMinorBigInt);
 
   return <div className="page-stack">
-    <h1 className="sr-only">Home</h1>
+    <h1>Home</h1>
     <section className="period-row"><details className="period-filter"><summary className="period-filter-summary">{formatPeriodDate(data.start)} — {formatPeriodDate(data.end)}</summary><form className="date-range-form" onSubmit={(event) => { event.preventDefault(); void refresh(start, end); }}><label><span className="sr-only">Start date</span><input type="date" value={start} onChange={(event) => setStart(event.target.value)}/></label><span>to</span><label><span className="sr-only">End date</span><input type="date" value={end} onChange={(event) => setEnd(event.target.value)}/></label><button className="button button-small" type="submit">Apply</button><button className="button button-text button-small" type="button" onClick={() => { const range = monthToDateRange(); setStart(range.start); setEnd(range.end); void refresh(range.start, range.end); }}>Month to date</button></form></details></section>
 
     <section className="stat-grid dashboard-period-stats" aria-label="Period summary">

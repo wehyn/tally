@@ -253,7 +253,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   }
 
   return <div className={`assistant-widget ${mode}`}>
-    <section id="assistant-widget-panel" className={`assistant-widget-panel ${assistantEnabled ? "has-composer" : ""}`} role="dialog" aria-modal="false" aria-label="Tally assistant" onKeyDown={(event) => { if (event.key === "Escape") closeAssistant(); }} hidden={!panelOpen}>
+    <section id="assistant-widget-panel" className={`assistant-widget-panel ${assistantEnabled ? "has-composer" : ""}`} data-open={panelOpen} role="dialog" aria-modal="false" aria-label="Tally assistant" aria-hidden={!panelOpen} inert={!panelOpen} onKeyDown={(event) => { if (event.key === "Escape") closeAssistant(); }}>
       <header className="assistant-widget-header">
         <span className="assistant-widget-mark"><Sparkles size={17}/></span>
         <div className="assistant-widget-title"><strong>Ask Tally</strong><span>{assistantEnabled ? "Your private ledger assistant" : "Optional assistant"}</span></div>

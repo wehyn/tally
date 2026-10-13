@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LogOut, Trash2, UserMinus, X } from "lucide-react";
+import { ModalPresence } from "./modal-presence";
 
 export type ConfirmationRequest = {
   title: string;
@@ -14,17 +15,20 @@ export type ConfirmationRequest = {
 };
 
 type ConfirmDialogProps = {
-  request: ConfirmationRequest;
+  request: ConfirmationRequest | null;
   onClose: () => void;
 };
 
 export function ConfirmDialog({ request, onClose }: ConfirmDialogProps) {
+  const [requestState, setRequestState] = useState<{ request: ConfirmationRequest | null; error: string }>({ request, error: "" });
+  if (request && requestState.request !== request) setRequestState({ request, error: "" });
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const closeRef = useRef(onClose);
   const busyRef = useRef(busy);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  const activeRequest = request ?? requestState.request;
+  const visibleError = requestState.request === activeRequest ? requestState.error : "";
 
   useEffect(() => {
     closeRef.current = onClose;
@@ -32,6 +36,7 @@ export function ConfirmDialog({ request, onClose }: ConfirmDialogProps) {
   }, [onClose, busy]);
 
   useEffect(() => {
+    if (!request || !activeRequest) return;
     const previouslyFocused = document.activeElement;
     cancelRef.current?.focus();
 
@@ -67,48 +72,53 @@ export function ConfirmDialog({ request, onClose }: ConfirmDialogProps) {
       document.removeEventListener("keydown", handleKeyDown);
       if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus();
     };
-  }, []);
+  }, [request, activeRequest]);
 
   async function confirm() {
-    if (busyRef.current) return;
+    const requestToConfirm = activeRequest;
+    if (busyRef.current || !requestToConfirm) return;
     dialogRef.current?.focus();
     busyRef.current = true;
     setBusy(true);
-    setError("");
+    setRequestState((current) => ({ ...current, error: "" }));
     try {
-      await request.onConfirm();
+      await requestToConfirm.onConfirm();
       closeRef.current();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not complete this action. Please try again.");
+      const message = reason instanceof Error ? reason.message : "Could not complete this action. Please try again.";
+      setRequestState((current) => current.request === requestToConfirm ? { ...current, error: message } : current);
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
   }
 
-  const Icon = request.intent === "leave" ? LogOut : request.intent === "member" ? UserMinus : Trash2;
+  const Icon = activeRequest?.intent === "leave" ? LogOut : activeRequest?.intent === "member" ? UserMinus : Trash2;
   if (typeof document === "undefined") return null;
+  if (!activeRequest) return null;
 
   return createPortal(
-    <div className="modal-backdrop confirm-backdrop" role="presentation" onMouseDown={(event) => {
+    <ModalPresence open={Boolean(request)} className="confirm-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busyRef.current) closeRef.current();
+    }} onTransitionEnd={(event) => {
+      if (event.target === event.currentTarget && !request && requestState.request) setRequestState({ request: null, error: "" });
     }}>
       <section className="modal-card confirm-card" ref={dialogRef} tabIndex={-1} role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-description" aria-busy={busy}>
         <div className="confirm-heading">
-          <span className={`confirm-icon ${request.intent ?? "delete"}`}><Icon size={18} aria-hidden="true"/></span>
+          <span className={`confirm-icon ${activeRequest.intent ?? "delete"}`}><Icon size={18} aria-hidden="true"/></span>
           <div className="confirm-copy">
-            <h2 id="confirm-dialog-title">{request.title}</h2>
-            <p id="confirm-dialog-description">{request.description}</p>
+            <h2 id="confirm-dialog-title">{activeRequest.title}</h2>
+            <p id="confirm-dialog-description">{activeRequest.description}</p>
           </div>
           <button className="modal-close" type="button" aria-label="Close confirmation" disabled={busy} onClick={() => closeRef.current()}><X size={16}/></button>
         </div>
-        {error && <p className="error-text confirm-error" role="alert">{error}</p>}
+        {visibleError && <p className="error-text confirm-error" role="alert">{visibleError}</p>}
         <div className="confirm-actions">
           <button className="button" type="button" ref={cancelRef} disabled={busy} onClick={() => closeRef.current()}>Cancel</button>
-          <button className="button button-danger confirm-submit" type="button" disabled={busy} onClick={() => void confirm()}>{busy ? (request.busyLabel ?? "Working…") : request.confirmLabel}</button>
+          <button className="button button-danger confirm-submit" type="button" disabled={busy} onClick={() => void confirm()}>{busy ? (activeRequest.busyLabel ?? "Working…") : activeRequest.confirmLabel}</button>
         </div>
       </section>
-    </div>,
+    </ModalPresence>,
     document.body,
   );
 }
