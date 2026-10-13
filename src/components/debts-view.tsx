@@ -24,7 +24,25 @@ function totalFor(debts: Debt[], direction: DebtDirection) {
     .reduce((sum, debt) => sum + BigInt(debt.amountMinor), 0n);
   return formatPHPFromMinorString(total.toString());
 }
-
+function personGroups(debts: Debt[]) {
+  const groups = new Map<string, { name: string; debts: Debt[] }>();
+  for (const debt of debts) {
+    const name = debt.counterparty.trim();
+    const key = name.toLowerCase();
+    const group = groups.get(key) ?? { name, debts: [] };
+    group.debts.push(debt);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+function openTotalForGroup(debts: Debt[]) {
+  const total = debts.filter((debt) => debt.status === "open").reduce((sum, debt) => sum + BigInt(debt.amountMinor), 0n);
+  return formatPHPFromMinorString(total.toString());
+}
+function formatActivityDate(value: string) {
+  return new Intl.DateTimeFormat("en-PH", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    .format(new Date(`${value}T00:00:00Z`));
+}
 export function DebtsView({ initial }: { initial: Debt[] }) {
   const [debts, setDebts] = useState(initial);
   const [filter, setFilter] = useState<StatusFilter>("open");
@@ -158,6 +176,7 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
     <div className="debt-panels">
       {directions.map((direction) => {
         const sectionDebts = debts.filter((debt) => debt.direction === direction && (filter === "all" || debt.status === filter));
+        const groups = personGroups(sectionDebts);
         const Icon = direction === "owed_to_you" ? ArrowDownLeft : ArrowUpRight;
         return <section className="panel debt-panel" key={direction} aria-labelledby={`debt-heading-${direction}`}>
           <div className="panel-heading debt-panel-heading">
@@ -165,29 +184,48 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
             <button className="button button-small" onClick={() => create(direction)}><Plus size={14}/> Add</button>
           </div>
           <div className="debt-list" role="region" tabIndex={0} aria-label={`${directionLabel(direction)} debt list`}>
-            {sectionDebts.map((debt) => <article className={`debt-row ${debt.status}`} key={debt.id}>
-              <div className={`debt-row-icon ${direction}`}><Icon size={17}/></div>
-              <div className="debt-row-copy"><strong>{debt.counterparty}</strong><span>{debt.dueDate ? `Due ${formatDueDate(debt.dueDate)}` : "No due date"}{debt.note ? ` · ${debt.note}` : ""}</span></div>
-              <div className="debt-row-total"><strong>{formatPHP(debt.amountMinor)}</strong><span className={`debt-status ${debt.status}`}>{debt.status === "open" ? "Outstanding" : "Settled · last outstanding balance"}</span></div>
-              <div className="debt-row-actions">
-                <button className="button button-small" disabled={pendingId === debt.id} aria-label={`Edit debt with ${debt.counterparty}`} onClick={() => edit(debt)}><Pencil size={13}/> Edit</button>
-                <button className="button button-small" disabled={pendingId === debt.id} aria-label={debt.status === "open" ? `Mark debt with ${debt.counterparty} settled` : `Reopen debt with ${debt.counterparty}`} onClick={() => setStatus(debt, debt.status === "open" ? "settled" : "open")}>
-                  {debt.status === "open" ? <><Check size={13}/> Settle</> : <><RotateCcw size={13}/> Reopen</>}
-                </button>
-                <button className="button button-small button-danger" disabled={pendingId === debt.id} aria-label={`Delete debt with ${debt.counterparty}`} onClick={() => remove(debt)}><Trash2 size={13}/></button>
+            {groups.map((group) => <section className="debt-person-group" key={group.name.toLowerCase()} aria-label={`Debts with ${group.name}`}>
+              <div className="debt-person-heading">
+                <h3>{group.name}</h3>
+                <p><strong>{openTotalForGroup(group.debts)}</strong><span>open total</span><span>{group.debts.length} {group.debts.length === 1 ? "record" : "records"}</span></p>
               </div>
-            </article>)}
+              {group.debts.map((debt, debtIndex) => {
+                const activity = debt.activity;
+                const actionLabel = `${directionLabel(direction).toLowerCase()} debt ${debtIndex + 1} with ${debt.counterparty.trim()}`;
+                return <article className={`debt-row ${debt.status}`} key={debt.id}>
+                  <div className={`debt-row-icon ${direction}`}><Icon size={17}/></div>
+                  <div className="debt-row-copy"><strong>{debt.counterparty.trim()}</strong><span>{debt.dueDate ? `Due ${formatDueDate(debt.dueDate)}` : "No due date"}{debt.note ? ` · ${debt.note}` : ""}</span></div>
+                  <div className="debt-row-total"><strong>{formatPHP(debt.amountMinor)}</strong><span className={`debt-status ${debt.status}`}>{debt.status === "open" ? "Outstanding" : "Settled · last outstanding balance"}</span></div>
+                  <div className="debt-activity">
+                    {activity.length ? <ol className="debt-activity-list" aria-label={`Linked activity for debt with ${debt.counterparty.trim()}`}>
+                      {activity.map((movement) => <li className={`debt-activity-item ${movement.kind}`} key={movement.transactionId}>
+                        <div><time dateTime={movement.time ? `${movement.date}T${movement.time}` : movement.date}>{formatActivityDate(movement.date)}{movement.time ? ` · ${movement.time}` : ""}</time>
+                          <span>{movement.categoryName ?? "Uncategorized"} · {movement.accountName}{movement.description ? ` · ${movement.description}` : ""}</span></div>
+                        <strong>{formatPHP(movement.amountMinor)}</strong>
+                      </li>)}
+                    </ol> : <p className="debt-no-history">No linked transaction history</p>}
+                  </div>
+                  <div className="debt-row-actions">
+                    <button className="button button-small" disabled={pendingId === debt.id} aria-label={`Edit ${actionLabel}`} onClick={() => edit(debt)}><Pencil size={13}/> Edit</button>
+                    <button className="button button-small" disabled={pendingId === debt.id} aria-label={debt.status === "open" ? `Settle ${actionLabel}` : `Reopen ${actionLabel}`} onClick={() => setStatus(debt, debt.status === "open" ? "settled" : "open")}>
+                      {debt.status === "open" ? <><Check size={13}/> Settle</> : <><RotateCcw size={13}/> Reopen</>}
+                    </button>
+                    <button className="button button-small button-danger" disabled={pendingId === debt.id} aria-label={`Delete ${actionLabel}`} onClick={() => remove(debt)}><Trash2 size={13}/></button>
+                  </div>
+                </article>;
+              })}
+            </section>)}
             {!sectionDebts.length && <div className="panel-empty debt-empty"><HandCoins size={21}/><strong>{filter === "settled" ? "No settled debts here" : filter === "open" ? "Nothing outstanding" : "No debts yet"}</strong><span>{direction === "owed_to_you" ? "Add a debt someone owes you." : "Add a debt you need to repay."}</span><button className="button button-small" onClick={() => create(direction)}><Plus size={13}/> Add debt</button></div>}
           </div>
         </section>;
       })}
     </div>
 
-    <p className="page-note debt-accounting-note">Debt records are separate from your financial accounts and transaction totals. Record repayments in Transactions when money actually moves.</p>
+    <p className="page-note debt-accounting-note">Debt balances are separate from account totals. Assistant advances are added to Transactions only when you ask; completed repayments update the linked debt and transaction together. Record other money movements in Transactions.</p>
 
     {dialogOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setDialogOpen(false); }}>
       <section className="modal-card debt-modal" role="dialog" aria-modal="true" aria-labelledby="debt-dialog-title">
-        <div className="modal-heading"><div><h2 id="debt-dialog-title">{editing ? "Edit debt" : "Add a debt"}</h2><p>Track the current amount. Repayments are recorded separately as transactions.</p></div><button className="modal-close" aria-label="Close" disabled={busy} onClick={() => setDialogOpen(false)}><X size={16}/></button></div>
+        <div className="modal-heading"><div><h2 id="debt-dialog-title">{editing ? "Edit debt" : "Add a debt"}</h2><p>Manual debt entries do not change accounts. Record each actual money movement in Transactions.</p></div><button className="modal-close" aria-label="Close" disabled={busy} onClick={() => setDialogOpen(false)}><X size={16}/></button></div>
         <form onSubmit={save}>
           <div className="form-grid">
             <label className="field-label span-2">Direction<select required value={draft.direction} onChange={(event) => setDraft({ ...draft, direction: event.target.value as DebtDirection })}><option value="owed_to_you">Owed to you</option><option value="you_owe">You owe</option></select></label>

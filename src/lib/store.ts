@@ -23,7 +23,11 @@ export type TransactionInput = { kind: TransactionKind; amountMinor: number; acc
 export type Transaction = Omit<TransactionInput, "time"> & { time: string | null; id: string; categoryName: string | null; categoryIcon: CategoryIconId | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
 export type DebtDirection = "owed_to_you" | "you_owe";
 export type DebtStatus = "open" | "settled";
-export type Debt = { id: string; direction: DebtDirection; counterparty: string; amountMinor: number; note: string; dueDate: string | null; status: DebtStatus; createdAt: string; updatedAt: string };
+export type DebtActivity = {
+  transactionId: string; date: string; time: string | null; kind: "income" | "expense"; amountMinor: number;
+  categoryName: string | null; accountName: string; description: string;
+};
+export type Debt = { id: string; direction: DebtDirection; counterparty: string; amountMinor: number; note: string; dueDate: string | null; status: DebtStatus; createdAt: string; updatedAt: string; activity: DebtActivity[] };
 export type BillInput = {
   name: string; amountMinor: number; frequency: BillFrequency; nextDueDate: string; accountId: string; categoryId: string;
   icon?: BillIcon; iconEmoji?: string | null; iconForegroundColor?: string; iconBackgroundColor?: string;
@@ -87,6 +91,7 @@ export function createStore(db: Database.Database) {
         account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         destination_account_id TEXT REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+        debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
         description TEXT NOT NULL, date TEXT NOT NULL, time TEXT, source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','assistant')),
         undo_until TEXT, created_at TEXT NOT NULL,
         CHECK((kind = 'transfer' AND destination_account_id IS NOT NULL AND category_id IS NULL) OR (kind != 'transfer' AND destination_account_id IS NULL AND category_id IS NOT NULL)),
@@ -156,6 +161,8 @@ export function createStore(db: Database.Database) {
     }
     const transactionColumns = db.pragma("table_info(transactions)") as { name: string }[];
     if (!transactionColumns.some((column) => column.name === "time")) db.exec("ALTER TABLE transactions ADD COLUMN time TEXT");
+    if (!transactionColumns.some((column) => column.name === "debt_id")) db.exec("ALTER TABLE transactions ADD COLUMN debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL");
+    db.exec("DROP INDEX IF EXISTS transactions_one_debt_advance");
     const categoryColumns = db.pragma("table_info(categories)") as { name: string }[];
     if (!categoryColumns.some((column) => column.name === "icon")) {
       db.exec("ALTER TABLE categories ADD COLUMN icon TEXT NOT NULL DEFAULT 'tag'");
@@ -351,13 +358,35 @@ export function createStore(db: Database.Database) {
       amountMinor: safeMinorNumber(row.amount_minor, "Debt amount"), note: String(row.note),
       dueDate: row.due_date ? String(row.due_date) : null, status: row.status as DebtStatus,
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+      activity: [],
     };
   }
   function listDebts(userId: string): Debt[] {
-    return (db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
+    const debts = (db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
       FROM debts WHERE user_id=?
       ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, CASE WHEN due_date IS NULL THEN 1 ELSE 0 END, due_date, created_at DESC`).all(userId) as Record<string, unknown>[])
       .map(debtFromRow);
+    if (!debts.length) return debts;
+    const activityByDebt = new Map<string, DebtActivity[]>();
+    const rows = db.prepare(`SELECT t.debt_id,t.id AS transaction_id,t.date,t.time,t.kind,t.amount_minor,t.description,
+      c.name AS category_name,a.name AS account_name
+      FROM transactions t JOIN debts d ON d.id=t.debt_id AND d.user_id=t.user_id
+      JOIN financial_accounts a ON a.id=t.account_id LEFT JOIN categories c ON c.id=t.category_id
+      WHERE t.user_id=? ORDER BY t.date,COALESCE(t.time,'00:00'),t.created_at,t.rowid`).all(userId) as Record<string, unknown>[];
+    for (const row of rows) {
+      const debtId = String(row.debt_id);
+      const kind = row.kind as "income" | "expense";
+      const amount = safeMinorNumber(row.amount_minor, "Debt activity amount");
+      const activity = activityByDebt.get(debtId) ?? [];
+      activity.push({
+        transactionId: String(row.transaction_id), date: String(row.date), time: row.time ? String(row.time) : null,
+        kind, amountMinor: kind === "expense" ? -amount : amount,
+        categoryName: row.category_name ? String(row.category_name) : null,
+        accountName: String(row.account_name), description: String(row.description),
+      });
+      activityByDebt.set(debtId, activity);
+    }
+    return debts.map((debt) => ({ ...debt, activity: activityByDebt.get(debt.id) ?? [] }));
   }
   function createDebt(userId: string, input: DebtInput): Debt {
     const value = validateDebtInput(input);
@@ -365,7 +394,44 @@ export function createStore(db: Database.Database) {
     const now = stamp();
     db.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at)
       VALUES(?,?,?,?,?,?,?,'open',?,?)`).run(id, userId, value.direction, value.counterparty, value.amountMinor, value.note, value.dueDate, now, now);
-    return { id, ...value, status: "open", createdAt: now, updatedAt: now };
+    return listDebts(userId).find((debt) => debt.id === id)!;
+  }
+  function recordDebtAdvance(userId: string, input: DebtInput, transactionInput: TransactionInput): { debt: Debt; transaction: Transaction } {
+    return db.transaction(() => {
+      const value = validateDebtInput(input);
+      const expectedKind = value.direction === "owed_to_you" ? "expense" : "income";
+      if (transactionInput.kind !== expectedKind) throw new Error(`A ${value.direction === "owed_to_you" ? "loan advance" : "borrowed amount"} must be recorded as ${expectedKind}.`);
+      if (transactionInput.amountMinor !== value.amountMinor) throw new Error("Debt advance transaction must match the debt amount.");
+      const movement = { ...transactionInput, source: "assistant" as const, time: transactionInput.time ?? timeInManila() };
+      assertTransactionInput(userId, movement);
+      const debt = createDebt(userId, value);
+      const created = createTransaction(userId, movement);
+      const linked = db.prepare("UPDATE transactions SET debt_id=? WHERE id=? AND user_id=?").run(debt.id, created.id, userId);
+      if (!linked.changes) throw new Error("Debt advance transaction could not be linked.");
+      // A transaction-only undo would leave the associated debt open.
+      db.prepare("UPDATE transactions SET undo_until=NULL WHERE id=? AND user_id=?").run(created.id, userId);
+      return { debt: listDebts(userId).find((item) => item.id === debt.id)!, transaction: getTransaction(userId, created.id)! };
+    }).immediate();
+  }
+  function recordDebtAdvanceTransaction(userId: string, debtId: string, input: TransactionInput): { debt: Debt; transaction: Transaction } {
+    return db.transaction(() => {
+      const row = db.prepare("SELECT id,direction,status,amount_minor FROM debts WHERE id=? AND user_id=?").get(debtId, userId) as { id: string; direction: DebtDirection; status: DebtStatus; amount_minor: number } | undefined;
+      if (!row) throw new Error("Debt not found.");
+      if (row.status !== "open") throw new Error("A settled debt cannot receive an advance transaction.");
+      const expectedKind = row.direction === "owed_to_you" ? "expense" : "income";
+      if (input.kind !== expectedKind) throw new Error(`This debt advance must be recorded as ${expectedKind}.`);
+      if (input.amountMinor !== row.amount_minor) throw new Error("Debt advance transaction must match the debt amount.");
+      if (db.prepare("SELECT 1 FROM transactions WHERE debt_id=? AND kind=? LIMIT 1").get(debtId, expectedKind)) {
+        throw new Error("This debt already has a linked advance transaction.");
+      }
+      const movement = { ...input, source: "assistant" as const, time: input.time ?? timeInManila() };
+      assertTransactionInput(userId, movement);
+      const created = createTransaction(userId, movement);
+      const linked = db.prepare("UPDATE transactions SET debt_id=? WHERE id=? AND user_id=?").run(debtId, created.id, userId);
+      if (!linked.changes) throw new Error("Debt advance transaction could not be linked.");
+      db.prepare("UPDATE transactions SET undo_until=NULL WHERE id=? AND user_id=?").run(created.id, userId);
+      return { debt: listDebts(userId).find((item) => item.id === debtId)!, transaction: getTransaction(userId, created.id)! };
+    }).immediate();
   }
   function updateDebt(userId: string, debtId: string, input: DebtUpdate): Debt {
     const row = db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
@@ -381,10 +447,13 @@ export function createStore(db: Database.Database) {
     });
     const status = input.status ?? current.status;
     if (!(status === "open" || status === "settled")) throw new Error("Choose open or settled status.");
+    if (value.direction !== current.direction && db.prepare("SELECT 1 FROM transactions WHERE debt_id=? AND user_id=? LIMIT 1").get(debtId, userId)) {
+      throw new Error("A debt with linked activity cannot change direction.");
+    }
     const updatedAt = stamp();
     db.prepare(`UPDATE debts SET direction=?,counterparty=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
       WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
-    return { id: debtId, ...value, status, createdAt: current.createdAt, updatedAt };
+    return listDebts(userId).find((debt) => debt.id === debtId)!;
   }
   function deleteDebt(userId: string, debtId: string): void {
     const result = db.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(debtId, userId);
@@ -573,14 +642,38 @@ export function createStore(db: Database.Database) {
       if (!row) throw new Error("Debt not found.");
       const debt = debtFromRow(row);
       if (debt.status !== "open" || debt.direction !== "owed_to_you") throw new Error("Only an open debt owed to you can receive a payment.");
-      if (input.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
-      const remaining = debt.amountMinor - input.amountMinor;
+      if (input.kind !== "income") throw new Error("A debt payment must be recorded as income.");
+      const paymentInput = { ...input, kind: "income" as const, source: "assistant" as const };
+      assertTransactionInput(userId, paymentInput);
+      if (paymentInput.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
+      const remaining = debt.amountMinor - paymentInput.amountMinor;
       // Settled records retain their last positive balance; status is authoritative.
       const updated = updateDebt(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" });
-      const created = createTransaction(userId, { ...input, kind: "income", source: "assistant" });
-      // shortcut: transaction edits/deletes do not restore debt; add linkage if repayment history must stay synchronized.
+      const created = createTransaction(userId, paymentInput);
+      const linked = db.prepare("UPDATE transactions SET debt_id=? WHERE id=? AND user_id=?").run(debtId, created.id, userId);
+      if (!linked.changes) throw new Error("Debt repayment transaction could not be linked.");
       db.prepare("UPDATE transactions SET undo_until=NULL WHERE id=? AND user_id=?").run(created.id, userId);
-      return { debt: updated, transaction: getTransaction(userId, created.id)! };
+      return { debt: listDebts(userId).find((item) => item.id === updated.id)!, transaction: getTransaction(userId, created.id)! };
+    }).immediate();
+  }
+  function recordDebtRepayment(userId: string, debtId: string, input: TransactionInput): { debt: Debt; transaction: Transaction } {
+    return db.transaction(() => {
+      const row = db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
+        FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
+      if (!row) throw new Error("Debt not found.");
+      const debt = debtFromRow(row);
+      if (debt.status !== "open" || debt.direction !== "you_owe") throw new Error("Only an open debt you owe can receive a repayment.");
+      if (input.kind !== "expense") throw new Error("A debt repayment you make must be recorded as an expense.");
+      const paymentInput = { ...input, kind: "expense" as const, source: "assistant" as const };
+      assertTransactionInput(userId, paymentInput);
+      if (paymentInput.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
+      const remaining = debt.amountMinor - paymentInput.amountMinor;
+      const updated = updateDebt(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" });
+      const created = createTransaction(userId, paymentInput);
+      const linked = db.prepare("UPDATE transactions SET debt_id=? WHERE id=? AND user_id=?").run(debtId, created.id, userId);
+      if (!linked.changes) throw new Error("Debt repayment transaction could not be linked.");
+      db.prepare("UPDATE transactions SET undo_until=NULL WHERE id=? AND user_id=?").run(created.id, userId);
+      return { debt: listDebts(userId).find((item) => item.id === updated.id)!, transaction: getTransaction(userId, created.id)! };
     }).immediate();
   }
   function getTransaction(userId: string, id: string): Transaction | null {
@@ -616,8 +709,11 @@ export function createStore(db: Database.Database) {
   }
   function updateTransaction(userId: string, id: string, input: TransactionInput): Transaction {
     return db.transaction(() => {
-      const existing = db.prepare("SELECT time FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { time: string | null } | undefined;
+      const existing = db.prepare("SELECT time,debt_id,kind,amount_minor FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { time: string | null; debt_id: string | null; kind: TransactionKind; amount_minor: number } | undefined;
       if (!existing) throw new Error("Transaction not found.");
+      if (existing.debt_id && (input.kind !== existing.kind || input.amountMinor !== existing.amount_minor)) {
+        throw new Error("A transaction linked to a debt cannot change amount or kind.");
+      }
       const time = input.time === undefined ? existing.time : input.time;
       const transactionInput = { ...input, time };
       assertTransactionInput(userId, transactionInput);
@@ -631,8 +727,9 @@ export function createStore(db: Database.Database) {
   }
   function deleteTransaction(userId: string, id: string, undoOnly = false): void {
     db.transaction(() => {
-      const row = db.prepare("SELECT source,undo_until FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { source: string; undo_until: string | null } | undefined;
+      const row = db.prepare("SELECT source,undo_until,debt_id FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { source: string; undo_until: string | null; debt_id: string | null } | undefined;
       if (!row) throw new Error("Transaction not found.");
+      if (row.debt_id) throw new Error("A transaction linked to a debt cannot be deleted. Delete the debt first.");
       if (undoOnly && (row.source !== "assistant" || !row.undo_until || Date.now() > Date.parse(row.undo_until))) throw new Error("The 10-second Undo period has expired.");
       db.prepare("DELETE FROM transactions WHERE id=? AND user_id=?").run(id, userId);
       assertLedgerTotalsSafe(userId);
@@ -886,7 +983,7 @@ export function createStore(db: Database.Database) {
     migrate, registerUser, getUserByUsername, getUserById, listUsers, setUserEnabled, setResetCredential, consumeResetCredential,
     setShortcutCredentialHash, findEnabledUserByShortcutCredentialHash, hasShortcutCredential,
     listAccounts, createAccount, setDefaultAccount, updateAccount, deleteAccount, listCategories, createCategory, updateCategory, renameCategory,
-    listDebts, createDebt, updateDebt, deleteDebt, recordDebtPayment,
+    listDebts, createDebt, updateDebt, deleteDebt, recordDebtAdvance, recordDebtAdvanceTransaction, recordDebtPayment, recordDebtRepayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
     setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,

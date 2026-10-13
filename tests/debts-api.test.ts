@@ -63,6 +63,7 @@ describe("debt API routes", () => {
     expect(createdResponse.status).toBe(201);
     const created = await createdResponse.json();
     expect(created.debt).toMatchObject({ direction: "owed_to_you", counterparty: "Mina", amountMinor: 125_050, status: "open" });
+    expect(created.debt.activity).toEqual([]);
 
     const listedResponse = await GET();
     expect((await listedResponse.json()).debts).toMatchObject([{ id: created.debt.id, counterparty: "Mina" }]);
@@ -90,5 +91,34 @@ describe("debt API routes", () => {
     const response = await POST(postRequest({ direction: "owed_to_you", counterparty: "Mina", amount: "0" }));
     expect(response.status).toBe(400);
     expect(store.listDebts(aliceId)).toEqual([]);
+  });
+
+  it("returns the linked advance and repayment activity from the signed-in user's debt list", async () => {
+    const account = store.createAccount(aliceId, { name: "Wallet", type: "cash", openingMinor: 20_000 });
+    const food = store.listCategories(aliceId).find((category) => category.name === "Food")!;
+    const income = store.listCategories(aliceId).find((category) => category.name === "Other income")!;
+    const { debt } = store.recordDebtAdvance(aliceId,
+      { direction: "owed_to_you", counterparty: "Mina", amountMinor: 10_000 },
+      { kind: "expense", amountMinor: 10_000, accountId: account.id, categoryId: food.id, description: "Lunch advance", date: "2026-10-10", time: "12:00" });
+    store.recordDebtPayment(aliceId, debt.id, {
+      kind: "income", amountMinor: 2_500, accountId: account.id, categoryId: income.id,
+      description: "Mina paid me", date: "2026-10-12", time: "09:30",
+    });
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(body.debts).toMatchObject([{
+      id: debt.id,
+      activity: [
+        { transactionId: expect.any(String), date: "2026-10-10", time: "12:00", kind: "expense", amountMinor: -10_000, categoryName: "Food", accountName: "Wallet", description: "Lunch advance" },
+        { transactionId: expect.any(String), date: "2026-10-12", time: "09:30", kind: "income", amountMinor: 2_500, categoryName: "Other income", accountName: "Wallet", description: "Mina paid me" },
+      ],
+    }]);
+
+    const updatedResponse = await PATCH(patchRequest(debt.id, { amount: "90", status: "settled" }), { params: Promise.resolve({ id: debt.id }) });
+    const updated = await updatedResponse.json();
+    expect(updated.debt).toMatchObject({ id: debt.id, amountMinor: 9_000, status: "settled" });
+    expect(updated.debt.activity).toEqual(body.debts[0].activity);
   });
 });

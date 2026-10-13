@@ -7,6 +7,12 @@ import { POST } from "../src/app/api/assistant/route";
 
 type ProviderRequest = { messages: { role: string; content: string }[]; tools: { function: { name: string } }[] };
 
+function providerTool(name: string, args: Record<string, unknown>) {
+  return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }] }), {
+    headers: { "content-type": "application/json" },
+  });
+}
+
 const mocks = vi.hoisted(() => ({ getStore: vi.fn(), requireUser: vi.fn() }));
 
 vi.mock("@/lib/db", () => ({ getStore: mocks.getStore }));
@@ -554,6 +560,452 @@ describe("assistant debt capture", () => {
     expect(store.listDebts(user.id)).toMatchObject([{ id: mikaDebt.id, amountMinor: 30000, status: "open" }]);
   });
 
+  it("keeps an owed-to-you statement debt-only unless the user asks for a transaction", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27" }),
+    }));
+    const result = await response.json();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      debt: { direction: "owed_to_you", counterparty: "Mom", amountMinor: 2_700, status: "open" },
+      transaction: null, undoUntil: null,
+    });
+    expect(result.answer).toContain("Added it to Debts only");
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("uses the named expense details for an owed-to-you debt", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt",
+      arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27", note: "Jollibee", category: "Food", account: "Wallet", date: "2026-10-08", time: "15:30", recordTransaction: false }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27 for Jollibee from Wallet on 2026-10-08 at 3:30 PM; add the advance to Transactions" }),
+    }));
+    const result = await response.json();
+
+    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 2_700, categoryName: "Food", accountName: "Wallet", date: "2026-10-08", time: "15:30", undoUntil: null });
+    expect(result.transaction.description).toContain("Jollibee");
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(-2_700);
+  });
+
+  it("keeps the debt due date separate from the advance transaction date", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt",
+      arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27", dueDate: "2026-11-15" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Please log that Mom owes me 27 for lunch and add the expense to Transactions, repayable by 2026-11-15" }),
+    }));
+    const result = await response.json();
+
+    expect(result.debt).toMatchObject({ dueDate: "2026-11-15" });
+    expect(result.transaction.date).toBe(todayInManila());
+  });
+
+  it("uses the newest explicit account and category after a provider clarification", async () => {
+    store.createAccount(user.id, { name: "Bank", type: "bank", openingMinor: 0 });
+    const providerResponse = () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt",
+      arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27", category: "Housing", account: "Missing account" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(providerResponse()).mockResolvedValueOnce(providerResponse()));
+
+    const firstResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Please record that Mom owes me 27 for Housing and add the expense to Transactions" }),
+    }));
+    const firstResult = await firstResponse.json();
+    expect(firstResult.debt).toBeNull();
+    expect(firstResult.answer).toContain("couldn't find the account");
+
+    const followupResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Use Bank and Food", conversationId: firstResult.conversationId }),
+    }));
+    const result = await followupResponse.json();
+
+    expect(result.transaction).toMatchObject({ accountName: "Bank", categoryName: "Food", amountMinor: 2_700 });
+    expect(result.debt).toMatchObject({ counterparty: "Mom", amountMinor: 2_700 });
+    expect(store.listAccounts(user.id).map(({ name, balanceMinor }) => [name, balanceMinor])).toEqual([["Wallet", 0], ["Bank", -2_700]]);
+  });
+
+  it.each([
+    ["direction", { direction: "you_owe", counterparty: "Mom", amount: "27" }],
+    ["counterparty", { direction: "owed_to_you", counterparty: "Dad", amount: "27" }],
+  ])("asks before writing when the provider selects a different debt %s", async (_mismatch, args) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt", arguments: JSON.stringify(args),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Please record that Mom owes me 27 for lunch and add it to Transactions" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null, undoUntil: null });
+    expect(store.listDebts(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it.each(["Maybe Mom owes me 27 for lunch", "Mom doesn't owe me 27 for lunch", "Mom owes me nothing"]) (
+    "asks without writing for uncertain or negated debt wording: %s", async (prompt) => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+        name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27" }),
+      } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+      const response = await POST(new Request("https://tally.test/api/assistant", {
+        method: "POST",
+        headers: { origin: "https://tally.test", "content-type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      }));
+      const result = await response.json();
+
+      expect(result).toMatchObject({ transaction: null, debt: null, undoUntil: null });
+      expect(store.listDebts(user.id)).toEqual([]);
+      expect(store.listTransactions(user.id)).toEqual([]);
+      expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    },
+  );
+
+  it("keeps debts the user owes as debt-only records", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "i owe ate liyah 27" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: { direction: "you_owe", counterparty: "Ate Liyah", amountMinor: 2_700 }, transaction: null, undoUntil: null });
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it.each([
+    { optOutMessage: "don't add it to transactions", providerChoice: false },
+    { optOutMessage: "don't add it to transactions", providerChoice: true },
+    { optOutMessage: "don't want a transaction", providerChoice: true },
+    { optOutMessage: "without recording it as an expense", providerChoice: true },
+  ])("honors the debt-only request '$optOutMessage' over provider choice $providerChoice", async ({ optOutMessage, providerChoice }) => {
+    database.prepare("DELETE FROM financial_accounts WHERE user_id=?").run(user.id);
+    database.prepare("DELETE FROM categories WHERE user_id=? AND type='expense'").run(user.id);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt",
+      arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27", recordTransaction: providerChoice }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: `Mom owes me 27, but ${optOutMessage}.` }),
+    }));
+    const result = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(result).toMatchObject({
+      debt: { direction: "owed_to_you", counterparty: "Mom", amountMinor: 2_700, status: "open", activity: [] },
+      transaction: null, undoUntil: null,
+    });
+    expect(result.answer).toContain("Added it to Debts only");
+    expect(store.listAccounts(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it.each(["account", "expense category"]) ("does not default to debt-only when the required %s setup is missing", async (missingSetup) => {
+    if (missingSetup === "account") database.prepare("DELETE FROM financial_accounts WHERE user_id=?").run(user.id);
+    else database.prepare("DELETE FROM categories WHERE user_id=? AND type='expense'").run(user.id);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt",
+      arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Please record that Mom owes me 27 for lunch and add the expense to Transactions" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: null, transaction: null, undoUntil: null });
+    expect(store.listDebts(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+    expect(store.listAccounts(user.id).reduce((sum, account) => sum + account.balanceMinor, 0)).toBe(0);
+  });
+
+  it("leaves configured account balances unchanged for an explicit debt-only opt-out", async () => {
+    store.createAccount(user.id, { name: "Savings", type: "bank", openingMinor: 5_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt",
+      arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27", recordTransaction: false }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27, but don't add it to transactions" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: { direction: "owed_to_you", activity: [] }, transaction: null });
+    expect(store.listAccounts(user.id).map(({ name, balanceMinor }) => [name, balanceMinor])).toEqual([["Wallet", 0], ["Savings", 5_000]]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("keeps a debt-only statement debt-only when the provider asks for a transaction", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "log_debt",
+      arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "27", recordTransaction: false }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Please record that Mom owes me 27 for lunch" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: { direction: "owed_to_you", activity: [] }, transaction: null, undoUntil: null });
+    expect(result.answer).toContain("Added it to Debts only");
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(store.listTransactions(user.id)).toEqual([]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it("records a borrowed amount as income only when the user explicitly asks for a transaction", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", {
+      direction: "you_owe", counterparty: "Ate Liyah", amount: "100", note: "food", recordTransaction: true,
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I owe Ate Liyah 100 for food; add that to Transactions" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({
+      debt: { direction: "you_owe", counterparty: "Ate Liyah", amountMinor: 10_000 },
+      transaction: { kind: "income", amountMinor: 10_000, categoryName: "Other income", undoUntil: null },
+    });
+    expect(result.transaction.description.toLowerCase()).toContain("food");
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10_000);
+  });
+
+  it("treats an outgoing payment as a linked expense when the user owes that person", async () => {
+    const debt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Ate Liyah", amountMinor: 10_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "50", description: "Paid Ate Liyah",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I paid Ate Liyah 50" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({
+      debt: { id: debt.id, direction: "you_owe", amountMinor: 5_000, status: "open" },
+      transaction: { kind: "expense", amountMinor: 5_000, categoryName: "Other", undoUntil: null },
+    });
+    expect(store.listDebts(user.id)[0].activity).toMatchObject([{ kind: "expense", amountMinor: -5_000 }]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(-5_000);
+  });
+
+  it("asks when the provider amount differs from an outgoing payment the user stated", async () => {
+    const debt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Ate Liyah", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "500", description: "Paid Ate Liyah",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I paid Ate Liyah 50" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("I understood ₱50.00");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 100_000, status: "open" }]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it("records a completed outgoing payment as an ordinary expense when no debt matches", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "50", description: "Paid Ate Liyah",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I paid Ate Liyah 50" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: null, transaction: { kind: "expense", amountMinor: 5_000 } });
+    expect(store.listDebts(user.id)).toEqual([]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(-5_000);
+  });
+
+  it("does not match Ann to a payment from Ann-Marie", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ann", amountMinor: 10_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "income", amount: "20", description: "Ann-Marie paid me",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Ann-Marie paid me 20" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: null, transaction: null });
+    expect(result.answer).toContain("couldn't find an open debt");
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(10_000);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("keeps an explicit debt-only statement from becoming a transaction when the provider selects log_transaction", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "27", description: "Owed by Mom",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27, keep it debt-only" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: { direction: "owed_to_you", counterparty: "Mom", activity: [] }, transaction: null });
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("does not let the phrase 'no transaction yet' opt into recording an advance", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", {
+      direction: "owed_to_you", counterparty: "Mom", amount: "27", recordTransaction: true,
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27, no transaction yet" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: { direction: "owed_to_you", activity: [] }, transaction: null });
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("uses an explicitly named account and category only when they exist", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", {
+      direction: "owed_to_you", counterparty: "Mom", amount: "27", category: "Other", account: "Wallet",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27, add an expense using the Vacation category" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: null, transaction: null });
+    expect(result.answer).toMatch(/category/i);
+    expect(store.listDebts(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("accepts a clear confirmation after asking about an uncertain debt", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerTool("log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27" }))
+      .mockResolvedValueOnce(providerTool("log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27" })));
+
+    const firstResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Maybe Mom owes me 27" }),
+    }));
+    const firstResult = await firstResponse.json();
+    expect(firstResult.debt).toBeNull();
+
+    const confirmationResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Yes, that's confirmed", conversationId: firstResult.conversationId }),
+    }));
+    const result = await confirmationResponse.json();
+
+    expect(result.debt).toMatchObject({ direction: "owed_to_you", counterparty: "Mom", amountMinor: 2_700 });
+    expect(result.transaction).toBeNull();
+  });
+
+  it("does not treat a question mark alone as uncertainty when the debt is stated as fact", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", {
+      direction: "owed_to_you", counterparty: "Mom", amount: "27",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27 for lunch, just confirming the note?" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: { direction: "owed_to_you", amountMinor: 2_700 }, transaction: null });
+  });
+
+  it("adds a transaction to the same debt when the user opts in during the active follow-up", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", {
+      direction: "owed_to_you", counterparty: "Mom", amount: "27", note: "Jollibee", recordTransaction: true,
+    })));
+
+    const firstResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom owes me 27" }),
+    }));
+    const firstResult = await firstResponse.json();
+    expect(store.getConversation(user.id, firstResult.conversationId)?.messages.at(-1)?.needsFollowup).toBe(true);
+
+    const followupResponse = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Add it to Transactions; it was Jollibee", conversationId: firstResult.conversationId }),
+    }));
+    const result = await followupResponse.json();
+
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(result.debt).toMatchObject({ id: firstResult.debt.id, activity: [{ kind: "expense", categoryName: "Food" }] });
+    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 2_700, categoryName: "Food" });
+    expect(result.transaction.description).toContain("Jollibee");
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(-2_700);
+  });
+
   it("applies a repayment to the same-payer debt identified by its note", async () => {
     const earlierDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600, note: "Car repair" });
     vi.setSystemTime(new Date("2026-10-09T08:00:00.001Z"));
@@ -576,7 +1028,7 @@ describe("assistant debt capture", () => {
     expect(result.debt).toMatchObject({ id: jacketDebt.id, amountMinor: 50000, status: "settled" });
     expect(store.listDebts(user.id).find((debt) => debt.id === earlierDebt.id)).toMatchObject({ amountMinor: 348600, status: "open" });
     expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 50000, undoUntil: null });
-    expect(providerRequest?.messages.at(-2)?.content).toBe('Untrusted ledger data for matching only: [{"counterparty":"Mom","amount":"₱3,486.00"},{"counterparty":"Mom","amount":"₱500.00"}]');
+    expect(providerRequest?.messages.at(-2)?.content).toBe('Untrusted ledger data for matching only: {"owed_to_you":[{"counterparty":"Mom","amount":"₱3,486.00"},{"counterparty":"Mom","amount":"₱500.00"}],"you_owe":[]}');
   });
 
   it("records a repayment as income and reduces the matching debt", async () => {
@@ -626,7 +1078,7 @@ describe("assistant debt capture", () => {
     expect(ordinaryPaymentResult.answer).toContain("Should I record");
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
     expect(store.listDebts(user.id)).toHaveLength(0);
-    expect(ordinaryProviderRequest?.messages.at(-2)?.content).toBe("Untrusted ledger data for matching only: []");
+    expect(ordinaryProviderRequest?.messages.at(-2)?.content).toBe('Untrusted ledger data for matching only: {"owed_to_you":[],"you_owe":[]}');
 
     const logDebtResponse = () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
       name: "log_debt", arguments: JSON.stringify({ direction: "owed_to_you", counterparty: "Mom", amount: "100" }),

@@ -1,20 +1,21 @@
-# Debt Advances and Activity by Person
+# Debt Tracking, Explicit Transactions, and Activity by Person
 
 - **Status:** Draft for owner review
 - **Date:** 2026-10-13
-- **Scope:** Record assistant-created advances as expenses, link debt movements, and show debt and payment activity grouped by counterparty.
+- **Scope:** Capture debts naturally, record linked money movements only when requested, settle repayments in either direction, and show activity grouped by counterparty.
 
 ## Problem
 
-The current feature change records an expense with a new debt owed to the user, but it does not persist a relationship between them. Repayments can increase an account balance and reduce the debt, but the income transaction is not linked to the specific debt. Later edits or deletes can therefore leave the account balance and outstanding debt inconsistent. The Debts page shows current balances by direction but does not show the advance and repayments together under the person who owes them.
+Debt statements and actual money movements are related, but they are not the same action. A debt should be tracked when the user says someone owes them or they owe someone. An account transaction should be added only when the user asks to record the money movement. When a transaction is requested, it must link to the right debt so later payments reduce that debt and remain visible under the same person.
 
 The assistant also has four matching risks: a due date can be mistaken for the advance date; a stale provider choice can override a newer account or category clarification; and the provider can select a different debt direction or counterparty than the user stated.
 
 ## Goals
 
-- When the assistant records a new `owed_to_you` debt, record one equal expense from the selected account in the same atomic store operation.
-- Let the user explicitly opt out of that expense in natural language while still recording the debt.
-- Record each repayment as linked income while reducing the exact open debt by the same amount in one atomic operation.
+- Record an assistant-created debt without changing account balances by default.
+- When the user explicitly asks to add a new debt's money movement to Transactions, record one linked expense for `owed_to_you` or linked income for `you_owe` atomically with the new debt.
+- Allow the user to opt into a transaction in a later active follow-up without creating a duplicate debt.
+- Record money received toward an open `owed_to_you` debt as linked income, and money paid toward an open `you_owe` debt as linked expense. Reduce the matching debt atomically.
 - Group debts by counterparty within the existing **Owed to you** and **You owe** sections. Show each debt separately under its person, with its advance and repayment transactions in date order and with their existing categories.
 - Keep the user's latest explicit account and expense category choices authoritative through clarification turns.
 - Keep debt due dates separate from the advance transaction date.
@@ -33,24 +34,27 @@ The assistant also has four matching risks: a due date can be mistaken for the a
 
 ### Debt and transaction relationship
 
-Add a nullable `transactions.debt_id` reference to `debts(id)` with `ON DELETE SET NULL`. An owed-to-you advance has one linked expense transaction; repayments have one or more linked income transactions. A partial unique index prevents more than one linked expense for a debt. Existing rows receive `NULL`; do not infer relationships from names, descriptions, dates, or amounts.
+Add a nullable `transactions.debt_id` reference to `debts(id)` with `ON DELETE SET NULL`. An `owed_to_you` advance is an expense and its repayments are income; a `you_owe` borrowing is income and its repayments are expenses. Existing rows receive `NULL`; do not infer relationships from names, descriptions, dates, or amounts. Store operations enforce that a debt has at most one linked advance while allowing multiple repayments.
 
 The store owns both write paths:
 
-- `recordDebtAdvance` validates the debt, matching positive expense amount, account ownership, and expense category ownership before commit. It creates the debt and linked expense atomically, marks the transaction as assistant-created, and leaves Undo unavailable.
+- `recordDebtAdvance` validates the direction-matching positive transaction amount, account ownership, and category ownership before commit. It creates the debt and linked expense or income atomically, marks the transaction as assistant-created, and leaves Undo unavailable.
+- `recordDebtAdvanceTransaction` links an explicitly requested advance to an existing open debt in the active conversation without creating another debt or a second advance.
 - `recordDebtPayment` remains one owner-scoped operation. It validates an open `owed_to_you` debt, amount, account, and income category before either write can persist, then links the income transaction to that debt and reduces the open balance atomically. A payment above the outstanding amount is rejected. A fully paid debt becomes `settled` and retains its last positive balance for display; status is authoritative.
+- `recordDebtRepayment` records an expense and reduces an open `you_owe` debt atomically, with the same ownership, amount, account, category, settlement, and no-Undo protections.
 
 Linked expense and repayment transactions cannot be deleted or have their amount or kind changed while the debt exists. A linked debt cannot change direction. Category, account, date, description, and outstanding debt amount can still be edited; changing these does not rewrite the historical amount moved. Deleting a debt preserves its linked transactions as normal ledger history and clears their links, after which the transactions can be edited or deleted independently.
 
 ### Assistant behavior
 
-- Include a `recordTransaction` boolean in the `log_debt` tool. It defaults to `true`; set it to `false` only when the user clearly opts out of adding a transaction. Do not infer an opt-out from missing account/category details. If the debt request or opt-out is ambiguous, ask without writing.
-- For a clear statement that another person owes the user, call `log_debt` only. When `recordTransaction` is true, save one same-amount expense and debt atomically; when false, save only the debt, without changing account balances or requiring an account/category. Do not create a duplicate transaction.
-- For a debt the user owes, save only the debt.
-- Use an explicitly named account/category and the latest clear user clarification. Otherwise use the default account and the existing expense fallback category. If required account or category setup is missing while `recordTransaction` is true, ask before writing either record.
-- Use a transaction date stated for the advance; otherwise use today. A due date is stored only as the debt due date and never becomes the expense date by itself.
+- Include a `recordTransaction` boolean in the `log_debt` tool. It defaults to `false`; only clear user wording can opt in. The server enforces the user's choice even if the provider selects another tool or disagrees.
+- A plain debt statement creates only the debt. Tell the user they can ask to add the related money movement; if they opt in during that active follow-up, attach it to the same debt.
+- If the user explicitly asks to record the movement, map `owed_to_you` to expense and `you_owe` to income. Purpose, description, and category are optional; infer a useful description/category when possible and otherwise use the matching fallback category. If the user explicitly names an invalid account or category, ask before writing.
+- Use an explicitly named account/category and the latest clear user clarification. Otherwise use the default account and matching fallback category. If required account or category setup is missing while a transaction is requested, ask before writing either record.
+- Use a transaction date stated for the movement; otherwise use today. Due, payable-by, and repayable-by dates remain debt dates and never become transaction dates by themselves.
 - If the provider selects a different direction or a counterparty not named in the active user context, ask for clarification without writing. If explicit user wording contradicts provider direction, ask rather than creating the wrong balance movement.
-- Preserve the exact normalized payer and oldest-open-debt behavior for repayments. A repayment with uncertain wording, no match, multiple named counterparties, a conflicting payer, or an excessive amount creates no transaction and changes no debt.
+- For incoming repayments, preserve exact payer matching and the oldest-open-debt behavior. Ask without writing when wording is uncertain or negated, no debt matches, multiple counterparties are named, the provider selects a different payer, or the payment exceeds the balance.
+- For an outgoing payment, match the named payee to an open `you_owe` debt and reduce it when one matches. If none matches, record the completed payment as an ordinary expense without changing any debt.
 
 ### Debt activity view
 
@@ -68,22 +72,22 @@ Manual debts, explicit debt-only assistant entries, and pre-migration debts with
 
 ## Acceptance criteria
 
-1. Saying “Mom owes me 500 for lunch” with a default account creates one open Mom debt and one linked ₱500 expense categorized as Food; the account decreases by ₱500 and no Undo is offered.
-2. Saying “Mom owes me 500, but don’t add it to transactions” creates the Mom debt only: no transaction is written, the account balance is unchanged, and no account or category is required.
-3. Missing account/category details do not opt out: when an expense is the default, missing required setup creates neither the debt nor the transaction.
-4. Saying “Mom paid me 250” on a ₱500 open debt creates one linked ₱250 income transaction and leaves ₱250 open. A second valid ₱250 payment settles the debt, retains the last positive balance for display, and leaves total account balance increased by ₱250 for each payment.
-5. With multiple open debts for Mom, each repayment links to the exact debt selected by the existing oldest-open and note rules. Each debt displays only its own linked movements.
-6. The Debts page groups case-insensitive Mom records under one person heading, keeps separate debt items, shows linked expenses and payments in date order, and preserves each movement's income/expense category.
-7. Manual debt form entries, explicit debt-only assistant entries, and legacy records remain visible without automatically generated or guessed transaction links.
-8. While a debt exists, its linked transaction cannot be deleted or changed in amount/kind, and the debt direction cannot be flipped. Deleting the debt preserves the transaction rows and clears their links.
-9. A due date never becomes the expense date unless the user also gives it as the advance date; an omitted advance date uses today.
-10. A newer explicit account/category clarification wins over an older provider choice. A conflicting provider direction or counterparty results in a clarification and no writes.
-11. Existing repayment behavior remains owner-scoped and atomic, and settled status remains authoritative.
+1. Saying “Mom owes me 500” creates an open debt only; the account balance and transaction list do not change.
+2. Saying “Mom owes me 500 for Jollibee; add it to Transactions” creates one linked ₱500 Food expense and the debt atomically. The account decreases by ₱500 and no Undo is offered.
+3. Saying “I owe Ate Liyah 100” creates a debt only. Asking to add it to Transactions records linked income because borrowed money entered the user's account; purpose and category are optional.
+4. A clear “keep it debt-only” choice creates no transaction. The user can opt into a transaction later in the active follow-up without creating a second debt.
+5. Missing account/category setup when a transaction is requested creates neither the debt nor the transaction. An invalid explicit account/category choice prompts for a valid choice.
+6. Saying “Mom paid me 250” on a ₱500 open debt creates linked ₱250 income and leaves ₱250 open. Another valid ₱250 settles it, retains the last positive balance for display, and leaves the account higher by each payment.
+7. Saying “I paid Ate Liyah 100” on an open debt creates linked expense and reduces it. If there is no matching debt, the assistant records an ordinary expense and leaves debts unchanged.
+8. Repayment matching uses the exact named payer/payee and oldest open debt in that direction. A near-name match such as “Ann” to “Ann-Marie” is rejected; uncertain incoming repayments, missing incoming matches, multiple counterparties, conflicting provider selections, and overpayments do not write.
+9. The Debts page groups case-insensitive person names within each direction, keeps separate debts, preserves stored order for tied activity, labels actions accessibly, and retains each transaction's category.
+10. Manual debt entries and legacy records remain visible without guessed transaction links. Deleting a debt preserves ledger history and clears its foreign-key link.
+11. Due, payable-by, and repayable-by dates never become transaction dates by themselves. Newer explicit account/category choices win over older provider choices.
 
 ## Verification
 
-- Add store tests for migration defaults, linked advance/payment writes, rollback, and linked edit/delete rules.
-- Add assistant route/provider tests for due-date separation, latest account/category choices, direction/counterparty conflict, and no-write clarifications.
+- Add store tests for migration defaults, both advance/payment directions, rollback, and linked edit/delete rules.
+- Add assistant route/provider tests for explicit transaction choice, both repayment directions, exact payer matching, due-date separation, latest account/category choices, provider bypasses, and no-write clarifications.
 - Add Debts page tests for case-insensitive grouping, multiple debts per person, chronological payment history, categories, and settled display.
 - Run the focused debt/store/provider/assistant/view tests, then `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check`.
 - Capture and inspect the Debts page in Orca's browser at desktop and narrow widths before opening the PR.
