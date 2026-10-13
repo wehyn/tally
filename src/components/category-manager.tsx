@@ -27,6 +27,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
   const isOpen = categoriesOpenOverride ?? categoryManagerTargeted;
   const categoryManagerRef = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [portalMounted, setPortalMounted] = useState(false);
   const [editing, setEditing] = useState<Category | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState<Category["type"]>("expense");
@@ -68,6 +69,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
     setIcon("tag");
     setError("");
     setNotice("");
+    setPortalMounted(true);
     setOpen(true);
   }
 
@@ -78,6 +80,7 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
     setIcon(category.icon);
     setError("");
     setNotice("");
+    setPortalMounted(true);
     setOpen(true);
   }
 
@@ -125,8 +128,10 @@ export function CategoryManager({ categories, onChange, collapsible = false }: C
       })}
     </div>
     {notice && <p className="form-notice" role="status">{notice}</p>}
-    {typeof document !== "undefined" && createPortal(
-      <ModalPresence open={open} onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setOpen(false); }}>
+    {portalMounted && typeof document !== "undefined" && createPortal(
+      <ModalPresence open={open} onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setOpen(false); }} onTransitionEnd={(event) => {
+        if (event.target === event.currentTarget && event.propertyName === "opacity" && !open) setPortalMounted(false);
+      }}>
         <section className="modal-card category-modal" role="dialog" aria-modal="true" aria-labelledby="category-modal-title">
           <div className="modal-heading"><div><h2 id="category-modal-title">{editing ? "Edit category" : "Add a category"}</h2><p>{editing ? "Update its name or choose a new icon." : "Make your ledger feel like yours."}</p></div><button className="modal-close" type="button" aria-label="Close" onClick={() => setOpen(false)}><X size={16}/></button></div>
           <form onSubmit={(event) => void save(event)}>

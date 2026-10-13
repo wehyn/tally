@@ -250,7 +250,7 @@
 
 /* Shared, restrained motion for interactive controls and dialogs */
 button:not(:disabled):not([aria-disabled=true]),a.button{transition:transform .15s ease-out,background-color .15s ease,border-color .15s ease,color .15s ease,box-shadow .15s ease,opacity .15s ease}
-.modal-backdrop{opacity:1;transition:opacity .22s ease-out,display .22s ease-out;transition-behavior:allow-discrete}.modal-backdrop[hidden]{display:none;opacity:0;pointer-events:none}
+.modal-backdrop{opacity:1;transition:opacity .22s ease-out}
 .modal-backdrop[data-open=false]{opacity:0;pointer-events:none;transition-duration:.15s}
 .modal-card{overscroll-behavior:contain;opacity:1;transform:translateY(0) scale(1);transition:opacity .22s ease-out,transform .22s cubic-bezier(.2,.8,.2,1)}
 .modal-backdrop[data-open=false] .modal-card{opacity:0;transform:translateY(-12px) scale(.985);transition-duration:.15s;transition-timing-function:ease-out}
@@ -425,4 +425,3 @@ button:not(:disabled):not([aria-disabled=true]):hover,a.button:hover{transform:t
 }
 
 @media(prefers-reduced-motion:no-preference){button:not(:disabled):not([aria-disabled=true]):active,a.button:active{transform:scale(.96)}}
-@media(prefers-reduced-motion:reduce){.modal-backdrop{transition-property:opacity,display!important;transition-duration:120ms!important;transition-behavior:allow-discrete!important}}
