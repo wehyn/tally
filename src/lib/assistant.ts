@@ -42,7 +42,8 @@ function answerForDebts(debts: Debt[], prompt: string, accounts: Account[]): str
     : /\b(?:i owe|we owe|owed by me|people i owe)\b/i.test(prompt) ? "you_owe" : undefined;
   const asksBothStatuses = /\b(?:open|outstanding)\b.*\bsettled\b|\bsettled\b.*\b(?:open|outstanding)\b/i.test(prompt);
   const asksAllWithoutStatus = /\ball\b/i.test(prompt) && !/\b(?:open|outstanding|settled)\b/i.test(prompt);
-  const status = asksBothStatuses || asksAllWithoutStatus ? "all" : /\bsettled\b/i.test(prompt) ? "settled" : "open";
+  const asksAllIncludingSettled = /\ball\b.*\bdebts?\b.*\b(?:including|with)\b.*\bsettled\b/i.test(prompt);
+  const status = asksBothStatuses || asksAllWithoutStatus || asksAllIncludingSettled ? "all" : /\bsettled\b/i.test(prompt) ? "settled" : "open";
   const matches = debts.filter((debt) => (status === "all" || debt.status === status) && (!direction || debt.direction === direction));
   const title = status === "all" ? `All debts${direction === "owed_to_you" ? " owed to you" : direction === "you_owe" ? " you owe" : ""}`
     : status === "settled" ? "Settled debts (last outstanding balances)"
@@ -69,8 +70,9 @@ function repaymentAmountFromPrompt(prompt: string): number | undefined {
     .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?\b/gi, " ")
     .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b/gi, " ");
   const currency = [...dateFreeText.matchAll(new RegExp(`(?:₱|PHP)\\s*(${amountPattern})|(${amountPattern})\\s*(?:PHP|pesos?)\\b`, "gi"))];
-  const tiedToPayment = [...dateFreeText.matchAll(new RegExp(`\\b(?:paid\\s+(?:me|back)|repaid(?:\\s+me)?|returned)\\s+(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.!?])`, "gi"))];
-  const match = currency.length === 1 ? currency[0] : currency.length ? undefined : tiedToPayment.length === 1 ? tiedToPayment[0] : undefined;
+  const tiedToPayment = [...dateFreeText.matchAll(new RegExp(`\\b(?:paid\\s+(?:me|back)|repaid(?:\\s+me)?|returned)\\s+(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.;!?])`, "gi"))];
+  const match = tiedToPayment.length === 1 ? tiedToPayment[0]
+    : tiedToPayment.length > 1 ? undefined : currency.length === 1 ? currency[0] : undefined;
   const raw = match?.[1] ?? match?.[2];
   if (!raw) return undefined;
   try { return parsePHPToMinor(raw) || undefined; } catch { return undefined; }

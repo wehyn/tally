@@ -215,6 +215,24 @@ describe("assistant debt capture", () => {
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
   });
 
+  it("uses the amount tied to a repayment instead of an unrelated currency amount", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 100000 });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Ari", amount: "500" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Ari paid me 100; my balance was ₱500" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("re-enter the repayment amount");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 100000, status: "open" }]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
   it("does not accept yes as a replacement for an amount after an amount mismatch", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
     const providerResponse = () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
@@ -258,7 +276,7 @@ describe("assistant debt capture", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("includes open and settled records when asked to show all debts", async () => {
+  it.each(["Show all debts and total amount", "Show all debts including settled and total amount"])("includes open and settled records for all-debt wording: %s", async (prompt) => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
     const settledDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 10000 });
     store.recordDebtPayment(user.id, settledDebt.id, {
@@ -270,7 +288,7 @@ describe("assistant debt capture", () => {
 
     const response = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "Show all debts and total amount" }),
+      body: JSON.stringify({ prompt }),
     }));
     const result = await response.json();
 
