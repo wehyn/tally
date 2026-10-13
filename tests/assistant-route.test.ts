@@ -873,6 +873,78 @@ describe("assistant debt capture", () => {
     });
   });
 
+  it("asks who the user repaid when an amount-only repayment could match an open debt", async () => {
+    const debt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "100", description: "Debt repayment",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I repaid 100" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: null, transaction: null, undoUntil: null });
+    expect(result.answer).toContain("Who did you repay");
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 20_000, status: "open" }]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("does not turn a negated outgoing payment into an expense", async () => {
+    const debt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "100", description: "Paid Mom",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I haven't paid Mom 100" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null, undoUntil: null });
+    expect(store.listDebts(user.id)).toMatchObject([{ id: debt.id, amountMinor: 20_000, status: "open" }]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("does not capture a relative date as the counterparty in a borrowed debt", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "income", amount: "100", description: "Borrowed funds",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I borrowed 100 from Mom yesterday and add it to Transactions" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({
+      debt: { direction: "you_owe", counterparty: "Mom", amountMinor: 10_000 },
+      transaction: { kind: "income", amountMinor: 10_000, date: "2026-10-08" },
+    });
+  });
+
+  it("does not capture a relative date as part of a fronted-money question", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "100", description: "Fronted for Mom",
+    })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "I fronted 100 for Mom?" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ debt: null, transaction: null, undoUntil: null });
+    expect(store.listDebts(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
   it("carries the payment amount through a payee clarification", async () => {
     const momDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
     const dadDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });

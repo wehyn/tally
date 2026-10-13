@@ -133,15 +133,23 @@ function isUnconfirmedOutgoingDebtPayment(text: string): boolean {
     && (isUncertainStatement(text) || /\b(?:did|do|does)\s+(?:i|we)\s+(?:pay|paid|repaid|return|settle)\b/i.test(text));
 }
 function hasOutgoingDebtRepaymentWording(text: string): boolean {
-  return /\b(?:i|we)\s+(?:(?:didn't|did not|never|maybe|might not)\s+)?(?:paid|pay|repaid|returned|settled)\b|\b(?:i|we)\s+paid\s+back\b/i.test(text);
+  return /\b(?:i|we)\s+(?:(?:didn't|did not|haven't|have not|hasn't|has not|hadn't|had not|never|maybe|might not)\s+)?(?:paid|pay|repaid|returned|settled)\b|\b(?:i|we)\s+paid\s+back\b/i.test(text);
+}
+function hasOutgoingPayeeOrPurpose(text: string): boolean {
+  const match = /\b(?:i|we)\s+(?:paid\s+back|paid|repaid|returned|settled)\s+(.+?)\s*[.!?]?\s*$/i.exec(text);
+  if (!match) return false;
+  const amount = /^(?:₱|PHP|\$)?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?(?:\s*(?:PHP|pesos?))?/i;
+  if (!amount.test(match[1].trim())) return true;
+  return /\b(?:to|for)\s+[\p{L}\p{N}]/iu.test(match[1].replace(amount, ""));
 }
 function isUncertainNewDebtStatement(text: string): boolean {
   return /\b(?:maybe|perhaps|possibly|probably|might|may|could|would|if|whether|think|thought|unsure|uncertain)\b/i.test(text)
     || /\b(?:doesn't|does not|don't|do not|didn't|did not|never|no longer|not)\b.{0,35}\b(?:owe|owes|owed|borrow|borrowed|lend|lent|loan|debt)\b/i.test(text)
     || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent)\b.{0,35}\b(?:nothing|no money|no debt|no amount|not anything)\b/i.test(text)
     || /^\s*(?:does|do|did|is|are|was|were|can|could|would|should)\b.{0,120}\b(?:owe|owes|owed|borrow|borrowed|lend|lent|loan|debt)\b/i.test(text)
-    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent)\b.{0,100}\b\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\s*\?\s*$/i.test(text)
-    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent)\b.{0,100}\b(?:right|correct)\s*\?\s*$/i.test(text);
+    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent|fronted|advanced|loaned)\b.*\?\s*$/i.test(text)
+      && !/\b(?:note|description|category|account|date|time)\s*\?\s*$/i.test(text)
+    || /\b(?:owe|owes|owed|borrow|borrowed|lend|lent|fronted|advanced|loaned)\b.{0,100}\b(?:right|correct)\s*\?\s*$/i.test(text);
 }
 function isConfirmedDebtFollowUp(messages: string[]): boolean {
   const latest = messages.at(-1)?.trim() ?? "";
@@ -163,7 +171,8 @@ function explicitNewDebtIntent(message: string): { direction: "owed_to_you" | "y
     if (counterparty) return { direction: "you_owe", counterparty };
   }
   const amount = "(?:(?:₱|PHP|\\$)\\s*)?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d{1,2})?";
-  const afterCounterparty = "(?=\\s+(?:for|due|on|because|about)\\b|\\s+and\\s+(?:then\\s+)?(?:add|record|put|log|include|create)\\b|[,;.!?]|$)";
+  const date = "(?:today|yesterday|tomorrow|(?:(?:last|next|this)\\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+\\d{1,2}(?:,?\\s+\\d{4})?)";
+  const afterCounterparty = `(?=\\s+(?:for|due|on|because|about)\\b|\\s+${date}\\b|\\s+and\\s+(?:then\\s+)?(?:add|record|put|log|include|create)\\b|[,;.!?]|$)`;
   const borrowed = new RegExp(`^(?:i|we)\\s+borrow(?:ed)?\\s+${amount}\\s+from\\s+(.+?)${afterCounterparty}`, "i").exec(text);
   if (borrowed) return { direction: "you_owe", counterparty: cleanName(borrowed[1]) };
   const fronted = new RegExp(`^(?:i|we)\\s+fronted\\s+${amount}\\s+(?:for|to)\\s+(.+?)${afterCounterparty}`, "i").exec(text);
@@ -461,7 +470,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       } else if (!repaymentDebt && incomingRepaymentIntent) {
         call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } };
       } else if (!repaymentDebt && outgoingRepaymentIntent) {
-        call = { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
+        call = openYouOweDebts.length && !hasOutgoingPayeeOrPurpose(repaymentMatchText)
+          ? { name: "ask_clarification", args: { question: "Who did you repay? I found open debts you owe and need the person before applying this payment." } }
+          : { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
       } else if (repaymentDebt && providerCounterparty && providerCounterparty !== normalizeCounterparty(repaymentDebt.counterparty)) {
         call = { name: "ask_clarification", args: { question: `I couldn't confirm which person ${incomingRepaymentIntent ? "paid you" : "you paid"}. Which person's open debt should I update?` } };
       } else if (repaymentDebt && incomingRepaymentIntent) {
