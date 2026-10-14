@@ -1,11 +1,20 @@
 "use client";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, LayoutDashboard, Settings, Shield, Wallet } from "lucide-react";
-import type { ReactNode } from "react";
+import { CalendarDays, LayoutDashboard, Settings, Shield, Sparkles, Wallet } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import type { PublicUser } from "@/lib/store";
 import { SignOutButton } from "./sign-out-button";
-import { AssistantWidget } from "./assistant-widget";
+
+function AssistantTrigger({ onClick, loading = false }: { onClick?: () => void; loading?: boolean }) {
+  return <div className="assistant-widget closed"><button type="button" className="assistant-widget-disabled-trigger" aria-label={loading ? "Loading Tally assistant" : "Open Tally assistant"} aria-expanded="false" aria-controls="assistant-widget-panel" disabled={loading} onClick={onClick}><Sparkles size={19}/></button></div>;
+}
+
+const AssistantWidget = dynamic(() => import("./assistant-widget").then((module) => module.AssistantWidget), {
+  ssr: false,
+  loading: () => <AssistantTrigger loading />,
+});
 
 const navigation = [
   { href: "/dashboard", label: "Home", icon: LayoutDashboard, routes: ["/dashboard"] },
@@ -25,6 +34,8 @@ const pageLabels = [
 const accountNavigation = [{ href: "/settings", label: "Settings", icon: Settings }];
 export function AppShell({ user, children, assistantEnabled, assistantConfigured }: { user: PublicUser; children: ReactNode; assistantEnabled: boolean; assistantConfigured: boolean }) {
   const active = usePathname();
+  const [assistantLoaded, setAssistantLoaded] = useState(false);
+  const [assistantInitialMode, setAssistantInitialMode] = useState<"chat" | "composing">("chat");
   const accountEntries = user.role === "admin" ? [...accountNavigation, { href: "/admin", label: "Administration", icon: Shield }] : accountNavigation;
   const pageLabel = [...pageLabels, ...accountEntries].find((item) => active === item.href || active.startsWith(`${item.href}/`))?.label ?? "Home";
   const isCurrentSection = (routes: string[]) => routes.some((route) => active === route || active.startsWith(`${route}/`));
@@ -59,7 +70,12 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
         const selected = isCurrentSection(routes);
         return <Link key={href} href={href} className={selected ? "selected" : ""} aria-label={label} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={19} aria-hidden="true"/><span>{label}</span></Link>;
       })}</nav>
-      <AssistantWidget enabled={assistantEnabled} configured={assistantConfigured} />
+      {assistantLoaded
+        ? <AssistantWidget enabled={assistantEnabled} configured={assistantConfigured} initialMode={assistantInitialMode} />
+        : <AssistantTrigger onClick={() => {
+          setAssistantInitialMode(assistantEnabled && !window.matchMedia("(max-width: 900px)").matches ? "composing" : "chat");
+          setAssistantLoaded(true);
+        }} />}
     </div>
   </div>;
 }

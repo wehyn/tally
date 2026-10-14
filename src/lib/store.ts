@@ -98,6 +98,7 @@ export function createStore(db: Database.Database) {
         CHECK(destination_account_id IS NULL OR destination_account_id != account_id)
       );
       CREATE INDEX IF NOT EXISTS transactions_owner_date ON transactions(user_id, date DESC);
+      CREATE INDEX IF NOT EXISTS transactions_owner_balance ON transactions(user_id,kind,amount_minor,account_id,destination_account_id);
       CREATE TABLE IF NOT EXISTS bills (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         name TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
@@ -163,6 +164,7 @@ export function createStore(db: Database.Database) {
     if (!transactionColumns.some((column) => column.name === "time")) db.exec("ALTER TABLE transactions ADD COLUMN time TEXT");
     if (!transactionColumns.some((column) => column.name === "debt_id")) db.exec("ALTER TABLE transactions ADD COLUMN debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL");
     db.exec("DROP INDEX IF EXISTS transactions_one_debt_advance");
+    db.exec("CREATE INDEX IF NOT EXISTS transactions_owner_history ON transactions(user_id,date DESC,COALESCE(time,'00:00') DESC,created_at DESC)");
     const categoryColumns = db.pragma("table_info(categories)") as { name: string }[];
     if (!categoryColumns.some((column) => column.name === "icon")) {
       db.exec("ALTER TABLE categories ADD COLUMN icon TEXT NOT NULL DEFAULT 'tag'");

@@ -253,6 +253,7 @@ describe("owner-scoped ledger", () => {
       description: "Lunch", date: "2026-10-09", time: "12:15",
     });
 
+    database.exec("DROP INDEX transactions_owner_history");
     database.exec("ALTER TABLE transactions DROP COLUMN time");
     store.migrate();
 
