@@ -103,23 +103,20 @@ describe("assistant transaction capture", () => {
     expect(result.transaction.date).toBe(todayInManila());
   });
 
-  it("keeps explicitly stated transaction date and time", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      choices: [{ message: { tool_calls: [{ function: {
-        name: "log_transaction",
-          arguments: JSON.stringify({ kind: "expense", amount: "500", description: "transportation", date: "2026-02-20", time: "14:35" }),
-      } }] } }],
-    }), { headers: { "content-type": "application/json" } })));
-
+  it.each([
+    ["colon", "transportation 500 at 2:35 PM on 2026-02-20", { kind: "expense", amount: "500", description: "transportation", date: "2026-02-20", time: "14:35" }, "14:35", "2026-02-20"],
+    ["compact", "14 tricycle at 1130am", { kind: "expense", amount: "14", description: "tricycle", category: "Transport" }, "11:30", undefined],
+  ] as const)("keeps explicitly stated transaction time in %s notation", async (_notation, prompt, providerArgs, expectedTime, expectedDate) => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", providerArgs as Record<string, unknown>)));
     const response = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",
       headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "transportation 500 at 2:35 PM on 2026-02-20" }),
+      body: JSON.stringify({ prompt }),
     }));
     const result = await response.json();
 
-    expect(result.transaction.date).toBe("2026-02-20");
-    expect(result.transaction.time).toBe("14:35");
+    if (expectedDate) expect(result.transaction.date).toBe(expectedDate);
+    expect(result.transaction.time).toBe(expectedTime);
   });
 
   it("keeps an explicitly stated time from the active follow-up context", async () => {

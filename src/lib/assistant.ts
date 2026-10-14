@@ -318,7 +318,7 @@ function priorDateHint(messages: { content: string; createdAt?: string }[]): { d
 }
 function timeHintFromMessages(messages: string[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
-    const matches = [...messages[index].matchAll(/\b(?:(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*([ap])\.?m\.?|([01]?\d|2[0-3]):([0-5]\d))\b/gi)];
+    const matches = [...messages[index].matchAll(/\b(?:(1[0-2]|0?[1-9])(?::?([0-5]\d))?\s*([ap])\.?m\.?|([01]?\d|2[0-3]):([0-5]\d))\b/gi)];
     if (!matches.length) continue;
     if (matches.length > 1) return undefined;
     const [, hour12, minute12, meridiem, hour24, minute24] = matches[0];
