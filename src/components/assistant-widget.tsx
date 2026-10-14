@@ -47,8 +47,8 @@ function nextMessageId() {
   return `assistant-${Date.now()}-${++messageSequence}`;
 }
 
-export function AssistantWidget({ enabled, configured }: { enabled: boolean; configured: boolean }) {
-  const [mode, setMode] = useState<AssistantMode>("closed");
+export function AssistantWidget({ enabled, configured, initialMode = "closed" }: { enabled: boolean; configured: boolean; initialMode?: AssistantMode }) {
+  const [mode, setMode] = useState<AssistantMode>(initialMode);
   const [assistantEnabled, setAssistantEnabled] = useState(enabled);
   const [assistantConfigured, setAssistantConfigured] = useState(configured);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -60,8 +60,12 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(0);
   const [openTransactionControl, setOpenTransactionControl] = useState<string | null>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const triggerButton = useRef<HTMLButtonElement>(null);
+  const restoreComposerFocus = useRef(false);
   const messageList = useRef<HTMLDivElement>(null);
   const promptField = useRef<HTMLTextAreaElement>(null);
+  const previousMode = useRef(mode);
   const panelOpen = mode === "chat" || (!assistantEnabled && mode === "composing");
   const transactionIds = messages.flatMap((message) => message.transaction ? [message.transaction.id] : []).join(",");
   const hasTransaction = Boolean(transactionIds);
@@ -131,6 +135,18 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
   }, [mode, assistantEnabled]);
 
   useEffect(() => {
+    if (mode === "chat" && previousMode.current !== "composing") closeButton.current?.focus({ preventScroll: true });
+    else if (mode === "closed" && previousMode.current !== "closed") triggerButton.current?.focus({ preventScroll: true });
+    previousMode.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
+    if (busy || !restoreComposerFocus.current) return;
+    promptField.current?.focus({ preventScroll: true });
+    restoreComposerFocus.current = false;
+  }, [busy]);
+
+  useEffect(() => {
     const undoDeadlines = messages.flatMap((message) => message.transaction?.undoUntil ? [message.transaction.undoUntil] : []);
     if (!undoDeadlines.some((deadline) => isUndoAvailable(deadline, Date.now()))) return;
     const timer = window.setInterval(() => {
@@ -155,6 +171,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
     event?.preventDefault();
     const text = prompt.trim();
     if (!text || busy || !assistantEnabled) return;
+    restoreComposerFocus.current = true;
     setMode("chat");
     setPrompt("");
     setNotice("");
@@ -257,7 +274,7 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
       <header className="assistant-widget-header">
         <span className="assistant-widget-mark"><Sparkles size={17}/></span>
         <div className="assistant-widget-title"><strong>Ask Tally</strong><span>{assistantEnabled ? "Your private ledger assistant" : "Optional assistant"}</span></div>
-        <button type="button" className="assistant-widget-icon" aria-label="Close assistant" title="Close" onClick={closeAssistant}><X size={16}/></button>
+        <button ref={closeButton} type="button" className="assistant-widget-icon" aria-label="Close assistant" title="Close" onClick={closeAssistant}><X size={16}/></button>
       </header>
       {assistantEnabled ? <>
         <div ref={messageList} className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
@@ -321,12 +338,12 @@ export function AssistantWidget({ enabled, configured }: { enabled: boolean; con
       </>}
     </section>
     {assistantEnabled ? <form className={`assistant-widget-composer ${mode}`} onSubmit={(event) => void send(event)}>
-        <button type="button" className="assistant-widget-mode-button" aria-label={mode === "closed" ? "Open Tally assistant" : "Close message composer"} aria-expanded={panelOpen} aria-controls="assistant-widget-panel" hidden={mode === "chat"} onClick={() => mode === "closed" ? openAssistant() : closeAssistant()}>
+        <button ref={triggerButton} type="button" className="assistant-widget-mode-button" aria-label={mode === "closed" ? "Open Tally assistant" : "Close message composer"} aria-expanded={panelOpen} aria-controls="assistant-widget-panel" hidden={mode === "chat"} onClick={() => mode === "closed" ? openAssistant() : closeAssistant()}>
           {mode === "closed" ? <Sparkles size={19}/> : <X size={16}/>}
         </button>
         <label className="sr-only" htmlFor="assistant-widget-prompt" hidden={mode === "closed"}>Message Tally</label>
         <textarea ref={promptField} id="assistant-widget-prompt" aria-controls="assistant-widget-panel" rows={1} maxLength={2000} value={prompt} disabled={busy} hidden={mode === "closed"} onChange={(event) => setPrompt(event.target.value)} onKeyDown={onKeyDown} placeholder="Ask Tally anything…"/>
         <button className="assistant-widget-send" hidden={mode === "closed"} disabled={busy || !prompt.trim()} aria-label="Send message" title="Send"><Send size={16}/></button>
-      </form> : mode === "closed" ? <button type="button" className="assistant-widget-disabled-trigger" aria-label="Open Tally assistant" aria-expanded={panelOpen} aria-controls="assistant-widget-panel" onClick={() => setMode("chat")}><Sparkles size={19}/></button> : null}
+      </form> : mode === "closed" ? <button ref={triggerButton} type="button" className="assistant-widget-disabled-trigger" aria-label="Open Tally assistant" aria-expanded={panelOpen} aria-controls="assistant-widget-panel" onClick={() => setMode("chat")}><Sparkles size={19}/></button> : null}
   </div>;
 }
