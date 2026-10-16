@@ -1,6 +1,6 @@
 # Assistant Bill Scheduling Design
 
-- **Status:** Draft for owner review
+- **Status:** Approved for implementation planning
 - **Date:** 2026-10-16
 - **Scope:** Create and update finite recurring bills through the assistant while preserving the existing Bills scheduler and ledger behavior.
 
@@ -13,6 +13,7 @@ Let a user track a recurring bill in natural language, including a finite end da
 - A statement such as “I have a bill…” is intent to track it.
 - The bill name is inferred from the merchant and item.
 - The first due date is the schedule's start date. “Today” means the bill is due today and may create an expense immediately through the existing scheduler.
+- If the first due date is omitted, ask for it instead of defaulting to today, since a due-today bill may immediately create an expense.
 - Supported cadence remains weekly, monthly, or yearly. Ask when it is not stated.
 - Ask for the amount when missing; never infer it from unrelated context.
 - If an end date is stated as a month only, ask for the day. If a day is stated without a year, use the nearest upcoming date.
@@ -55,7 +56,7 @@ The assistant response confirms the bill name, amount, cadence, first due date, 
 ## Acceptance criteria
 
 1. A natural-language bill statement starts the create flow and extracts a useful merchant/item name.
-2. Missing amount, cadence, or exact end day is requested in one concise follow-up. A month/day without a year resolves to the nearest upcoming date.
+2. Missing amount, cadence, first due date, or exact end day is requested in one concise follow-up. A month/day without a year resolves to the nearest upcoming date.
 3. A complete schedule is saved without an extra confirmation, using the default account and inferred expense category when those are omitted.
 4. A bill due today creates its scheduled expense immediately through the current processor; the assistant reports a posting failure without claiming the expense was recorded.
 5. The end date is inclusive, no occurrence after it is posted, and the bill is archived after its final scheduled occurrence.
