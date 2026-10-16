@@ -106,6 +106,35 @@ describe("Bills API", () => {
     expect((await archive(request("POST", "https://tally.test/api/bills/" + bill.id + "/archive"), context(bill.id))).status).toBe(200);
   });
 
+  it("creates a finite bill", async () => {
+    const response = await POST(request("POST", "https://tally.test/api/bills", {
+      name: "Internet", amount: "25.00", frequency: "monthly", nextDueDate: "2099-01-31", endDate: "2099-02-28", accountId, categoryId,
+    }));
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).bill).toMatchObject({ name: "Internet", nextDueDate: "2099-01-31", endDate: "2099-02-28" });
+  });
+
+  it("preserves an omitted end date on partial edit", async () => {
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2099-01-31", endDate: "2099-02-28", accountId, categoryId });
+
+    const response = await PATCH(request("PATCH", `https://tally.test/api/bills/${bill.id}`, {
+      name: "Home internet", expectedNextDueDate: bill.nextDueDate,
+    }), context(bill.id));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).bill).toMatchObject({ name: "Home internet", endDate: "2099-02-28" });
+  });
+
+  it("rejects invalid and pre-start end dates", async () => {
+    const base = { name: "Internet", amount: "25.00", frequency: "monthly", nextDueDate: "2099-01-31", accountId, categoryId };
+    const invalid = await POST(request("POST", "https://tally.test/api/bills", { ...base, endDate: "2099-02-30" }));
+    const beforeStart = await POST(request("POST", "https://tally.test/api/bills", { ...base, endDate: "2099-01-30" }));
+
+    expect(invalid.status).toBe(400);
+    expect(beforeStart.status).toBe(400);
+  });
+
   it("rejects a stale edit after the due occurrence has posted", async () => {
     const bill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-10-09", accountId, categoryId });
     expect(store.processDueBills("2026-10-09").processed).toBe(1);

@@ -12,6 +12,13 @@ function providerTool(name: string, args: Record<string, unknown>) {
     headers: { "content-type": "application/json" },
   });
 }
+function assistantRequest(prompt: string, conversationId?: string) {
+  return new Request("https://tally.test/api/assistant", {
+    method: "POST",
+    headers: { origin: "https://tally.test", "content-type": "application/json" },
+    body: JSON.stringify({ prompt, ...(conversationId ? { conversationId } : {}) }),
+  });
+}
 
 const mocks = vi.hoisted(() => ({ getStore: vi.fn(), requireUser: vi.fn() }));
 
@@ -178,6 +185,447 @@ describe("assistant transaction capture", () => {
     const result = await response.json();
 
     expect(result.transaction).toMatchObject({ kind: "income", categoryName: "Salary", amountMinor: 500000 });
+  });
+});
+
+describe("assistant recurring bill capture", () => {
+  it("routes a descriptive bill statement into the bill flow when the provider suggests a transaction", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", {
+      kind: "expense", amount: "500", category: "Utilities", description: "Internet",
+    })));
+
+    const response = await POST(assistantRequest("I have a TikTok Shop VXE R1 Pro bill."));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toContain("cadence");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it.each([
+    ["I have a monthly Internet bill for ₱500 starting tomorrow through December 31.", "Internet"],
+    ["I have a monthly TikTok Shop VXE R1 Pro bill for ₱500 starting tomorrow through December 31.", "TikTok Shop VXE R1 Pro"],
+  ])("asks before updating a matching bill for '%s'", async (prompt, billName) => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    store.createBill(user.id, { name: billName, amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: null, accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("update_bill", {
+      name: billName, amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31",
+    })));
+
+    const response = await POST(assistantRequest(prompt));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toContain("add another");
+    expect(result.answer.toLowerCase()).toContain("update the existing");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toMatchObject([{ amountMinor: 2500, nextDueDate: "2026-11-09", endDate: null }]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it.each([
+    "I have a question about my electricity bill.",
+    "I have a question about bills.",
+    "I have a quick question about bills.",
+    "I have an urgent issue with my electricity bill.",
+    "I have a bill question about electricity.",
+    "Can you add up what I spent on my electricity bill?",
+  ])("keeps '%s' in the finance question flow", async (prompt) => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("finance_question", {
+      start: "2026-10-01", end: "2026-10-09", category: "Utilities",
+    })));
+
+    const response = await POST(assistantRequest(prompt));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Utilities");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it("lets a finance question interrupt a pending bill clarification", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerTool("create_bill", { name: "Internet" }))
+      .mockResolvedValueOnce(providerTool("finance_question", {
+        start: "2026-10-01", end: "2026-10-09", category: "Utilities",
+      })));
+
+    const first = await POST(assistantRequest("I have an Internet bill."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("How much did I spend on utilities this month?", conversationId));
+    const result = await second.json();
+
+    expect(result.answer).toContain("Utilities");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it("uses user-stated amount, cadence, and dates and defaults the account and expense category", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "tiktok shop vxe r1 pro", amount: "900", frequency: "yearly", nextDueDate: "2026-10-10", endDate: "2026-12-31",
+      account: "Missing account", category: "Food",
+    })));
+
+    const response = await POST(assistantRequest("I have a bill on TikTok Shop about VXE R1 Pro. It is ₱1,234.50 weekly, started today, and ends December 15."));
+    const result = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(result).toMatchObject({ transaction: null, debt: null, undoUntil: null, bill: {
+      name: "TikTok Shop VXE R1 Pro", amountMinor: 123450, frequency: "weekly", endDate: "2026-12-15",
+      accountName: "Wallet", categoryName: "Shopping",
+    } });
+    expect(result.answer).toContain("Oct 9");
+    expect(result.answer).toContain("Dec 15");
+    expect(result.answer).toContain("Wallet");
+    expect(result.answer).toContain("Shopping");
+    expect(store.listTransactions(user.id, { start: "2026-10-09", end: "2026-10-09" }, 10)).toMatchObject([{ kind: "expense", amountMinor: 123450, description: "TikTok Shop VXE R1 Pro" }]);
+  });
+
+  it("asks for all missing bill details together without writing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "What amount should I use?" })));
+
+    const response = await POST(assistantRequest("I have a bill on TikTok Shop about VXE R1 Pro."));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toContain("amount");
+    expect(result.answer.toLowerCase()).toContain("cadence");
+    expect(result.answer.toLowerCase()).toContain("first due date");
+    expect(result.answer.toLowerCase()).toContain("exact end date");
+    expect(result).toMatchObject({ bill: null, transaction: null, debt: null });
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it("asks for an omitted first due date instead of using today", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2026-11-30",
+    })));
+
+    const response = await POST(assistantRequest("I have a monthly Internet bill for ₱500 that ends November 30."));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toContain("first due date");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it("does not use one bare date reply for both missing schedule dates", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-10-20",
+    })));
+
+    const first = await POST(assistantRequest("I have a monthly Internet bill for ₱500."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("October 20", conversationId));
+    const result = await second.json();
+
+    expect(result.answer.toLowerCase()).toContain("first due date");
+    expect(result.answer.toLowerCase()).toContain("exact end date");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+  });
+
+  it("uses two unlabeled dates in order when both schedule dates were requested", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-12-15",
+    })));
+
+    const first = await POST(assistantRequest("I have a monthly Internet bill."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("500 monthly, October 20, December 15", conversationId));
+    const result = await second.json();
+
+    expect(result.bill).toMatchObject({ amountMinor: 50000, nextDueDate: "2026-10-20", endDate: "2026-12-15" });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("accepts a corrected first due date after rejecting a past date", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31",
+    })));
+
+    const first = await POST(assistantRequest("I have an Internet bill for ₱500 monthly starting yesterday through December 31."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("October 10", conversationId));
+    const result = await second.json();
+
+    expect(result.bill).toMatchObject({ name: "Internet", nextDueDate: "2026-10-10" });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("asks for an exact day when the end date names only a month", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2026-12-31",
+    })));
+
+    const response = await POST(assistantRequest("I have a monthly Internet bill for ₱500 starting today that ends in December."));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toContain("exact day");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it("uses a day-only reply to complete an end month clarification", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2026-12-31",
+    })));
+
+    const first = await POST(assistantRequest("I have a monthly Internet bill for ₱500 starting today that ends in December."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("15", conversationId));
+    const result = await second.json();
+
+    expect(result.bill).toMatchObject({ name: "Internet", endDate: "2026-12-15" });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("uses the nearest upcoming year for a month and day without a year", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2026-01-15",
+    })));
+
+    const response = await POST(assistantRequest("I have a monthly Internet bill for ₱500 starting today that ends January 15."));
+    const result = await response.json();
+
+    expect(result.bill).toMatchObject({ endDate: "2027-01-15" });
+  });
+
+  it("asks before creating when an exact normalized active name already exists", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Shopping")!;
+    const existing = store.createBill(user.id, { name: "TikTok Shop - VXE R1 Pro", amountMinor: 10000, frequency: "monthly", nextDueDate: "2026-11-09", endDate: "2027-12-31", accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "VXE R1 Pro", amount: "500", frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2026-12-15",
+    })));
+
+    const response = await POST(assistantRequest("I have a bill on TikTok Shop about VXE R1 Pro for ₱500 monthly starting today and ending December 15."));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toContain("add another");
+    expect(result.answer.toLowerCase()).toContain("update");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toHaveLength(1);
+    expect(store.listBills(user.id)[0].id).toBe(existing.id);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it("updates only the stated amount and leaves posted transactions unchanged", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2027-12-31", accountId: account.id, categoryId: category.id });
+    store.processDueBills("2026-10-09");
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("update_bill", {
+      name: "Internet", amount: "999", frequency: "yearly", nextDueDate: "2026-12-01", endDate: "2026-12-31",
+      account: "Missing account", category: "Food",
+    })));
+
+    const response = await POST(assistantRequest("Update the Internet bill amount to ₱30."));
+    const result = await response.json();
+
+    expect(result.bill).toMatchObject({ id: bill.id, amountMinor: 3000, frequency: "monthly", nextDueDate: "2026-11-09", endDate: "2027-12-31", accountId: account.id, categoryId: category.id });
+    expect(store.listTransactions(user.id, { start: "2026-10-09", end: "2026-10-09" }, 10)).toMatchObject([{ amountMinor: 2500, description: "Internet" }]);
+  });
+
+  it("clears a bill end date when the user explicitly asks to remove it", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: "2027-12-31", accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("update_bill", { name: "Internet", endDate: null })));
+
+    const response = await POST(assistantRequest("Remove the end date from the Internet bill."));
+    const result = await response.json();
+
+    expect(result.bill).toMatchObject({ id: bill.id, endDate: null });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("clears an end date when the provider selects create_bill for a removal request", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: "2027-12-31", accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", { name: "Internet", amount: "2500", endDate: null })));
+
+    const response = await POST(assistantRequest("Remove the end date from the Internet bill."));
+    const result = await response.json();
+
+    expect(result.bill).toMatchObject({ id: bill.id, endDate: null });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("creates a second matching schedule only after the user chooses add another", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: null, accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31",
+    })));
+
+    const first = await POST(assistantRequest("I have an Internet bill for ₱500 monthly starting tomorrow through December 31."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("Add another", conversationId));
+    const result = await second.json();
+
+    expect(result.bill).toMatchObject({ name: "Internet", amountMinor: 50000, endDate: "2026-12-31" });
+    expect(store.listBills(user.id)).toHaveLength(2);
+  });
+
+  it("updates a matching bill only after the user chooses update", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const existing = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: "2027-12-31", accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerTool("create_bill", { name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31" }))
+      .mockResolvedValueOnce(providerTool("update_bill", { name: "Internet", amount: "500" })));
+
+    const first = await POST(assistantRequest("I have an Internet bill for ₱500 monthly starting tomorrow through December 31."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("Update the existing one", conversationId));
+    const result = await second.json();
+
+    expect(result.bill).toMatchObject({ id: existing.id, amountMinor: 50000, frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31" });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("asks which exact active schedule to update when names match more than once", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: null, accountId: account.id, categoryId: category.id });
+    store.createBill(user.id, { name: "Internet", amountMinor: 3500, frequency: "monthly", nextDueDate: "2026-12-09", endDate: null, accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("update_bill", { name: "Internet", amount: "30" })));
+
+    const response = await POST(assistantRequest("Update the Internet bill amount to ₱30."));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toContain("which schedule");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id).map((bill) => bill.amountMinor)).toEqual([2500, 3500]);
+  });
+
+  it("requires a unique choice when matching schedules share a next due date", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const firstBill = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: null, accountId: account.id, categoryId: category.id });
+    const secondBill = store.createBill(user.id, { name: "Internet", amountMinor: 3500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: null, accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("update_bill", { name: "Internet", amount: "30" })));
+
+    const first = await POST(assistantRequest("Update the Internet bill amount to ₱30."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("2026-11-09", conversationId));
+    const secondResult = await second.json();
+
+    expect(secondResult.answer.toLowerCase()).toContain("which schedule");
+    expect(secondResult).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id).map((bill) => bill.amountMinor)).toEqual([2500, 3500]);
+
+    const third = await POST(assistantRequest("2", conversationId));
+    const result = await third.json();
+
+    expect(result.bill).toMatchObject({ id: secondBill.id, amountMinor: 3000 });
+    expect(store.listBills(user.id).find((bill) => bill.id === firstBill.id)?.amountMinor).toBe(2500);
+  });
+
+  it("asks for the user's bill name when it cannot be extracted before duplicate matching", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: null, accountId: account.id, categoryId: category.id });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31",
+    })));
+
+    const first = await POST(assistantRequest("I have a recurring bill."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("Internet", conversationId));
+    const result = await second.json();
+
+    expect(result.answer.toLowerCase()).toContain("add another");
+    expect(result.answer.toLowerCase()).toContain("update");
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("allows creating a new schedule when only an archived name match exists", async () => {
+    const account = store.listAccounts(user.id)[0];
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const archived = store.createBill(user.id, { name: "Internet", amountMinor: 2500, frequency: "monthly", nextDueDate: "2026-11-09", endDate: null, accountId: account.id, categoryId: category.id });
+    store.archiveBill(user.id, archived.id);
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31",
+    })));
+
+    const response = await POST(assistantRequest("I have an Internet bill for ₱500 monthly starting tomorrow through December 31."));
+    const result = await response.json();
+
+    expect(result.bill).toMatchObject({ name: "Internet", amountMinor: 50000, endDate: "2026-12-31" });
+    expect(store.listBills(user.id)).toHaveLength(2);
+    expect(store.listBills(user.id).find((bill) => bill.id === archived.id)?.archivedAt).toBeTruthy();
+  });
+
+  it.each([
+    ["an invalid amount", "I have an Internet bill for ₱0 monthly starting tomorrow through December 31."],
+    ["an invalid first due date", "I have an Internet bill for ₱500 monthly starting February 30, 2026 through December 31, 2026."],
+    ["a past first due date", "I have an Internet bill for ₱500 monthly starting yesterday through December 31."],
+  ])("asks before saving when the prompt contains %s", async (_case, prompt) => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31",
+    })));
+
+    const response = await POST(assistantRequest(prompt));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toMatch(/valid|positive|today or later/);
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
+  });
+
+  it("asks when the requested account or category cannot be resolved", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31", account: "Wallet", category: "Utilities",
+    })));
+
+    const response = await POST(assistantRequest("I have an Internet bill for ₱500 monthly starting tomorrow through December 31 using my Rainy Day account, category Special."));
+    const result = await response.json();
+
+    expect(result.answer.toLowerCase()).toMatch(/account|category/);
+    expect(result).toMatchObject({ bill: null, transaction: null });
+    expect(store.listBills(user.id)).toEqual([]);
+  });
+
+  it("uses a valid account and category supplied in the clarification reply", async () => {
+    const wallet = store.listAccounts(user.id)[0];
+    const utilities = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31", account: "Rainy Day", category: "Special",
+    })));
+
+    const first = await POST(assistantRequest("I have an Internet bill for ₱500 monthly starting tomorrow through December 31 using my Rainy Day account, category Special."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("Wallet, Utilities", conversationId));
+    const result = await second.json();
+
+    expect(result.bill).toMatchObject({ name: "Internet", accountId: wallet.id, categoryId: utilities.id });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
+  it("reports a retry warning when a due-today expense cannot be posted", async () => {
+    vi.spyOn(store, "processDueBills").mockImplementation(() => { throw new Error("temporary posting failure"); });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2026-12-31",
+    })));
+
+    const response = await POST(assistantRequest("I have an Internet bill for ₱500 monthly starting today through December 31."));
+    const result = await response.json();
+
+    expect(result.bill).toMatchObject({ name: "Internet", nextDueDate: "2026-10-09" });
+    expect(result.postingWarning).toContain("retry");
+    expect(result.answer).toContain(result.postingWarning);
+    expect(store.listTransactions(user.id, undefined, 10)).toEqual([]);
   });
 });
 

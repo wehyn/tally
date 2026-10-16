@@ -78,6 +78,50 @@ function debtTool(categories: { name: string; type: "income" | "expense" }[]) {
     },
   } as const;
 }
+function billTools(categories: { name: string; type: "income" | "expense" }[]) {
+  const expenseCategories = categories.filter((category) => category.type === "expense");
+  const scheduleProperties = {
+    amount: { type: "string", description: "Positive PHP amount as a decimal string." },
+    frequency: { type: "string", enum: ["weekly", "monthly", "yearly"] },
+    nextDueDate: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "First due date in YYYY-MM-DD format." },
+    account: { type: "string", description: "Optional account name; omit to use the default account." },
+    category: { type: "string", ...(expenseCategories.length ? { enum: expenseCategories.map((category) => category.name) } : {}), description: "Optional expense category." },
+  };
+  return [
+    {
+      type: "function",
+      function: {
+        name: "create_bill",
+        description: "Create a finite recurring bill after all required details are clear.",
+        parameters: {
+          type: "object", additionalProperties: false,
+          properties: {
+            name: { type: "string", maxLength: 100, description: "The merchant and item name for the bill." },
+            ...scheduleProperties,
+            endDate: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Required inclusive end date in YYYY-MM-DD format." },
+          },
+          required: ["name", "amount", "frequency", "nextDueDate", "endDate"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "update_bill",
+        description: "Update only the supplied fields on an existing recurring bill, identified by exact name.",
+        parameters: {
+          type: "object", additionalProperties: false,
+          properties: {
+            name: { type: "string", maxLength: 100, description: "The existing bill's full name; do not provide an ID." },
+            ...scheduleProperties,
+            endDate: { type: ["string", "null"], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Optional inclusive end date; null makes the schedule open-ended." },
+          },
+          required: ["name"],
+        },
+      },
+    },
+  ];
+}
 const debtPaymentTool = {
   type: "function",
   function: {
@@ -209,6 +253,9 @@ Role and boundaries:
 
 Action rules:
 - Use exactly one tool for each request.
+- Treat statements like “I have a bill” as intent to track a recurring bill, and infer its name from the merchant and item. For a new finite bill, require amount, cadence, first due date, and an exact end date. Ask for every missing detail together in one concise clarification, and do not create the bill until all are clear. Never default a missing first due date to today; “started today” means today. If the end date names only a month, ask for its day. If a month and day are given without a year, use the nearest upcoming date in Asia/Manila.
+- Keep bill cadence to weekly, monthly, or yearly. Use the default account and infer an expense category when possible; ask if either cannot be resolved. Save a complete bill without an extra confirmation.
+- For an existing bill, use update_bill with its full name and only the fields the user asked to change. The application checks active bill names locally and handles duplicate choices; do not invent a bill ID or guess which duplicate to update. Do not request or transmit the user's bill list.
 - For an ordinary transaction with a clear amount and category, call log_transaction immediately; do not ask for confirmation.
 - A debt statement alone never changes an account balance. Call log_debt for a new debt. Set recordTransaction to true only when the user explicitly asks to record the related money movement; otherwise leave it false. Never call log_transaction for the same debt advance.
 - When the user lent or fronted money and explicitly asks for a transaction, the movement is an expense. When the user borrowed money and explicitly asks for a transaction, the movement is income. Use the user's optional purpose as the description; a category and description may be omitted. The app uses the matching default category and account when omitted, and asks before writing if an explicitly named account or category is invalid.
@@ -234,7 +281,7 @@ Current date and time in Asia/Manila: ${currentDateTime}. Today's date is ${toda
       ...(input.history ?? []).slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
       debtSummaryMessage,
       { role: "user", content: input.prompt },
-    ], tools: [transactionTool(input.categories ?? []), debtTool(input.categories ?? []), debtPaymentTool, debtRepaymentTool, questionTool, clarificationTool], tool_choice: "required" }),
+    ], tools: [transactionTool(input.categories ?? []), debtTool(input.categories ?? []), debtPaymentTool, debtRepaymentTool, questionTool, ...billTools(input.categories ?? []), clarificationTool], tool_choice: "required" }),
     signal: AbortSignal.timeout(30_000), cache: "no-store",
   });
   if (!response.ok) throw new Error(`Assistant provider returned HTTP ${response.status}.`);

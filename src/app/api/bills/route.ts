@@ -10,7 +10,7 @@ const iconColor = z.string().refine(isBillIconColor, "Choose a valid six-digit h
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100), amount: z.string().max(24),
-  frequency: z.enum(["weekly", "monthly", "yearly"]), nextDueDate: z.string().length(10),
+  frequency: z.enum(["weekly", "monthly", "yearly"]), nextDueDate: z.string().length(10), endDate: z.string().length(10).nullable().optional(),
   accountId: z.string().min(1).max(100), categoryId: z.string().min(1).max(100), icon: z.enum(BILL_ICONS).default("calendar"),
   iconEmoji: iconEmoji.nullable().optional(), iconForegroundColor: iconColor.optional(), iconBackgroundColor: iconColor.optional(),
 });
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
     const input = await requestJson(request, schema);
     const store = getStore();
     let bill = store.createBill(user.id, {
-      name: input.name, amountMinor: parsePHPToMinor(input.amount), frequency: input.frequency, nextDueDate: input.nextDueDate,
+      name: input.name, amountMinor: parsePHPToMinor(input.amount), frequency: input.frequency, nextDueDate: input.nextDueDate, endDate: input.endDate,
       accountId: input.accountId, categoryId: input.categoryId, icon: input.icon, iconEmoji: input.iconEmoji,
       iconForegroundColor: input.iconForegroundColor, iconBackgroundColor: input.iconBackgroundColor,
     });

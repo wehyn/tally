@@ -11,7 +11,7 @@ const iconColor = z.string().refine(isBillIconColor, "Choose a valid six-digit h
 const schema = z.object({
   expectedNextDueDate: z.string().length(10),
   name: z.string().trim().min(1).max(100).optional(), amount: z.string().max(24).optional(),
-  frequency: z.enum(["weekly", "monthly", "yearly"]).optional(), nextDueDate: z.string().length(10).optional(),
+  frequency: z.enum(["weekly", "monthly", "yearly"]).optional(), nextDueDate: z.string().length(10).optional(), endDate: z.string().length(10).nullable().optional(),
   accountId: z.string().min(1).max(100).optional(), categoryId: z.string().min(1).max(100).optional(), icon: z.enum(BILL_ICONS).optional(),
   iconEmoji: iconEmoji.nullable().optional(), iconForegroundColor: iconColor.optional(), iconBackgroundColor: iconColor.optional(),
 }).refine((input) => Object.keys(input).some((field) => field !== "expectedNextDueDate"), "At least one bill field is required.");
