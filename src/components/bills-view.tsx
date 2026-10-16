@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import { Archive, CalendarDays, CarFront, ChevronDown, Cloud, CreditCard, Droplet, Fuel, GraduationCap, Dumbbell, Home, Music2, Pencil, Plus, ShieldCheck, ShoppingBag, Smartphone, Stethoscope, Trash2, Tv, Wifi, X, Zap, type LucideIcon } from "lucide-react";
 import { BILL_ICON_LOGO_PATHS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, selectBillIconPreset, type BillIcon } from "@/lib/bill-icons";
 import type { Account, Bill, Category } from "@/lib/store";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
+import { BILLS_UPDATED_EVENT } from "@/lib/client-events";
 import { ModalPresence } from "./modal-presence";
 
 const billIcons: { key: BillIcon; label: string; Icon?: LucideIcon }[] = [
@@ -33,13 +34,13 @@ function BillIconGlyph({ icon, emoji, size = 17 }: BillIconGlyphProps) {
 }
 const defaultIconStyle = { color: DEFAULT_BILL_ICON_FOREGROUND_COLOR, backgroundColor: DEFAULT_BILL_ICON_BACKGROUND_COLOR };
 type Draft = {
-  name: string; amount: string; frequency: Bill["frequency"]; nextDueDate: string; accountId: string; categoryId: string;
+  name: string; amount: string; frequency: Bill["frequency"]; nextDueDate: string; endDate: string; accountId: string; categoryId: string;
   icon: BillIcon; iconEmoji: string; iconForegroundColor: string; iconBackgroundColor: string;
 };
 const billDateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
 const formatBillDate = (date: string) => billDateFormatter.format(new Date(`${date}T00:00:00Z`));
 const blank = (accounts: Account[], categories: Category[]): Draft => ({
-  name: "", amount: "", frequency: "monthly", nextDueDate: todayInManila(), accountId: accounts[0]?.id ?? "", categoryId: categories[0]?.id ?? "",
+  name: "", amount: "", frequency: "monthly", nextDueDate: todayInManila(), endDate: "", accountId: accounts[0]?.id ?? "", categoryId: categories[0]?.id ?? "",
   icon: "calendar", iconEmoji: "", iconForegroundColor: DEFAULT_BILL_ICON_FOREGROUND_COLOR, iconBackgroundColor: DEFAULT_BILL_ICON_BACKGROUND_COLOR,
 });
 
@@ -55,17 +56,22 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
   const active = bills.filter((bill) => !bill.archivedAt).sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
   const archived = bills.filter((bill) => bill.archivedAt).sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     const response = await fetch("/api/bills");
     const result = await response.json();
     if (!response.ok) throw new Error(result.error ?? "Could not load bills.");
     setBills(result.bills);
-  }
+  }, []);
+  useEffect(() => {
+    const refreshAfterAssistantBill = () => { void refresh().catch(() => undefined); };
+    window.addEventListener(BILLS_UPDATED_EVENT, refreshAfterAssistantBill);
+    return () => window.removeEventListener(BILLS_UPDATED_EVENT, refreshAfterAssistantBill);
+  }, [refresh]);
   function create() { setEditing(null); setDraft(blank(accounts, categories)); setError(""); setOpen(true); }
   function edit(bill: Bill) {
     setEditing(bill);
     setDraft({
-      name: bill.name, amount: minorToInput(bill.amountMinor), frequency: bill.frequency, nextDueDate: bill.nextDueDate,
+      name: bill.name, amount: minorToInput(bill.amountMinor), frequency: bill.frequency, nextDueDate: bill.nextDueDate, endDate: bill.endDate ?? "",
       accountId: bill.accountId, categoryId: bill.categoryId, icon: bill.icon, iconEmoji: bill.iconEmoji ?? "",
       iconForegroundColor: bill.iconForegroundColor, iconBackgroundColor: bill.iconBackgroundColor,
     });
@@ -76,7 +82,7 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
     try {
       const response = await fetch(editing ? `/api/bills/${editing.id}` : "/api/bills", {
         method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-          ...draft, iconEmoji: draft.iconEmoji || null, ...(editing ? { expectedNextDueDate: editing.nextDueDate } : {}),
+          ...draft, endDate: draft.endDate || null, iconEmoji: draft.iconEmoji || null, ...(editing ? { expectedNextDueDate: editing.nextDueDate } : {}),
         }),
       });
       const result = await response.json();
@@ -103,9 +109,11 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
   function list(items: Bill[], isArchived = false) {
     return items.length ? <div className="activity-list">{items.map((bill) => {
       const nextDueDate = formatBillDate(bill.nextDueDate);
+      const ended = Boolean(bill.endDate && bill.nextDueDate > bill.endDate);
+      const postingPending = !isArchived && !ended && bill.nextDueDate <= today;
       return <article className="activity-row" key={bill.id}>
         <div className="activity-icon bill-row-icon" style={{ color: bill.iconForegroundColor, backgroundColor: bill.iconBackgroundColor }}><BillIconGlyph icon={bill.icon} emoji={bill.iconEmoji} size={16}/></div>
-        <div className="activity-copy"><strong>{bill.name}</strong><span>{bill.categoryName} · {bill.accountName}</span><span className={!isArchived && bill.nextDueDate <= today ? "badge badge-coral" : undefined}>{isArchived ? `Archived · next date was ${nextDueDate}` : bill.nextDueDate <= today ? `Posting pending · due ${nextDueDate}` : `Next due ${nextDueDate}`}</span></div>
+        <div className="activity-copy"><strong>{bill.name}</strong><span>{bill.categoryName} · {bill.accountName}</span><span className={postingPending ? "badge badge-coral" : undefined}>{isArchived ? `Archived · next date was ${nextDueDate}` : ended ? "Ended" : postingPending ? `Posting pending · due ${nextDueDate}` : `Next due ${nextDueDate}`}</span>{bill.endDate && <span>{ended ? isArchived ? "Ended" : "End date" : "Ends"} {formatBillDate(bill.endDate)}</span>}</div>
         <div className="activity-right"><strong>{formatPHP(bill.amountMinor)}</strong><div className="table-actions"><button className="icon-button" aria-label={`Edit ${bill.name}`} onClick={() => edit(bill)}><Pencil size={14}/></button>{!isArchived && <button className="icon-button" aria-label={`Archive ${bill.name}`} onClick={() => void archive(bill)}><Archive size={14}/></button>}</div></div>
       </article>;
     })}</div> : <div className="panel-empty">{isArchived ? "No archived bills." : "No bills yet. Add a recurring payment or subscription."}</div>;
@@ -133,6 +141,7 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
         <label className="field-label">Expected amount (PHP)<input required inputMode="decimal" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} placeholder="1,500.00"/></label>
         <label className="field-label">Frequency<select value={draft.frequency} onChange={(event) => setDraft({ ...draft, frequency: event.target.value as Draft["frequency"] })}><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>
         <label className="field-label">Next due date<input required type="date" value={draft.nextDueDate} onChange={(event) => setDraft({ ...draft, nextDueDate: event.target.value })}/></label>
+        <label className="field-label">End date (optional)<input name="endDate" type="date" value={draft.endDate} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })}/></label>
         <label className="field-label">Account<select required value={draft.accountId} onChange={(event) => setDraft({ ...draft, accountId: event.target.value })}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
         <label className="field-label">Expense category<select required value={draft.categoryId} onChange={(event) => setDraft({ ...draft, categoryId: event.target.value })}>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
       </div>{error && <p className="error-text" role="alert" style={{ marginTop: 12 }}>{error}</p>}<div className="modal-footer"><button type="button" className="button" onClick={() => setOpen(false)}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? "Saving…" : editing ? "Save changes" : "Create bill"}</button></div></form>

@@ -7,7 +7,7 @@ import { Bot, Send, Sparkles, Undo2, X } from "lucide-react";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { isUndoAvailable } from "@/lib/dates";
 import type { Debt } from "@/lib/store";
-import { ASSISTANT_SETTINGS_UPDATED_EVENT, DEBTS_UPDATED_EVENT, LEDGER_UPDATED_EVENT } from "@/lib/client-events";
+import { ASSISTANT_SETTINGS_UPDATED_EVENT, BILLS_UPDATED_EVENT, DEBTS_UPDATED_EVENT, LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 import { AssistantDatePicker, AssistantSelect } from "./assistant-transaction-controls";
 
 type AssistantTransaction = {
@@ -40,6 +40,8 @@ type AssistantResponse = {
   transaction?: AssistantTransaction | null;
   undoUntil?: string | null;
   debt?: Debt | null;
+  bill?: { id: string } | null;
+  postingWarning?: string;
 };
 
 let messageSequence = 0;
@@ -195,6 +197,10 @@ export function AssistantWidget({ enabled, configured, initialMode = "closed" }:
         transaction: result.transaction ? { ...result.transaction, undoUntil: result.undoUntil ?? result.transaction.undoUntil } : null,
       }]);
       if (result.transaction) window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
+      else if (result.bill) {
+        window.dispatchEvent(new Event(BILLS_UPDATED_EVENT));
+        window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
+      }
       if (result.debt) window.dispatchEvent(new CustomEvent<Debt>(DEBTS_UPDATED_EVENT, { detail: result.debt }));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Tally could not answer that.");

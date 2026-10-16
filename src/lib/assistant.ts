@@ -3,7 +3,7 @@ import { HttpError } from "@/lib/api";
 import { getStore } from "@/lib/db";
 import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } from "@/lib/dates";
 import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
-import type { Account, Debt, Transaction } from "@/lib/store";
+import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
@@ -99,6 +99,274 @@ function normalizeCategoryName(value: string): string {
 }
 function normalizeWords(value: string): string {
   return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+const billInquiryIntent = /\b(?:questions?|queries|inquir(?:y|ies)|issues?|problems?|concerns?|reminders?|notes?|complaints?)\b.{0,60}\bbills?\b|\bbills?\s+(?:questions?|queries|inquir(?:y|ies)|issues?|problems?|concerns?|reminders?|notes?|complaints?)\b/i;
+const describedBillPossessionIntent = /\b(?:i|we)\s+(?:have|need|want|got)\s+(?:a|an|the)\s+(?!no\b)(?:[\p{L}\p{N}'’.-]+\s+){1,12}bills?\b/iu;
+const billActionIntent = /\b(?:track|add(?!\s+up\b)|create|schedule|set up)\b.{0,60}\b(?:recurring\s+)?(?:bill|subscription)\b/i;
+function isBillPossessionIntent(text: string): boolean {
+  return !billInquiryIntent.test(text) && (
+    /\b(?:i|we)\s+(?:have|need|want|got)\s+(?:a\s+|the\s+)?(?:recurring\s+)?bills?\b/i.test(text)
+    || describedBillPossessionIntent.test(text)
+  );
+}
+function isBillTrackingIntent(text: string): boolean {
+  return isBillPossessionIntent(text)
+    || billActionIntent.test(text)
+    || /\b(?:update|edit|change)\b.{0,60}\bbill\b/i.test(text);
+}
+function isNewBillTrackingIntent(text: string): boolean {
+  return isBillPossessionIntent(text) || billActionIntent.test(text);
+}
+type BillDateHint = { mentioned: boolean; date?: string; monthOnly?: boolean; month?: number; invalid?: boolean };
+const billDateToken = "(?:\\d{4}-\\d{2}-\\d{2}|today|tomorrow|yesterday|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\\s+\\d{1,2}(?:,?\\s+\\d{4})?)?|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)";
+function parseBillDateToken(token: string, today: string): BillDateHint {
+  const value = token.trim().replace(/,$/, "");
+  const relative = /^(today|tomorrow|yesterday)$/i.exec(value)?.[1]?.toLowerCase();
+  if (relative) return { mentioned: true, date: shiftDate(today, relative === "tomorrow" ? 1 : relative === "yesterday" ? -1 : 0) };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return { mentioned: true, ...(isDateOnly(value) ? { date: value } : { invalid: true }) };
+  const namedMonth = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{1,2})(?:,?\s+(\d{4}))?)?$/i.exec(value);
+  let month: number; let day: number; let year: number;
+  if (namedMonth) {
+    const key = namedMonth[1].slice(0, 3).toLowerCase();
+    month = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(key) + 1;
+    if (!namedMonth[2]) return { mentioned: true, monthOnly: true, month };
+    day = Number(namedMonth[2]); year = namedMonth[3] ? Number(namedMonth[3]) : Number(today.slice(0, 4));
+  } else {
+    const numeric = /^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$/.exec(value);
+    if (!numeric) return { mentioned: true, invalid: true };
+    month = Number(numeric[1]); day = Number(numeric[2]);
+    year = numeric[3] ? Number(numeric[3]) : Number(today.slice(0, 4));
+    if (year < 100) year += 2000;
+  }
+  const makeDate = (selectedYear: number) => `${selectedYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  let date = makeDate(year);
+  if (!isDateOnly(date)) return { mentioned: true, invalid: true };
+  if (!namedMonth?.[3] && !(/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/.test(value)) && date < today) date = makeDate(year + 1);
+  if (!isDateOnly(date)) return { mentioned: true, invalid: true };
+  return { mentioned: true, date };
+}
+function billDateHint(messages: string[], kind: "start" | "end", followup: string, today: string): BillDateHint {
+  const context = kind === "start"
+    ? `(?:started|starts?|starting|began|begins?|beginning|first\\s+due(?:\\s+date)?|due(?:\\s+date)?)`
+    : `(?:ends?|ending|end(?:\\s+date)?|through|until|expires?)`;
+  let hint: BillDateHint = { mentioned: false };
+  for (const message of messages) {
+    const pattern = new RegExp(`\\b${context}\\s+(?:(?:is|on|in|date)\\s+)?(${billDateToken})`, "gi");
+    for (const match of message.matchAll(pattern)) hint = parseBillDateToken(match[1], today);
+  }
+  const asksForStart = /first due date|start date/i.test(followup);
+  const asksForEnd = /exact end date|end date|exact day/i.test(followup);
+  const asksForBothDates = asksForStart && asksForEnd;
+  const followupPrompt = asksForBothDates || (kind === "start" ? asksForStart : asksForEnd);
+  if (followupPrompt && messages.length) {
+    const latest = messages.at(-1)!.trim();
+    const currentHasContext = new RegExp(`\\b${context}\\s+(?:(?:is|on|in|date)\\s+)?(${billDateToken})`, "i").test(latest);
+    if (!currentHasContext) {
+      const tokens = [...latest.matchAll(new RegExp(`\\b(${billDateToken})\\b`, "gi"))];
+      const corrected = asksForBothDates
+        ? tokens.length === 2 ? parseBillDateToken(tokens[kind === "start" ? 0 : 1][1], today) : undefined
+        : tokens.length === 1 ? parseBillDateToken(tokens[0][1], today) : undefined;
+      if (corrected?.date || corrected?.monthOnly || corrected?.invalid) return corrected;
+      const day = kind === "end" && hint.monthOnly ? /^(\d{1,2})(?:st|nd|rd|th)?[.!]?$/i.exec(latest)?.[1] : undefined;
+      if (day && hint.month) {
+        const month = new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(2000, hint.month - 1, 1)));
+        return parseBillDateToken(`${month} ${day}`, today);
+      }
+    }
+  }
+  return hint;
+}
+function billAmountHint(messages: string[], followup: string): { mentioned: boolean; amountMinor?: number; invalid?: boolean; ambiguous?: boolean } {
+  const amountToken = "(\\d[\\d,]*(?:\\.\\d+)?)";
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const text = messages[index];
+    const labeled = [...text.matchAll(new RegExp(`\\b(?:for|amount(?:\\s+(?:is|of|to))?|cost(?:s)?(?:\\s+is)?|bill(?:\\s+is|\\s+of))\\s+(?:₱\\s*|\\bPHP\\s*)?${amountToken}`, "gi"))];
+    const matches = labeled.length ? labeled : [...text.matchAll(new RegExp(`(?:₱\\s*|\\bPHP\\s*)${amountToken}`, "gi"))];
+    if (!matches.length) continue;
+    if (matches.length > 1) return { mentioned: true, ambiguous: true };
+    const raw = matches[0][1];
+    try { return { mentioned: true, amountMinor: parsePHPToMinor(raw) }; }
+    catch { return { mentioned: true, invalid: true }; }
+  }
+  if (/what amount|how much|amount/i.test(followup) && messages.length) {
+    const reply = messages.at(-1)!;
+    const bare = bareAmountFromPrompt(reply);
+    if (bare !== undefined) return { mentioned: true, amountMinor: bare };
+    const dateFree = reply.replace(new RegExp(`\\b${billDateToken}\\b`, "gi"), " ");
+    const bareValues = [...dateFree.matchAll(new RegExp(`\\b${amountToken}\\b`, "g"))];
+    if (bareValues.length === 1) {
+      try { return { mentioned: true, amountMinor: parsePHPToMinor(bareValues[0][1]) }; }
+      catch { return { mentioned: true, invalid: true }; }
+    }
+  }
+  return { mentioned: false };
+}
+function billFrequencyHint(messages: string[]): { mentioned: boolean; frequency?: "weekly" | "monthly" | "yearly"; ambiguous?: boolean } {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const matches = [...messages[index].matchAll(/\b(weekly|monthly|yearly|annually|annual|every\s+week|every\s+month|every\s+year)\b/gi)];
+    if (!matches.length) continue;
+    const values = matches.map(([, value]) => /week/i.test(value) ? "weekly" : /month/i.test(value) ? "monthly" : "yearly");
+    const distinct = [...new Set(values)];
+    return distinct.length === 1 ? { mentioned: true, frequency: distinct[0] as "weekly" | "monthly" | "yearly" } : { mentioned: true, ambiguous: true };
+  }
+  return { mentioned: false };
+}
+function billNameFromMessages(messages: string[]): string {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    const match = /\b(?:have|need|want|got)\s+(?:a|an|the)\s+(?:(?:recurring|weekly|monthly|yearly)\s+)*(?!recurring\b|weekly\b|monthly\b|yearly\b)(.+?)\s+\bbill\b/i.exec(message)
+      ?? /\b(?:bill|subscription)\s+(?:for|on|at)\s+(.+?)(?=[,.!?]|$)/i.exec(message)
+      ?? /\b(?:from|of)\s+(?:the\s+)?(.+?)\s+\b(?:bill|subscription)\b/i.exec(message)
+      ?? /\b(?:update|edit|change|remove|clear|delete)\s+(?:the\s+)?(.+?)\s+\b(?:bill|subscription)\b/i.exec(message);
+    if (!match) continue;
+    return match[1].replace(/\bfor\s+(?:₱|PHP|\d).*$/i, "")
+      .replace(/\b(?:started|starting|began|begins|due|ends|ending|through|until|weekly|monthly|yearly|amount|end date)\b.*$/i, "")
+      .replace(/\b(?:about|the|a|an)\b/gi, " ").replace(/\s+/g, " ").trim().slice(0, 100);
+  }
+  return "";
+}
+function isBillChoice(text: string, choice: "add" | "update"): boolean {
+  return choice === "add" ? /\badd another\b/i.test(text) : /\bupdate (?:the )?(?:existing|current|existing one|one|bill)\b|\bupdate it\b/i.test(text);
+}
+function billScheduleDate(bill: Bill): string { return bill.nextDueDate; }
+type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?: string; needsFollowup: boolean };
+function handleAssistantBillAction(
+  store: ReturnType<typeof getStore>, userId: string, action: "create_bill" | "update_bill", args: Record<string, unknown>,
+  userMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: string,
+): AssistantBillResult {
+  const today = todayInManila();
+  const duplicateFollowup = /add another|update the existing|which schedule/i.test(followup);
+  const lastUserMessage = userMessages.at(-1) ?? "";
+  const explicitUpdate = /\b(?:update|edit|change|remove|clear|delete)\b.{0,60}\bbill\b/i.test(lastUserMessage);
+  const detailMessages = (action === "update_bill" || explicitUpdate) && !duplicateFollowup ? [lastUserMessage] : userMessages;
+  const amountHint = billAmountHint(detailMessages, followup);
+  const frequencyHint = billFrequencyHint(detailMessages);
+  const startHint = billDateHint(detailMessages, "start", followup, today);
+  const endHint = billDateHint(detailMessages, "end", followup, today);
+  const amountMinor = amountHint.amountMinor;
+  const frequency = frequencyHint.frequency;
+  const firstDueDate = startHint.date;
+  const endDate = endHint.date;
+  const nameFollowup = /what (?:full )?name should i use for this bill|what should i name this bill/i.test(followup);
+  const name = billNameFromMessages(userMessages) || (nameFollowup ? lastUserMessage.trim() : "");
+  if (!name) return { answer: "What full name should I use for this bill?", bill: null, needsFollowup: true };
+  if (name.length > 100) return { answer: "Please shorten the bill name to 100 characters or fewer.", bill: null, needsFollowup: true };
+
+  const normalizedName = normalizeWords(name);
+  const matching = store.listBills(userId).filter((bill) => !bill.archivedAt && normalizeWords(bill.name) === normalizedName);
+  const addChoice = duplicateFollowup && isBillChoice(lastUserMessage, "add");
+  const updateChoice = duplicateFollowup && isBillChoice(lastUserMessage, "update");
+  let effectiveAction = userMessages.some(isNewBillTrackingIntent) && !duplicateFollowup ? "create_bill" : action;
+  let selected: Bill | undefined;
+
+  if (duplicateFollowup && addChoice) effectiveAction = "create_bill";
+  if (duplicateFollowup && updateChoice) effectiveAction = "update_bill";
+  if (effectiveAction === "create_bill" && matching.length && explicitUpdate) effectiveAction = "update_bill";
+  const removeEndDate = effectiveAction === "update_bill" && /\b(?:remove|clear|delete|unset)\b.{0,30}\b(?:end|ending) date\b|\b(?:end|ending) date\b.{0,30}\b(?:remove|clear|delete|unset)\b|\bmake (?:it|this bill) open[- ]ended\b|\b(?:no|without) end date\b/i.test(lastUserMessage);
+  if (effectiveAction === "create_bill" && matching.length && !addChoice) {
+    const options = matching.length > 1 ? ` Current schedules: ${matching.map((bill) => `${bill.nextDueDate} (${formatPHP(bill.amountMinor)} · ${bill.accountName})`).join("; ")}.` : "";
+    return { answer: `An active bill named “${name}” already exists. Would you like to add another or update the existing bill?${options}`, bill: null, needsFollowup: true };
+  }
+  if (effectiveAction === "update_bill") {
+    if (!matching.length) return { answer: `I couldn't find an active bill named “${name}” to update.`, bill: null, needsFollowup: true };
+    if (matching.length === 1) selected = matching[0];
+    else {
+      const selectionPending = /which schedule/i.test(followup);
+      const choice = /^\s*(\d+)\s*[.!]?\s*$/.exec(lastUserMessage)?.[1];
+      const choiceIndex = choice ? Number(choice) - 1 : -1;
+      selected = selectionPending && choiceIndex >= 0 && choiceIndex < matching.length ? matching[choiceIndex] : undefined;
+      if (selectionPending && !selected) {
+        const dateMatches = matching.filter((bill) => lastUserMessage.includes(billScheduleDate(bill)));
+        if (dateMatches.length === 1) selected = dateMatches[0];
+      }
+      if (!selected) return { answer: `Which schedule should I update? Reply with its number: ${matching.map((bill, index) => `${index + 1}) ${bill.nextDueDate} (${formatPHP(bill.amountMinor)} · ${bill.accountName})`).join("; ")}.`, bill: null, needsFollowup: true };
+    }
+  }
+
+  if (amountHint.invalid) return { answer: "Please provide a valid positive PHP amount with up to two decimal places.", bill: null, needsFollowup: true };
+  if (amountHint.ambiguous) return { answer: "I found more than one PHP amount. Which amount is for this bill?", bill: null, needsFollowup: true };
+  if (frequencyHint.ambiguous) return { answer: "Which bill cadence should I use: weekly, monthly, or yearly?", bill: null, needsFollowup: true };
+  if (startHint.invalid || startHint.monthOnly) return { answer: "What valid first due date should I use? Please give an exact day.", bill: null, needsFollowup: true };
+  if (firstDueDate && firstDueDate < today) return { answer: "The first due date must be today or later. What date should I use?", bill: null, needsFollowup: true };
+  if (endHint.monthOnly) {
+    const month = endHint.month ? new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(2000, endHint.month - 1, 1))) : "that month";
+    return { answer: `What exact day in ${month} should the bill end?`, bill: null, needsFollowup: true };
+  }
+  if (endHint.invalid) return { answer: "What valid exact end date should I use?", bill: null, needsFollowup: true };
+  if (effectiveAction === "create_bill" && firstDueDate && endDate && endDate < firstDueDate) {
+    return { answer: "The end date must be on or after the first due date. What exact end date should I use?", bill: null, needsFollowup: true };
+  }
+
+  const accountCorrection = /\baccount\b/i.test(followup)
+    ? accounts.find((candidate) => ` ${normalizeWords(lastUserMessage)} `.includes(` ${normalizeWords(candidate.name)} `))
+      ?? (/^default(?: account)?$/i.test(lastUserMessage.trim()) ? accounts.find((candidate) => candidate.isDefault) : undefined)
+    : undefined;
+  const accountHint = accountCorrection ? { account: accountCorrection, mentioned: true } : accountHintFromMessages(detailMessages, accounts);
+  const account = accountHint.mentioned ? accountHint.account
+    : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
+      : accounts.find((candidate) => candidate.isDefault);
+  const categoryHint = latestCategoryHintFromMessages(detailMessages, categories, "expense");
+  const requestedCategory = typeof args.category === "string" ? findCategory(args.category, categories, "expense") : undefined;
+  const inferredCategory = findCategoryInText(detailMessages.join(" "), categories, "expense")
+    ?? guessCategory(`${detailMessages.join(" ")} ${name}`, categories);
+  const category = categoryHint.mentioned ? categoryHint.category
+    : effectiveAction === "update_bill" ? categories.find((candidate) => candidate.id === selected?.categoryId)
+      : inferredCategory ?? requestedCategory;
+
+  const missing: string[] = [];
+  if (!amountHint.mentioned && effectiveAction === "create_bill") missing.push("an amount");
+  if (!frequencyHint.mentioned && effectiveAction === "create_bill") missing.push("a cadence (weekly, monthly, or yearly)");
+  if (!startHint.mentioned && effectiveAction === "create_bill") missing.push("the first due date");
+  if (!endHint.mentioned && effectiveAction === "create_bill") missing.push("an exact end date");
+  if (!accounts.length && effectiveAction === "create_bill") missing.push("a financial account");
+  else if (!account && (effectiveAction === "create_bill" || accountHint.mentioned)) missing.push(accountHint.invalidName ? `a valid account (I couldn't find “${accountHint.invalidName}”)` : "a default account");
+  if (!category && (effectiveAction === "create_bill" || categoryHint.mentioned)) missing.push(categoryHint.mentioned ? "a valid expense category" : "an expense category I can infer");
+  if (effectiveAction === "create_bill" && missing.length) return { answer: `Please provide ${missing.join(", ")}.`, bill: null, needsFollowup: true };
+  if (effectiveAction === "update_bill" && (!amountHint.mentioned && !frequencyHint.mentioned && !startHint.mentioned && !endHint.mentioned && !removeEndDate && !accountHint.mentioned && !categoryHint.mentioned)) {
+    return { answer: "What should I change on this bill?", bill: null, needsFollowup: true };
+  }
+  if (!account && accountHint.mentioned) return { answer: `I couldn't find the account “${accountHint.invalidName ?? ""}”. Choose one of your accounts: ${accounts.map((item) => item.name).join(", ")}.`, bill: null, needsFollowup: true };
+  if (!account && effectiveAction === "create_bill") return { answer: !accounts.length ? "Create a financial account first, then I can save this bill." : "Set a default financial account in Accounts before saving this bill.", bill: null, needsFollowup: true };
+  if (!category && categoryHint.mentioned) return { answer: "Which expense category should I use? Choose one from your categories.", bill: null, needsFollowup: true };
+  if (!category && effectiveAction === "create_bill") return { answer: "Which expense category should I use? Choose one from your expense categories.", bill: null, needsFollowup: true };
+  if (effectiveAction === "create_bill" && (amountMinor === undefined || !frequency || !firstDueDate || !endDate)) {
+    const missingDetails = [amountMinor === undefined ? "amount" : "", !frequency ? "cadence" : "", !firstDueDate ? "first due date" : "", !endDate ? "exact end date" : ""].filter(Boolean);
+    return { answer: `Please provide the ${missingDetails.join(", ")}.`, bill: null, needsFollowup: true };
+  }
+
+  const createInput: BillInput = {
+    name, amountMinor: amountMinor!, frequency: frequency!, nextDueDate: firstDueDate!, endDate: endDate!, accountId: account!.id, categoryId: category!.id,
+  };
+  const updateInput: Partial<BillInput> = {
+    ...(amountHint.mentioned ? { amountMinor: amountMinor! } : {}),
+    ...(frequencyHint.mentioned ? { frequency: frequency! } : {}),
+    ...(startHint.mentioned ? { nextDueDate: firstDueDate! } : {}),
+    ...(removeEndDate ? { endDate: null } : endHint.mentioned ? { endDate: endDate! } : {}),
+    ...(accountHint.mentioned ? { accountId: account!.id } : {}),
+    ...(categoryHint.mentioned ? { categoryId: category!.id } : {}),
+  };
+  let bill: Bill;
+  try {
+    bill = effectiveAction === "create_bill" ? store.createBill(userId, createInput) : store.updateBill(userId, selected!.id, updateInput, selected!.nextDueDate);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The bill could not be saved.";
+    return { answer: `${message} Please check the schedule details and try again.`, bill: null, needsFollowup: true };
+  }
+
+  const savedDueDate = bill.nextDueDate;
+  let postingWarning: string | undefined;
+  if (bill.nextDueDate <= today && !bill.archivedAt) {
+    try {
+      const result = store.processDueBills(today);
+      if (result.failures.some((failure) => failure.billId === bill.id)) postingWarning = "The bill was saved, but its due expense could not be recorded. Tally will retry automatically.";
+    } catch {
+      postingWarning = "The bill was saved, but its due expense could not be recorded. Tally will retry automatically.";
+    }
+    bill = store.listBills(userId).find((item) => item.id === bill.id) ?? bill;
+  }
+  const dateSummary = `${effectiveAction === "create_bill" ? "First due" : "Next due"} ${formatAssistantDate(savedDueDate)}${bill.endDate ? ` · ends ${formatAssistantDate(bill.endDate)}` : ""}`;
+  const answer = `${effectiveAction === "create_bill" ? "Saved" : "Updated"} ${bill.name}: ${formatPHP(bill.amountMinor)} ${bill.frequency} using ${bill.accountName} and ${bill.categoryName}. ${dateSummary}.${postingWarning ? ` ${postingWarning}` : ""}`;
+  return { answer, bill, ...(postingWarning ? { postingWarning } : {}), needsFollowup: false };
 }
 function normalizeCounterparty(value: string): string {
   return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}-]+/gu, " ").replace(/\s+/g, " ").trim();
@@ -233,6 +501,7 @@ function findCategoryInText(text: string, categories: AssistantCategory[], prefe
 function guessCategory(text: string, categories: AssistantCategory[]): AssistantCategory | undefined {
   const rules: [RegExp, string, AssistantCategory["type"]][] = [
     [/\b(food|lunch|dinner|breakfast|coffee|restaurant|jollibee|meal|grocer)\b/i, "Food", "expense"],
+    [/\b(shopping|shop|store|retail|online order)\b/i, "Shopping", "expense"],
     [/\b(transport|transpor(?:tation|attion)|commut(?:e|ing)|transit|bus|train|taxi|grab|jeep|fare|fuel|gasoline)\b/i, "Transport", "expense"],
     [/\b(rent|mortgage|condo)\b/i, "Housing", "expense"], [/\b(electric|water|internet|utility)\b/i, "Utilities", "expense"],
     [/\b(doctor|medicine|pharmacy|clinic|hospital)\b/i, "Health", "expense"], [/\b(school|tuition|book|course)\b/i, "Education", "expense"],
@@ -495,8 +764,17 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
     }
 
-    let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let undoUntil: string | null = null; let needsFollowup = false;
-    if (call.name === "ask_clarification") { answer = safeClarification(call.args.question); needsFollowup = true; }
+    const billFollowupPending = history.some((message) => message.role === "user" && isBillTrackingIntent(message.content))
+      && /^(?:please provide|what should i name this bill|what exact day|what valid first due|what valid exact end|the first due date|the end date must|an active bill|which schedule|what should i change|i couldn't find an active bill|which expense category|i couldn't find the account|set a default financial account)/i.test(lastAssistantFollowup);
+    const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && providerCall.name !== "finance_question");
+    if (billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
+
+    let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let needsFollowup = false;
+    if (call.name === "create_bill" || call.name === "update_bill") {
+      const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, accounts, categories, lastAssistantFollowup);
+      answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; needsFollowup = result.needsFollowup;
+    }
+    else if (call.name === "ask_clarification") { answer = safeClarification(call.args.question); needsFollowup = true; }
     else if (call.name === "finance_question") {
       const defaultRange = monthToDateRange();
       const start = typeof call.args.start === "string" && isDateOnly(call.args.start) ? call.args.start : defaultRange.start;
@@ -770,5 +1048,5 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; needsFollowup = false; }
     else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; needsFollowup = false; }
     store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, needsFollowup);
-    return { conversationId, answer, transaction, undoUntil, debt };
+    return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
 }

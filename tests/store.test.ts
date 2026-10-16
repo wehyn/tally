@@ -420,6 +420,57 @@ describe("Shortcut credential storage", () => {
 });
 
 describe("recurring bills", () => {
+  it("migrates legacy bills as open-ended without changing their schedule or transactions", () => {
+    const user = store.registerUser("bill_end_date_migration", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 10000 });
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 1500, frequency: "monthly", nextDueDate: "2099-01-31", accountId: account.id, categoryId: category.id });
+    const transaction = store.createTransaction(user.id, { kind: "expense", amountMinor: 1500, accountId: account.id, categoryId: category.id, description: "Internet", date: "2098-12-31" });
+    const billColumns = database.pragma("table_info(bills)") as { name: string }[];
+    if (billColumns.some((column) => column.name === "end_date")) database.exec("ALTER TABLE bills DROP COLUMN end_date");
+
+    store.migrate();
+
+    expect(store.listBills(user.id)).toContainEqual(expect.objectContaining({ id: bill.id, endDate: null, nextDueDate: "2099-01-31", frequency: "monthly" }));
+    expect(store.listTransactions(user.id, { start: "2098-12-31", end: "2098-12-31" }, 10)).toContainEqual(expect.objectContaining({ id: transaction.id, description: "Internet", date: "2098-12-31" }));
+  });
+
+  it("posts the final occurrence on the inclusive end date and archives afterward", () => {
+    const user = store.registerUser("bill_inclusive_end", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 10000 });
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 1500, frequency: "monthly", nextDueDate: "2099-01-31", endDate: "2099-02-28", accountId: account.id, categoryId: category.id });
+
+    const result = store.processDueBills("2099-03-31");
+
+    expect(result).toMatchObject({ processed: 2, failures: [] });
+    expect(store.listTransactions(user.id, { start: "2099-01-01", end: "2099-03-31" }, 10, { kind: "expense" }).map((item) => item.date)).toEqual(["2099-02-28", "2099-01-31"]);
+    expect(store.listBills(user.id)).toContainEqual(expect.objectContaining({ id: bill.id, archivedAt: expect.any(String), nextDueDate: "2099-03-31", endDate: "2099-02-28" }));
+  });
+
+  it("archives immediately when an updated end date precedes the next due date", () => {
+    const user = store.registerUser("bill_update_end", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 10000 });
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Internet", amountMinor: 1500, frequency: "monthly", nextDueDate: "2099-01-31", accountId: account.id, categoryId: category.id });
+
+    const updated = store.updateBill(user.id, bill.id, { endDate: "2099-01-30" }, bill.nextDueDate);
+
+    expect(updated).toMatchObject({ endDate: "2099-01-30", archivedAt: expect.any(String), nextDueDate: "2099-01-31" });
+    expect(store.processDueBills("2099-02-28")).toMatchObject({ processed: 0, failures: [] });
+    expect(store.listTransactions(user.id, { start: "2099-01-01", end: "2099-02-28" }, 10, { kind: "expense" })).toEqual([]);
+  });
+
+  it("rejects an invalid end date or one before the first due date", () => {
+    const user = store.registerUser("bill_end_validation", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const category = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    const input = { name: "Internet", amountMinor: 1500, frequency: "monthly" as const, nextDueDate: "2099-01-31", accountId: account.id, categoryId: category.id };
+
+    expect(() => store.createBill(user.id, { ...input, endDate: "2099-02-30" })).toThrow(/date/i);
+    expect(() => store.createBill(user.id, { ...input, endDate: "2099-01-30" })).toThrow(/end date/i);
+  });
+
   it("persists a selected icon and defaults omitted icons to Calendar", () => {
     const user = store.registerUser("bill_icons", "hash");
     const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });

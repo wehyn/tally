@@ -18,9 +18,9 @@ const logos = [
 ];
 
 const brandBills: Bill[] = [
-  { id: "netflix", name: "Netflix", amountMinor: 15900, frequency: "monthly", nextDueDate: "2099-01-01", anchorDay: 1, anchorMonth: 1, accountId: "account", categoryId: "category", accountName: "Wallet", categoryName: "Subscriptions", archivedAt: null, icon: "netflix", iconEmoji: null, iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0" },
-  { id: "shopee", name: "Shopee", amountMinor: 2500, frequency: "monthly", nextDueDate: "2099-02-01", anchorDay: 1, anchorMonth: 2, accountId: "account", categoryId: "category", accountName: "Wallet", categoryName: "Shopping", archivedAt: null, icon: "shopee", iconEmoji: null, iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0" },
-  { id: "pldt", name: "PLDT", amountMinor: 169900, frequency: "monthly", nextDueDate: "2099-03-01", anchorDay: 1, anchorMonth: 3, accountId: "account", categoryId: "category", accountName: "Wallet", categoryName: "Internet", archivedAt: null, icon: "pldt", iconEmoji: null, iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0" },
+  { id: "netflix", name: "Netflix", amountMinor: 15900, frequency: "monthly", nextDueDate: "2099-01-01", endDate: null, anchorDay: 1, anchorMonth: 1, accountId: "account", categoryId: "category", accountName: "Wallet", categoryName: "Subscriptions", archivedAt: null, icon: "netflix", iconEmoji: null, iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0" },
+  { id: "shopee", name: "Shopee", amountMinor: 2500, frequency: "monthly", nextDueDate: "2099-02-01", endDate: null, anchorDay: 1, anchorMonth: 2, accountId: "account", categoryId: "category", accountName: "Wallet", categoryName: "Shopping", archivedAt: null, icon: "shopee", iconEmoji: null, iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0" },
+  { id: "pldt", name: "PLDT", amountMinor: 169900, frequency: "monthly", nextDueDate: "2099-03-01", endDate: null, anchorDay: 1, anchorMonth: 3, accountId: "account", categoryId: "category", accountName: "Wallet", categoryName: "Internet", archivedAt: null, icon: "pldt", iconEmoji: null, iconForegroundColor: "#5e9872", iconBackgroundColor: "#f0f5f0" },
 ];
 
 describe("bill icon emoji validation", () => {
