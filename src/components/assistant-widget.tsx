@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Bot, Send, Sparkles, Undo2, X } from "lucide-react";
+import { Bot, Undo2 } from "lucide-react";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { isUndoAvailable } from "@/lib/dates";
 import type { Debt } from "@/lib/store";
@@ -32,7 +31,8 @@ type ChatMessage = {
   content: string;
   transaction?: AssistantTransaction | null;
 };
-type AssistantMode = "closed" | "composing" | "chat";
+export type AssistantMode = "closed" | "composing" | "chat";
+export type AssistantAvailability = { enabled: boolean; configured: boolean };
 type AssistantResponse = {
   error?: string;
   conversationId?: string;
@@ -49,28 +49,89 @@ function nextMessageId() {
   return `assistant-${Date.now()}-${++messageSequence}`;
 }
 
-export function AssistantWidget({ enabled, configured, initialMode = "closed" }: { enabled: boolean; configured: boolean; initialMode?: AssistantMode }) {
-  const [mode, setMode] = useState<AssistantMode>(initialMode);
+type AssistantWidgetProps = {
+  enabled: boolean;
+  configured: boolean;
+  mode: AssistantMode;
+  prompt: string;
+  onPromptChange: (prompt: string) => void;
+  onAvailabilityChange: (availability: AssistantAvailability) => void;
+  onBusyChange: (busy: boolean) => void;
+  onConversationStarted: () => void;
+  onReady: () => void;
+  onSubmitReady: (submit: (() => void) | null) => void;
+};
+
+export function AssistantWidget({
+  enabled,
+  configured,
+  mode,
+  prompt,
+  onPromptChange,
+  onAvailabilityChange,
+  onBusyChange,
+  onConversationStarted,
+  onReady,
+  onSubmitReady,
+}: AssistantWidgetProps) {
   const [assistantEnabled, setAssistantEnabled] = useState(enabled);
   const [assistantConfigured, setAssistantConfigured] = useState(configured);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [transactionOptions, setTransactionOptions] = useState<{ accounts: AssistantAccount[]; categories: AssistantCategory[] } | null>(null);
   const [savingTransactionId, setSavingTransactionId] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(0);
   const [openTransactionControl, setOpenTransactionControl] = useState<string | null>(null);
-  const closeButton = useRef<HTMLButtonElement>(null);
-  const triggerButton = useRef<HTMLButtonElement>(null);
-  const restoreComposerFocus = useRef(false);
   const messageList = useRef<HTMLDivElement>(null);
-  const promptField = useRef<HTMLTextAreaElement>(null);
-  const previousMode = useRef(mode);
-  const panelOpen = mode === "chat" || (!assistantEnabled && mode === "composing");
+  const submitAction = useRef<() => void>(() => undefined);
   const transactionIds = messages.flatMap((message) => message.transaction ? [message.transaction.id] : []).join(",");
   const hasTransaction = Boolean(transactionIds);
+
+  const send = useCallback(async () => {
+    const text = prompt.trim();
+    if (!text || busy || !assistantEnabled) return;
+    onConversationStarted();
+    onPromptChange("");
+    setNotice("");
+    setMessages((previous) => [...previous, { id: nextMessageId(), role: "user", content: text }]);
+    setBusy(true);
+    onBusyChange(true);
+    try {
+      const response = await fetch("/api/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: text, ...(conversationId ? { conversationId } : {}) }),
+      });
+      const result = await response.json() as AssistantResponse;
+      if (!response.ok) throw new Error(result.error ?? "Tally could not answer that.");
+      if (!result.conversationId || !result.answer) throw new Error("Tally returned an incomplete answer. Please try again.");
+      setConversationId(result.conversationId);
+      setNow(Date.now());
+      setMessages((previous) => [...previous, {
+        id: nextMessageId(),
+        role: "assistant",
+        content: result.answer!,
+        transaction: result.transaction ? { ...result.transaction, undoUntil: result.undoUntil ?? result.transaction.undoUntil } : null,
+      }]);
+      if (result.transaction) window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
+      else if (result.bill) {
+        window.dispatchEvent(new Event(BILLS_UPDATED_EVENT));
+        window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
+      }
+      if (result.debt) window.dispatchEvent(new CustomEvent<Debt>(DEBTS_UPDATED_EVENT, { detail: result.debt }));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Tally could not answer that.");
+    } finally {
+      setBusy(false);
+      onBusyChange(false);
+    }
+  }, [assistantEnabled, busy, conversationId, onBusyChange, onConversationStarted, onPromptChange, prompt]);
+
+  useEffect(() => {
+    submitAction.current = () => { void send(); };
+  }, [send]);
 
   useEffect(() => {
     if (mode === "closed") return;
@@ -88,6 +149,16 @@ export function AssistantWidget({ enabled, configured, initialMode = "closed" }:
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, [mode]);
+
+  useEffect(() => {
+    onAvailabilityChange({ enabled: assistantEnabled, configured: assistantConfigured });
+  }, [assistantEnabled, assistantConfigured, onAvailabilityChange]);
+
+  useEffect(() => {
+    onSubmitReady(() => submitAction.current());
+    onReady();
+    return () => onSubmitReady(null);
+  }, [onReady, onSubmitReady]);
 
   useEffect(() => {
     const refreshAssistantStatus = () => {
@@ -133,22 +204,6 @@ export function AssistantWidget({ enabled, configured, initialMode = "closed" }:
   }, [mode, messages, busy]);
 
   useEffect(() => {
-    if (mode === "composing" && assistantEnabled) promptField.current?.focus({ preventScroll: true });
-  }, [mode, assistantEnabled]);
-
-  useEffect(() => {
-    if (mode === "chat" && previousMode.current !== "composing") closeButton.current?.focus({ preventScroll: true });
-    else if (mode === "closed" && previousMode.current !== "closed") triggerButton.current?.focus({ preventScroll: true });
-    previousMode.current = mode;
-  }, [mode]);
-
-  useEffect(() => {
-    if (busy || !restoreComposerFocus.current) return;
-    promptField.current?.focus({ preventScroll: true });
-    restoreComposerFocus.current = false;
-  }, [busy]);
-
-  useEffect(() => {
     const undoDeadlines = messages.flatMap((message) => message.transaction?.undoUntil ? [message.transaction.undoUntil] : []);
     if (!undoDeadlines.some((deadline) => isUndoAvailable(deadline, Date.now()))) return;
     const timer = window.setInterval(() => {
@@ -158,56 +213,6 @@ export function AssistantWidget({ enabled, configured, initialMode = "closed" }:
     }, 1000);
     return () => window.clearInterval(timer);
   }, [messages]);
-
-  function openAssistant() {
-    if (!assistantEnabled) setMode("chat");
-    else setMode(messages.length || window.matchMedia("(max-width: 900px)").matches ? "chat" : "composing");
-  }
-
-  function closeAssistant() {
-    setOpenTransactionControl(null);
-    setMode("closed");
-  }
-
-  async function send(event?: FormEvent) {
-    event?.preventDefault();
-    const text = prompt.trim();
-    if (!text || busy || !assistantEnabled) return;
-    restoreComposerFocus.current = true;
-    setMode("chat");
-    setPrompt("");
-    setNotice("");
-    setMessages((previous) => [...previous, { id: nextMessageId(), role: "user", content: text }]);
-    setBusy(true);
-    try {
-      const response = await fetch("/api/assistant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: text, ...(conversationId ? { conversationId } : {}) }),
-      });
-      const result = await response.json() as AssistantResponse;
-      if (!response.ok) throw new Error(result.error ?? "Tally could not answer that.");
-      if (!result.conversationId || !result.answer) throw new Error("Tally returned an incomplete answer. Please try again.");
-      setConversationId(result.conversationId);
-      setNow(Date.now());
-      setMessages((previous) => [...previous, {
-        id: nextMessageId(),
-        role: "assistant",
-        content: result.answer!,
-        transaction: result.transaction ? { ...result.transaction, undoUntil: result.undoUntil ?? result.transaction.undoUntil } : null,
-      }]);
-      if (result.transaction) window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
-      else if (result.bill) {
-        window.dispatchEvent(new Event(BILLS_UPDATED_EVENT));
-        window.dispatchEvent(new Event(LEDGER_UPDATED_EVENT));
-      }
-      if (result.debt) window.dispatchEvent(new CustomEvent<Debt>(DEBTS_UPDATED_EVENT, { detail: result.debt }));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Tally could not answer that.");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function undo(transactionId: string) {
     try {
@@ -265,25 +270,7 @@ export function AssistantWidget({ enabled, configured, initialMode = "closed" }:
     }
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Escape" && mode !== "closed") {
-      event.preventDefault();
-      closeAssistant();
-    } else if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void send();
-    }
-  }
-
-  return <div className={`assistant-widget ${mode}`}>
-    <section id="assistant-widget-panel" className={`assistant-widget-panel ${assistantEnabled ? "has-composer" : ""}`} data-open={panelOpen} role="dialog" aria-modal="false" aria-label="Tally assistant" aria-hidden={!panelOpen} inert={!panelOpen} onKeyDown={(event) => { if (event.key === "Escape") closeAssistant(); }}>
-      <header className="assistant-widget-header">
-        <span className="assistant-widget-mark"><Sparkles size={17}/></span>
-        <div className="assistant-widget-title"><strong>Ask Tally</strong><span>{assistantEnabled ? "Your private ledger assistant" : "Optional assistant"}</span></div>
-        <button ref={closeButton} type="button" className="assistant-widget-icon" aria-label="Close assistant" title="Close" onClick={closeAssistant}><X size={16}/></button>
-      </header>
-      {assistantEnabled ? <>
-        <div ref={messageList} className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
+  return assistantEnabled ? <div ref={messageList} className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
           {messages.length ? messages.map((message) => message.transaction ? <article className="chat-transaction-card" key={message.id} aria-label="Recorded transaction">
             <strong className={`chat-transaction-amount ${message.transaction.kind === "income" ? "positive" : "negative"}`}>{formatPHP(message.transaction.amountMinor)}</strong>
             <span className="chat-transaction-description">{message.transaction.description || "No description"}</span>
@@ -334,22 +321,9 @@ export function AssistantWidget({ enabled, configured, initialMode = "closed" }:
             <span className="chat-typing-dot" aria-hidden="true"/>
           </div>}
           {notice && <p className="assistant-widget-notice" role="status">{notice}</p>}
-        </div>
-      </> : <>
-        <div className="assistant-widget-disabled">
-          <p><strong>{assistantConfigured ? "The assistant is off until you opt in." : "The assistant is not configured."}</strong></p>
-          <p>{assistantConfigured ? "Review the provider and retention disclosure in Settings, then enable the assistant if you agree." : "The instance operator must configure the provider and its privacy disclosure."}</p>
-          <Link className="button button-small" href="/settings">Open Settings</Link>
-        </div>
-      </>}
-    </section>
-    {assistantEnabled ? <form className={`assistant-widget-composer ${mode}`} onSubmit={(event) => void send(event)}>
-        <button ref={triggerButton} type="button" className="assistant-widget-mode-button" aria-label={mode === "closed" ? "Open Tally assistant" : "Close message composer"} aria-expanded={panelOpen} aria-controls="assistant-widget-panel" hidden={mode === "chat"} onClick={() => mode === "closed" ? openAssistant() : closeAssistant()}>
-          {mode === "closed" ? <Sparkles size={19}/> : <X size={16}/>}
-        </button>
-        <label className="sr-only" htmlFor="assistant-widget-prompt" hidden={mode === "closed"}>Message Tally</label>
-        <textarea ref={promptField} id="assistant-widget-prompt" aria-controls="assistant-widget-panel" rows={1} maxLength={2000} value={prompt} disabled={busy} hidden={mode === "closed"} onChange={(event) => setPrompt(event.target.value)} onKeyDown={onKeyDown} placeholder="Ask Tally anything…"/>
-        <button className="assistant-widget-send" hidden={mode === "closed"} disabled={busy || !prompt.trim()} aria-label="Send message" title="Send"><Send size={16}/></button>
-      </form> : mode === "closed" ? <button ref={triggerButton} type="button" className="assistant-widget-disabled-trigger" aria-label="Open Tally assistant" aria-expanded={panelOpen} aria-controls="assistant-widget-panel" onClick={() => setMode("chat")}><Sparkles size={19}/></button> : null}
+  </div> : <div className="assistant-widget-disabled">
+    <p><strong>{assistantConfigured ? "The assistant is off until you opt in." : "The assistant is not configured."}</strong></p>
+    <p>{assistantConfigured ? "Review the provider and retention disclosure in Settings, then enable the assistant if you agree." : "The instance operator must configure the provider and its privacy disclosure."}</p>
+    <Link className="button button-small" href="/settings">Open Settings</Link>
   </div>;
 }

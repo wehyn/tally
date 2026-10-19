@@ -4,7 +4,12 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AssistantWidget } from "../src/components/assistant-widget";
+import { AppShell } from "../src/components/app-shell";
+import type { PublicUser } from "../src/lib/store";
+
+vi.mock("next/link", () => ({ default: "a" }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
+vi.mock("../src/components/sign-out-button", () => ({ SignOutButton: () => null }));
 
 /* Exercise the public assistant chat flow to verify bill saves refresh Bills and the ledger without a transaction card. */
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -13,6 +18,19 @@ let container: HTMLDivElement;
 let root: Root;
 const originalScrollTo = HTMLElement.prototype.scrollTo;
 const originalMatchMedia = window.matchMedia;
+const previewUser = {
+  id: "user-1",
+  username: "Mina",
+  role: "user",
+  enabled: true,
+  assistantOptIn: true,
+  createdAt: "2026-10-11T00:00:00.000Z",
+} satisfies PublicUser;
+
+function renderAssistantShell() {
+  const props = { user: previewUser, assistantEnabled: true, assistantConfigured: true } as Parameters<typeof AppShell>[0];
+  root.render(createElement(AppShell, props, null));
+}
 
 beforeEach(() => {
   container = document.createElement("div");
@@ -45,9 +63,12 @@ describe("AssistantWidget bill saves", () => {
       : { ok: true, json: async () => ({ conversationId: "conversation-1", answer: "Saved Internet through Dec 31.", bill: { id: "bill-1" }, transaction: null, undoUntil: null }) }));
     const user = userEvent.setup();
     await act(async () => {
-      root.render(createElement(AssistantWidget, { enabled: true, configured: true, initialMode: "composing" }));
+      renderAssistantShell();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+
+    await act(async () => user.click(container.querySelector<HTMLButtonElement>('[aria-label="Open Tally assistant"]')!));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 
     await act(async () => {
       await user.type(container.querySelector<HTMLTextAreaElement>("#assistant-widget-prompt")!, "Add Internet bill");
