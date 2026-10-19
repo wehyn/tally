@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { CalendarDays, LayoutDashboard, Send, Settings, Shield, Sparkles, Wallet, X } from "lucide-react";
 import { flushSync } from "react-dom";
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { PublicUser } from "@/lib/store";
 import {
   ASSISTANT_SETTINGS_UPDATED_EVENT,
@@ -15,6 +15,7 @@ import { SignOutButton } from "./sign-out-button";
 import type { AssistantMode } from "./assistant-widget";
 
 type AssistantPresentation = Exclude<AssistantMode, "closed">;
+type RouteEntrySnapshot = { pathname: string; cards: HTMLElement[] };
 type AssistantOpening =
   | { kind: "closed" }
   | { kind: "opening"; mode: AssistantPresentation }
@@ -70,8 +71,50 @@ const pageLabels = [
   { href: "/goals", label: "Shared goals" },
 ];
 const accountNavigation = [{ href: "/settings", label: "Settings", icon: Settings }];
+const PAGE_CARD_SELECTOR = ".page-stack .panel, .page-stack .stat-card, .page-stack .account-card, .page-stack .goal-card, .page-stack .admin-card, .page-stack .debt-summary-card, .page-stack .section-destination";
+const PAGE_CARD_EXCLUSION_SELECTOR = ".archived-disclosure, .category-manager-collapsible, .modal-backdrop, .modal-card";
+
+function usePageCardEntry(pathname: string): RefObject<HTMLElement | null> {
+  const pageContentRef = useRef<HTMLElement>(null);
+  const activeAnimations = useRef<Animation[]>([]);
+
+  useLayoutEffect(() => {
+    const pageContent = pageContentRef.current;
+    if (!pageContent) return;
+
+    const cards = Array.from(pageContent.querySelectorAll<HTMLElement>(PAGE_CARD_SELECTOR)).filter((card) => {
+      const ancestorCard = card.parentElement?.closest(PAGE_CARD_SELECTOR);
+      return card.getClientRects().length > 0
+        && getComputedStyle(card).visibility !== "hidden"
+        && !card.closest(PAGE_CARD_EXCLUSION_SELECTOR)
+        && !(ancestorCard && pageContent.contains(ancestorCard));
+    });
+    const snapshot: RouteEntrySnapshot = { pathname, cards };
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || typeof Element.prototype.animate !== "function") return;
+
+    activeAnimations.current = snapshot.cards.map((card, index) => card.animate([
+      { opacity: 0.88, transform: "translateY(5px)" },
+      { opacity: 1, transform: "translateY(0)" },
+    ], {
+      duration: 220,
+      delay: Math.min(index * 28, 112),
+      easing: "cubic-bezier(.22,.8,.2,1)",
+      fill: "backwards",
+    }));
+
+    return () => {
+      activeAnimations.current.forEach((animation) => animation.cancel());
+      activeAnimations.current = [];
+    };
+  }, [pathname]);
+
+  return pageContentRef;
+}
+
 export function AppShell({ user, children, assistantEnabled, assistantConfigured }: { user: PublicUser; children: ReactNode; assistantEnabled: boolean; assistantConfigured: boolean }) {
   const active = usePathname();
+  const pageContentRef = usePageCardEntry(active);
   const [assistantLoaded, setAssistantLoaded] = useState(false);
   const [assistantOpening, setAssistantOpening] = useState<AssistantOpening>({ kind: "closed" });
   const [assistantAccess, setAssistantAccess] = useState<AssistantAvailability>({ enabled: assistantEnabled, configured: assistantConfigured });
@@ -207,7 +250,7 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
           {accountEntries.map(({ href, label, icon: Icon }) => <Link href={href} className="account-menu-link" key={href} aria-current={active === href ? "page" : undefined} onNavigate={() => document.getElementById("account-menu")?.hidePopover()}><Icon size={16} aria-hidden="true"/><span>{label}</span></Link>)}
         </nav>
       </div>
-      <main className="page-content">{children}</main>
+      <main ref={pageContentRef} className="page-content">{children}</main>
     </div>
     <div className="mobile-controls">
       <nav className="mobile-nav" aria-label="Mobile navigation">{navigation.map(({ href, label, icon: Icon, routes }) => {
