@@ -6,8 +6,13 @@ import { CalendarDays, LayoutDashboard, Send, Settings, Shield, Sparkles, Wallet
 import { flushSync } from "react-dom";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { PublicUser } from "@/lib/store";
+import {
+  ASSISTANT_SETTINGS_UPDATED_EVENT,
+  assistantAvailabilityFromEvent,
+  type AssistantAvailability,
+} from "@/lib/client-events";
 import { SignOutButton } from "./sign-out-button";
-import type { AssistantAvailability, AssistantMode } from "./assistant-widget";
+import type { AssistantMode } from "./assistant-widget";
 
 type AssistantPresentation = Exclude<AssistantMode, "closed">;
 type AssistantOpening =
@@ -91,6 +96,14 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
   const handleAssistantAvailability = useCallback((availability: AssistantAvailability) => {
     setAssistantAccess((current) => current.enabled === availability.enabled && current.configured === availability.configured ? current : availability);
   }, []);
+  useEffect(() => {
+    const updateAssistantAvailability = (event: Event) => {
+      const availability = assistantAvailabilityFromEvent(event);
+      if (availability) handleAssistantAvailability(availability);
+    };
+    window.addEventListener(ASSISTANT_SETTINGS_UPDATED_EVENT, updateAssistantAvailability);
+    return () => window.removeEventListener(ASSISTANT_SETTINGS_UPDATED_EVENT, updateAssistantAvailability);
+  }, [handleAssistantAvailability]);
   const handleAssistantBusy = useCallback((busy: boolean) => setAssistantBusy(busy), []);
   const handleAssistantSubmitReady = useCallback((submit: (() => void) | null) => {
     assistantSubmit.current = submit;

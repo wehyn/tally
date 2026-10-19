@@ -6,7 +6,13 @@ import { Bot, Undo2 } from "lucide-react";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { isUndoAvailable } from "@/lib/dates";
 import type { Debt } from "@/lib/store";
-import { ASSISTANT_SETTINGS_UPDATED_EVENT, BILLS_UPDATED_EVENT, DEBTS_UPDATED_EVENT, LEDGER_UPDATED_EVENT } from "@/lib/client-events";
+import {
+  ASSISTANT_SETTINGS_UPDATED_EVENT,
+  BILLS_UPDATED_EVENT,
+  DEBTS_UPDATED_EVENT,
+  LEDGER_UPDATED_EVENT,
+  type AssistantAvailability,
+} from "@/lib/client-events";
 import { AssistantDatePicker, AssistantSelect } from "./assistant-transaction-controls";
 
 type AssistantTransaction = {
@@ -32,7 +38,6 @@ type ChatMessage = {
   transaction?: AssistantTransaction | null;
 };
 export type AssistantMode = "closed" | "composing" | "chat";
-export type AssistantAvailability = { enabled: boolean; configured: boolean };
 type AssistantResponse = {
   error?: string;
   conversationId?: string;
