@@ -61,6 +61,7 @@ const weekdayLabels = [
 
 const monthFormatter = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 const dateFormatter = new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+const compactAmountFormatter = new Intl.NumberFormat("en-PH", { notation: "compact", maximumFractionDigits: 1 });
 
 function formatMonth(month: CalendarMonth): string {
   return monthFormatter.format(new Date(`${month}-01T00:00:00.000Z`));
@@ -72,14 +73,24 @@ function formatCalendarDate(date: string): string {
 
 function CalendarAmount({ kind, amountMinor }: { kind: "income" | "spending"; amountMinor: number }) {
   const formatted = formatPHP(amountMinor);
+  const exactAmount = formatted.slice(1);
+  const ungroupedAmount = exactAmount.replaceAll(",", "");
+  const compactAmount = compactAmountFormatter.format(amountMinor / 100);
+  const compactOnMobile = ungroupedAmount.length > 7;
+  const compactOnNarrowMobile = ungroupedAmount.length > 6;
   const income = kind === "income";
   return <span
-    className={`month-calendar-total ${income ? "income" : "spending"}`}
+    className={`month-calendar-total ${income ? "income" : "spending"}${compactOnMobile ? " compact-on-mobile" : ""}${compactOnNarrowMobile ? " compact-on-narrow-mobile" : ""}`}
     aria-label={`${income ? "Income, plus" : "Spending, minus"} ${formatted}`}
+    title={formatted}
   >
     <span aria-hidden="true">{income ? "+" : "−"}</span>
     <span className="month-calendar-currency" aria-hidden="true">₱</span>
-    <span aria-hidden="true">{formatted.slice(1)}</span>
+    <span aria-hidden="true">
+      <span className="month-calendar-total-exact">{exactAmount}</span>
+      <span className="month-calendar-total-ungrouped">{ungroupedAmount}</span>
+      {compactOnNarrowMobile ? <span className="month-calendar-total-compact">{compactAmount}</span> : null}
+    </span>
   </span>;
 }
 
