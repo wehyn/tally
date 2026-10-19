@@ -8,9 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("next/link", () => ({ default: "a" }));
 
 import { AppShell } from "../src/components/app-shell";
+import { SettingsView } from "../src/components/settings-view";
 import type { PublicUser } from "../src/lib/store";
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/dashboard",
+  useRouter: () => ({ refresh: vi.fn(), replace: vi.fn() }),
+}));
 vi.mock("../src/components/sign-out-button", () => ({ SignOutButton: () => null }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -89,6 +93,61 @@ describe("Assistant composer focus", () => {
 
     await act(async () => user.keyboard("{Escape}"));
     expect(document.activeElement).toBe(launcher);
+  });
+
+  it("focuses the prompt on the first mobile open after enabling assistant access in Settings", async () => {
+    let assistantOptIn = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/settings" && init?.method === "PATCH") assistantOptIn = true;
+      return {
+        ok: true,
+        json: async () => String(input) === "/api/settings"
+          ? {
+              assistantOptIn,
+              provider: { configured: true, baseUrl: "http://provider.invalid", model: "test", disclosure: "Test disclosure." },
+              disclosureHash: "test-disclosure",
+              shortcutCredentialActive: false,
+            }
+          : { assistantOptIn },
+      };
+    }));
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((media: string) => ({
+      matches: media === "(max-width: 900px)",
+      media,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) });
+    const user = userEvent.setup();
+    const props = { user: previewUser, assistantEnabled: false, assistantConfigured: false } as Parameters<typeof AppShell>[0];
+
+    await act(async () => {
+      root.render(createElement(AppShell, props, createElement(SettingsView, { user: { id: previewUser.id, role: previewUser.role } })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const consent = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const settingsSwitch = container.querySelector<HTMLButtonElement>('[aria-label="Enable hosted assistant"]')!;
+    await act(async () => {
+      await user.click(consent);
+      await user.click(settingsSwitch);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(settingsSwitch.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(settingsSwitch);
+
+    const launcher = container.querySelector<HTMLButtonElement>('[aria-label="Open Tally assistant"]')!;
+    await act(async () => {
+      await user.click(launcher);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const prompt = container.querySelector<HTMLTextAreaElement>("#assistant-widget-prompt")!;
+    expect(document.activeElement).toBe(prompt);
   });
 
   it.each(["Enter", "Send button"] as const)("returns focus to the composer after submitting with %s", async (submitBy) => {
