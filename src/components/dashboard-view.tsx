@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, Landmark, Wallet } from "lucide-react";
 import { CategoryGlyph } from "@/components/category-glyph";
+import { DashboardCalendar } from "@/components/dashboard-calendar";
 import { formatPHP, formatPHPFromMinorString } from "@/lib/money";
 import { monthToDateRange } from "@/lib/dates";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
+import type { CalendarSeed } from "@/lib/dashboard-calendar";
 import type { Store } from "@/lib/store";
 
 type Dashboard = ReturnType<Store["getDashboard"]>;
@@ -16,7 +18,7 @@ const formatWeight = (basisPoints: number) => `${(basisPoints / 100).toFixed(2)}
 const periodDateFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "2-digit", year: "numeric", timeZone: "UTC" });
 const formatPeriodDate = (date: string) => date ? periodDateFormatter.format(new Date(`${date}T00:00:00.000Z`)) : "Select date";
 
-export function DashboardView({ initial }: { initial: Dashboard }) {
+export function DashboardView({ initial, initialCalendar }: { initial: Dashboard; initialCalendar?: CalendarSeed }) {
   const [data, setData] = useState(initial);
   const [start, setStart] = useState(initial.start);
   const [end, setEnd] = useState(initial.end);
@@ -54,6 +56,8 @@ export function DashboardView({ initial }: { initial: Dashboard }) {
       <article className="stat-card"><div className="stat-top"><span>Spending</span><span className="stat-icon coral-light"><ArrowUpRight size={18}/></span></div><strong className="stat-value">{formatPHP(data.spendingMinor)}</strong></article>
       <article className="stat-card"><div className="stat-top"><span>Net activity</span><span className="stat-icon violet-light"><ArrowLeftRight size={18}/></span></div><strong className={`stat-value ${data.incomeMinor - data.spendingMinor < 0 ? "negative" : ""}`}>{formatPHP(data.incomeMinor - data.spendingMinor)}</strong></article>
     </section>
+
+    {initialCalendar ? <DashboardCalendar initial={initialCalendar}/> : null}
 
     <article className="panel assets-panel" aria-labelledby="assets-heading">
       <div className="panel-heading assets-heading"><div><h2 id="assets-heading">Assets <span>· {formatPHPFromMinorString(data.assetTotalMinor)}</span></h2></div><Link href="/accounts" className="quiet-link">View accounts</Link></div>
