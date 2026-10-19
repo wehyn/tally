@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Bot, KeyRound, ShieldCheck, Trash2, X } from "lucide-react";
 import type { PublicUser } from "@/lib/store";
-import { ASSISTANT_SETTINGS_UPDATED_EVENT } from "@/lib/client-events";
+import { ASSISTANT_SETTINGS_UPDATED_EVENT, type AssistantAvailability } from "@/lib/client-events";
 import { ModalPresence } from "./modal-presence";
 
 type Provider={configured:boolean;baseUrl:string|null;model:string|null;disclosure:string|null};type AdminUser={id:string;username:string;role:string;enabled:boolean;createdAt:string};
@@ -23,7 +23,31 @@ export function SettingsView({user}:{user:Pick<PublicUser,"id"|"role">}){
   }).catch(()=>{if(!controller.signal.aborted)setError("Could not load settings.");}).finally(()=>{if(!controller.signal.aborted)setLoading(false);});
   return()=>controller.abort();
  },[user.role]);
- async function toggleAssistant(){setError("");setNotice("");if(!optIn&&!confirmed){setError("Read the full provider disclosure and check the consent box before enabling.");return;}const response=await fetch("/api/settings",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({assistantOptIn:!optIn,confirmedDisclosureHash:!optIn?hash:undefined})});const result=await response.json();if(!response.ok){setError(result.error??"Could not update assistant setting.");return;}setOptIn(result.assistantOptIn);setConfirmed(false);setNotice(result.assistantOptIn?"Assistant enabled for this provider disclosure.":"Assistant disabled.");window.dispatchEvent(new Event(ASSISTANT_SETTINGS_UPDATED_EVENT));}
+ async function toggleAssistant() {
+  setError("");
+  setNotice("");
+  if (!optIn && !confirmed) {
+   setError("Read the full provider disclosure and check the consent box before enabling.");
+   return;
+  }
+  const response = await fetch("/api/settings", {
+   method: "PATCH",
+   headers: { "Content-Type": "application/json" },
+   body: JSON.stringify({ assistantOptIn: !optIn, confirmedDisclosureHash: !optIn ? hash : undefined }),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+   setError(result.error ?? "Could not update assistant setting.");
+   return;
+  }
+  const assistantOptIn = result.assistantOptIn === true;
+  const configured = provider?.configured === true;
+  setOptIn(assistantOptIn);
+  setConfirmed(false);
+  setNotice(assistantOptIn ? "Assistant enabled for this provider disclosure." : "Assistant disabled.");
+  const availability: AssistantAvailability = { enabled: assistantOptIn && configured, configured };
+  window.dispatchEvent(new CustomEvent<AssistantAvailability>(ASSISTANT_SETTINGS_UPDATED_EVENT, { detail: availability }));
+ }
  async function updateShortcutCredential(method:"POST"|"DELETE"){setError("");setNotice("");setShortcutBusy(true);try{const response=await fetch("/api/settings/shortcut-credential",{method});const result=await response.json();if(!response.ok)throw new Error(result.error??"Could not update Shortcut credential.");setShortcutCredentialActive(method==="POST");setShortcutSecret(method==="POST"?result.credential:"");setNotice(method==="POST"?"Copy this credential into Shortcuts now. It will not be shown again.":"Shortcut credential revoked.");}catch(err){setError(err instanceof Error?err.message:"Could not update Shortcut credential.");}finally{setShortcutBusy(false);}}
  async function copyShortcutSecret(){try{await navigator.clipboard.writeText(shortcutSecret);setNotice("Shortcut credential copied.");}catch{setError("Copy failed. Select and copy the credential from the field.");}}
  async function deleteAccount(){setError("");setDeleting(true);try{const response=await fetch("/api/account",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({password,...(handoff?{adminHandoffTo:handoff}:{})})});const result=await response.json();if(!response.ok)throw new Error(result.error??"Could not delete account.");router.replace("/register");router.refresh();}catch(err){setError(err instanceof Error?err.message:"Could not delete account.");}finally{setDeleting(false);}}

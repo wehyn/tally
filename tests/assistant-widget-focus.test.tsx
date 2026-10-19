@@ -7,7 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/link", () => ({ default: "a" }));
 
-import { AssistantWidget } from "../src/components/assistant-widget";
+import { AppShell } from "../src/components/app-shell";
+import { SettingsView } from "../src/components/settings-view";
+import type { PublicUser } from "../src/lib/store";
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/dashboard",
+  useRouter: () => ({ refresh: vi.fn(), replace: vi.fn() }),
+}));
+vi.mock("../src/components/sign-out-button", () => ({ SignOutButton: () => null }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -15,6 +23,19 @@ let container: HTMLDivElement;
 let root: Root;
 const originalScrollTo = HTMLElement.prototype.scrollTo;
 const originalMatchMedia = window.matchMedia;
+const previewUser = {
+  id: "user-1",
+  username: "Mina",
+  role: "user",
+  enabled: true,
+  assistantOptIn: true,
+  createdAt: "2026-10-11T00:00:00.000Z",
+} satisfies PublicUser;
+
+function renderAssistantShell() {
+  const props = { user: previewUser, assistantEnabled: true, assistantConfigured: true } as Parameters<typeof AppShell>[0];
+  root.render(createElement(AppShell, props, null));
+}
 
 beforeEach(() => {
   container = document.createElement("div");
@@ -33,7 +54,7 @@ beforeEach(() => {
   })) });
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
     ok: true,
-    json: async () => ({ assistantOptIn: false, provider: { configured: false } }),
+    json: async () => ({ assistantOptIn: true, provider: { configured: true } }),
   }));
 });
 
@@ -47,21 +68,86 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("AssistantWidget focus", () => {
-  it("focuses the open chat and returns focus to its launcher when closed", async () => {
+describe("Assistant composer focus", () => {
+  it("focuses the mobile prompt on first open and restores the launcher after Escape", async () => {
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((media: string) => ({
+      matches: media === "(max-width: 900px)",
+      media,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) });
     const user = userEvent.setup();
     await act(async () => {
-      root.render(createElement(AssistantWidget, { enabled: false, configured: false, initialMode: "chat" }));
-      await Promise.resolve();
+      renderAssistantShell();
     });
 
-    const close = container.querySelector<HTMLButtonElement>('[aria-label="Close assistant"]')!;
-    expect(document.activeElement).toBe(close);
+    const launcher = container.querySelector<HTMLButtonElement>('[aria-label="Open Tally assistant"]')!;
+    await act(async () => user.click(launcher));
 
-    await act(async () => user.click(close));
+    const prompt = container.querySelector<HTMLTextAreaElement>("#assistant-widget-prompt")!;
+    expect(document.activeElement).toBe(prompt);
+
+    await act(async () => user.keyboard("{Escape}"));
+    expect(document.activeElement).toBe(launcher);
+  });
+
+  it("focuses the prompt on the first mobile open after enabling assistant access in Settings", async () => {
+    let assistantOptIn = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/settings" && init?.method === "PATCH") assistantOptIn = true;
+      return {
+        ok: true,
+        json: async () => String(input) === "/api/settings"
+          ? {
+              assistantOptIn,
+              provider: { configured: true, baseUrl: "http://provider.invalid", model: "test", disclosure: "Test disclosure." },
+              disclosureHash: "test-disclosure",
+              shortcutCredentialActive: false,
+            }
+          : { assistantOptIn },
+      };
+    }));
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((media: string) => ({
+      matches: media === "(max-width: 900px)",
+      media,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) });
+    const user = userEvent.setup();
+    const props = { user: previewUser, assistantEnabled: false, assistantConfigured: false } as Parameters<typeof AppShell>[0];
+
+    await act(async () => {
+      root.render(createElement(AppShell, props, createElement(SettingsView, { user: { id: previewUser.id, role: previewUser.role } })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const consent = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const settingsSwitch = container.querySelector<HTMLButtonElement>('[aria-label="Enable hosted assistant"]')!;
+    await act(async () => {
+      await user.click(consent);
+      await user.click(settingsSwitch);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(settingsSwitch.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(settingsSwitch);
 
     const launcher = container.querySelector<HTMLButtonElement>('[aria-label="Open Tally assistant"]')!;
-    expect(document.activeElement).toBe(launcher);
+    await act(async () => {
+      await user.click(launcher);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const prompt = container.querySelector<HTMLTextAreaElement>("#assistant-widget-prompt")!;
+    expect(document.activeElement).toBe(prompt);
   });
 
   it.each(["Enter", "Send button"] as const)("returns focus to the composer after submitting with %s", async (submitBy) => {
@@ -73,9 +159,13 @@ describe("AssistantWidget focus", () => {
     })));
     const user = userEvent.setup();
     await act(async () => {
-      root.render(createElement(AssistantWidget, { enabled: true, configured: true, initialMode: "composing" }));
+      renderAssistantShell();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+
+    const launcher = container.querySelector<HTMLButtonElement>('[aria-label="Open Tally assistant"]')!;
+    await act(async () => user.click(launcher));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 
     const prompt = container.querySelector<HTMLTextAreaElement>("#assistant-widget-prompt")!;
     await act(async () => {
