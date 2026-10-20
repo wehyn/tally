@@ -3,6 +3,34 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createStore } from "../src/lib/store";
 import { todayInManila } from "../src/lib/dates";
 
+function restoreLegacyTransactionSchema(database: Database.Database): void {
+  database.pragma("foreign_keys = OFF");
+  try {
+    database.transaction(() => {
+      database.exec(`
+        CREATE TABLE transactions_legacy (
+          id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK(kind IN ('income','expense','transfer')), amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+          account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+          destination_account_id TEXT REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+          category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+          debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
+          description TEXT NOT NULL, date TEXT NOT NULL, time TEXT, source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','assistant')),
+          undo_until TEXT, created_at TEXT NOT NULL,
+          CHECK((kind = 'transfer' AND destination_account_id IS NOT NULL AND category_id IS NULL) OR (kind != 'transfer' AND destination_account_id IS NULL AND category_id IS NOT NULL)),
+          CHECK(destination_account_id IS NULL OR destination_account_id != account_id)
+        );
+        INSERT INTO transactions_legacy(rowid,id,user_id,kind,amount_minor,account_id,destination_account_id,category_id,debt_id,description,date,time,source,undo_until,created_at)
+          SELECT rowid,id,user_id,kind,amount_minor,account_id,destination_account_id,category_id,debt_id,description,date,time,source,undo_until,created_at FROM transactions;
+        DROP TABLE transactions;
+        ALTER TABLE transactions_legacy RENAME TO transactions;
+      `);
+    }).immediate();
+  } finally {
+    database.pragma("foreign_keys = ON");
+  }
+}
+
 let database: Database.Database;
 let store: ReturnType<typeof createStore>;
 beforeEach(() => {
@@ -36,6 +64,27 @@ describe("owner-scoped ledger", () => {
     expect(dashboard.incomeMinor).toBe(5000);
     expect(dashboard.spendingMinor).toBe(2000);
     expect(dashboard.accounts.map((account) => [account.name, account.balanceMinor])).toEqual([["Wallet", 12000], ["Savings", 6000]]);
+  });
+
+  it("does not let a generic edit create an unlinked debt repayment", () => {
+    const owner = store.registerUser("generic_debt_repayment_edit", "hash");
+    const account = store.createAccount(owner.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const incomeCategory = store.listCategories(owner.id).find((category) => category.type === "income")!;
+    const income = store.createTransaction(owner.id, {
+      kind: "income", amountMinor: 2_500, accountId: account.id, categoryId: incomeCategory.id,
+      description: "Payment", date: "2026-10-11",
+    });
+
+    expect(() => store.updateTransaction(owner.id, income.id, {
+      kind: "debt_repayment", amountMinor: 2_500, accountId: account.id,
+      description: "Payment", date: "2026-10-11",
+    })).toThrow();
+
+    expect(store.getTransaction(owner.id, income.id)).toMatchObject({ kind: "income", categoryId: incomeCategory.id });
+    expect(store.getDashboard(owner.id, "2026-10-01", "2026-10-31")).toMatchObject({
+      incomeMinor: 2_500, debtRepaymentMinor: 0,
+    });
+    expect(store.listAccounts(owner.id)[0].balanceMinor).toBe(2_500);
   });
 
   it("sets the opposite safe-integer boundary without changing transaction history", () => {
@@ -655,5 +704,104 @@ describe("recurring bills", () => {
       { kind: "expense", amountMinor: 1_000, accountId: account.id, categoryId: food.id, description: "Lunch", date: "2026-10-11" });
     database.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(linked.debt.id, user.id);
     expect(database.prepare("SELECT debt_id FROM transactions WHERE id=?").get(linked.transaction.id)).toEqual({ debt_id: null });
+  });
+
+  it("reclassifies only income linked to a surviving same-owner debt owed to you", () => {
+    const alice = store.registerUser("legacy_repayment_owner", "hash-a");
+    const bob = store.registerUser("legacy_repayment_other", "hash-b");
+    const account = store.createAccount(alice.id, { name: "Wallet", type: "cash", openingMinor: 10_000 });
+    const income = store.listCategories(alice.id).find((category) => category.type === "income")!;
+    const expense = store.listCategories(alice.id).find((category) => category.type === "expense")!;
+    const { debt: owedToAlice, transaction: advance } = store.recordDebtAdvance(alice.id,
+      { direction: "owed_to_you", counterparty: "Mina", amountMinor: 5_000 },
+      { kind: "expense", amountMinor: 5_000, accountId: account.id, categoryId: expense.id, description: "Advance", date: "2026-10-11", time: "09:00" });
+    const received = store.createTransaction(alice.id, {
+      kind: "income", amountMinor: 2_000, accountId: account.id, categoryId: income.id,
+      description: "Mina paid me", date: "2026-10-11", time: "09:00", source: "assistant",
+    });
+    database.prepare("UPDATE transactions SET debt_id=?,undo_until='2099-01-01T00:00:00.000Z',created_at='2026-10-11T09:00:00.000Z' WHERE id=?")
+      .run(owedToAlice.id, received.id);
+    database.prepare("UPDATE transactions SET created_at='2026-10-11T09:00:00.000Z' WHERE id=?").run(advance.id);
+    store.updateDebt(alice.id, owedToAlice.id, { amountMinor: 3_000 });
+
+    const settledDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Rina", amountMinor: 1_000 });
+    store.updateDebt(alice.id, settledDebt.id, { status: "settled" });
+    const settledPayment = store.createTransaction(alice.id, {
+      kind: "income", amountMinor: 1_000, accountId: account.id, categoryId: income.id,
+      description: "Rina paid me", date: "2026-10-12", source: "assistant",
+    });
+    database.prepare("UPDATE transactions SET debt_id=? WHERE id=?").run(settledDebt.id, settledPayment.id);
+
+    const borrowed = store.recordDebtAdvance(alice.id,
+      { direction: "you_owe", counterparty: "Sam", amountMinor: 3_000 },
+      { kind: "income", amountMinor: 3_000, accountId: account.id, categoryId: income.id, description: "Borrowed from Sam", date: "2026-10-12" });
+    const unlinked = store.createTransaction(alice.id, {
+      kind: "income", amountMinor: 500, accountId: account.id, categoryId: income.id,
+      description: "Mina paid me back", date: "2026-10-12",
+    });
+    const bobsDebt = store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Alice", amountMinor: 700 });
+    const crossOwner = store.createTransaction(alice.id, {
+      kind: "income", amountMinor: 700, accountId: account.id, categoryId: income.id,
+      description: "Other owner's debt", date: "2026-10-12",
+    });
+    database.prepare("UPDATE transactions SET debt_id=? WHERE id=?").run(bobsDebt.id, crossOwner.id);
+    const conversationId = store.createConversation(alice.id, "Repayment");
+    store.addMessage(alice.id, conversationId, "assistant", "Mina paid you back.", received.id);
+    const beforeBalance = store.listAccounts(alice.id)[0].balanceMinor;
+    const rowIds = database.prepare("SELECT id,rowid FROM transactions ORDER BY rowid").all() as { id: string; rowid: number }[];
+
+    restoreLegacyTransactionSchema(database);
+    store.migrate();
+
+    expect(store.getTransaction(alice.id, received.id)).toMatchObject({ kind: "debt_repayment", categoryId: undefined, categoryName: null, undoUntil: null });
+    expect(store.getTransaction(alice.id, settledPayment.id)).toMatchObject({ kind: "debt_repayment", categoryId: undefined, categoryName: null, undoUntil: null });
+    expect(store.getTransaction(alice.id, borrowed.transaction.id)).toMatchObject({ kind: "income", categoryId: income.id });
+    expect(store.getTransaction(alice.id, unlinked.id)).toMatchObject({ kind: "income", categoryId: income.id });
+    expect(store.getTransaction(alice.id, crossOwner.id)).toMatchObject({ kind: "income", categoryId: income.id });
+    expect(store.listDebts(alice.id).find((debt) => debt.id === owedToAlice.id)?.activity.map((entry) => [entry.transactionId, entry.kind]))
+      .toEqual([[advance.id, "expense"], [received.id, "debt_repayment"]]);
+    expect(store.getConversation(alice.id, conversationId)?.messages[0]?.transaction).toMatchObject({
+      id: received.id, kind: "debt_repayment", categoryName: null,
+    });
+    expect(store.listAccounts(alice.id)[0].balanceMinor).toBe(beforeBalance);
+    expect(database.prepare("SELECT id,rowid FROM transactions ORDER BY rowid").all()).toEqual(rowIds);
+    expect(database.pragma("foreign_key_check")).toEqual([]);
+
+    store.migrate();
+    expect(store.getTransaction(alice.id, received.id)?.kind).toBe("debt_repayment");
+    expect(database.prepare("SELECT id,rowid FROM transactions ORDER BY rowid").all()).toEqual(rowIds);
+  });
+
+  it("rolls back a failed kind migration and restores foreign-key enforcement", () => {
+    const owner = store.registerUser("legacy_repayment_rollback", "hash");
+    const account = store.createAccount(owner.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const income = store.listCategories(owner.id).find((category) => category.type === "income")!;
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+    const transaction = store.createTransaction(owner.id, {
+      kind: "income", amountMinor: 1_000, accountId: account.id, categoryId: income.id,
+      description: "Mina paid me", date: "2026-10-11",
+    });
+    database.prepare("UPDATE transactions SET debt_id=? WHERE id=?").run(debt.id, transaction.id);
+    const unlinkedIncome = store.createTransaction(owner.id, {
+      kind: "income", amountMinor: 500, accountId: account.id, categoryId: income.id,
+      description: "Unlinked income", date: "2026-10-11",
+    });
+    restoreLegacyTransactionSchema(database);
+    database.pragma("foreign_keys = OFF");
+    database.prepare("UPDATE transactions SET category_id='missing-category' WHERE id=?").run(unlinkedIncome.id);
+    database.pragma("foreign_keys = ON");
+
+    expect(() => store.migrate()).toThrow();
+
+    const legacySchema = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'").get() as { sql: string };
+    expect(legacySchema.sql).not.toContain("debt_repayment");
+    expect(database.prepare("SELECT kind,category_id,debt_id FROM transactions WHERE id=?").get(unlinkedIncome.id)).toEqual({
+      kind: "income", category_id: "missing-category", debt_id: null,
+    });
+    expect(database.pragma("foreign_keys", { simple: true })).toBe(1);
+
+    database.prepare("UPDATE transactions SET category_id=? WHERE id=?").run(income.id, unlinkedIncome.id);
+    store.migrate();
+    expect(store.getTransaction(owner.id, transaction.id)).toMatchObject({ kind: "debt_repayment", categoryId: undefined });
   });
 });

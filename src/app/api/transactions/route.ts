@@ -4,9 +4,10 @@ import { getStore } from "@/lib/db";
 import { todayInManila, timeInManila } from "@/lib/dates";
 import { parsePHPToMinor } from "@/lib/money";
 import type { TransactionKind } from "@/lib/store";
+import { manualTransactionKindSchema, transactionKindSchema } from "@/lib/transaction-model";
 
 const schema = z.object({
-  kind: z.enum(["income", "expense", "transfer"]), amount: z.string().max(24), accountId: z.string().uuid(),
+  kind: manualTransactionKindSchema, amount: z.string().max(24), accountId: z.string().uuid(),
   destinationAccountId: z.string().uuid().optional(), categoryId: z.string().uuid().optional(),
   description: z.string().trim().max(180).optional().default(""), date: z.string().optional(),
   time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
@@ -20,7 +21,8 @@ export async function GET(request: Request) {
     const requestedOffset = Number(url.searchParams.get("offset") ?? 0);
     const offset = Number.isSafeInteger(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
     const requestedKind = url.searchParams.get("kind");
-    const kind: TransactionKind | undefined = requestedKind === "income" || requestedKind === "expense" || requestedKind === "transfer" ? requestedKind : undefined;
+    const parsedKind = transactionKindSchema.safeParse(requestedKind);
+    const kind: TransactionKind | undefined = parsedKind.success ? parsedKind.data : undefined;
     const fetched = getStore().listTransactions(user.id, { start, end }, limit + 1, { kind, offset });
     return Response.json({ transactions: fetched.slice(0, limit), hasMore: fetched.length > limit });
   } catch (error) { return respondError(error); }

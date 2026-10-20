@@ -18,7 +18,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Assistant debt repayments
 
-- Keep a received repayment as one owner-scoped `recordDebtPayment` store operation: it records income and reduces an open `owed_to_you` debt atomically. Validate the debt, amount, account, and income category before either write can persist.
+- Keep a received principal repayment as one owner-scoped `recordDebtPayment` store operation: it records a category-free `debt_repayment` transaction, increases cash, stays out of income and spending, and reduces an open `owed_to_you` debt atomically. Validate the debt, amount, and account before either write can persist.
 - Settled debts retain their last positive amount for display; label it as the last outstanding balance and treat status as authoritative.
 - Keep counterparty names out of the provider system prompt. Send only JSON-escaped counterparty and formatted amount as untrusted context; match the exact normalized payer named in the current request or active follow-up context to the oldest open debt. Ask without writing when payment wording is negated or uncertain, no debt matches, multiple open debt counterparties are named, the provider selects a different payer, or the payment exceeds that balance.
 - Do not offer generic transaction Undo for a repayment; it cannot restore the debt. Cover provider context, route behavior, and storage rollback in `tests/provider.test.ts`, `tests/assistant-route.test.ts`, and `tests/debts.test.ts`.

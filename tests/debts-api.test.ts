@@ -96,13 +96,11 @@ describe("debt API routes", () => {
   it("returns the linked advance and repayment activity from the signed-in user's debt list", async () => {
     const account = store.createAccount(aliceId, { name: "Wallet", type: "cash", openingMinor: 20_000 });
     const food = store.listCategories(aliceId).find((category) => category.name === "Food")!;
-    const income = store.listCategories(aliceId).find((category) => category.name === "Other income")!;
     const { debt } = store.recordDebtAdvance(aliceId,
       { direction: "owed_to_you", counterparty: "Mina", amountMinor: 10_000 },
       { kind: "expense", amountMinor: 10_000, accountId: account.id, categoryId: food.id, description: "Lunch advance", date: "2026-10-10", time: "12:00" });
     store.recordDebtPayment(aliceId, debt.id, {
-      kind: "income", amountMinor: 2_500, accountId: account.id, categoryId: income.id,
-      description: "Mina paid me", date: "2026-10-12", time: "09:30",
+      amountMinor: 2_500, accountId: account.id, description: "Mina paid me", date: "2026-10-12", time: "09:30",
     });
 
     const response = await GET();
@@ -112,7 +110,7 @@ describe("debt API routes", () => {
       id: debt.id,
       activity: [
         { transactionId: expect.any(String), date: "2026-10-10", time: "12:00", kind: "expense", amountMinor: -10_000, categoryName: "Food", accountName: "Wallet", description: "Lunch advance" },
-        { transactionId: expect.any(String), date: "2026-10-12", time: "09:30", kind: "income", amountMinor: 2_500, categoryName: "Other income", accountName: "Wallet", description: "Mina paid me" },
+        { transactionId: expect.any(String), date: "2026-10-12", time: "09:30", kind: "debt_repayment", amountMinor: 2_500, categoryName: null, accountName: "Wallet", description: "Mina paid me" },
       ],
     }]);
 

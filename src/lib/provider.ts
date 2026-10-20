@@ -126,7 +126,7 @@ const debtPaymentTool = {
   type: "function",
   function: {
     name: "record_debt_payment",
-    description: "Record money received toward an existing debt owed to the user. This creates income and reduces that debt; never use log_debt for a repayment.",
+    description: "Record principal received toward an existing debt owed to the user. This increases account cash, stays separate from income and spending, and reduces the debt. Never use log_debt for a repayment.",
     parameters: {
       type: "object", additionalProperties: false,
       properties: {
@@ -259,11 +259,11 @@ Action rules:
 - For an ordinary transaction with a clear amount and category, call log_transaction immediately; do not ask for confirmation.
 - A debt statement alone never changes an account balance. Call log_debt for a new debt. Set recordTransaction to true only when the user explicitly asks to record the related money movement; otherwise leave it false. Never call log_transaction for the same debt advance.
 - When the user lent or fronted money and explicitly asks for a transaction, the movement is an expense. When the user borrowed money and explicitly asks for a transaction, the movement is income. Use the user's optional purpose as the description; a category and description may be omitted. The app uses the matching default category and account when omitted, and asks before writing if an explicitly named account or category is invalid.
-- When another person pays the user toward an open owed_to_you debt, call record_debt_payment. If no matching debt exists, ask before writing ordinary income. When the user pays someone toward an open you_owe debt, call record_debt_repayment. If no matching debt exists, log the completed payment as an ordinary expense.
+- When another person pays the user toward an open owed_to_you debt, call record_debt_payment to record returned principal separately from income and spending. No category is needed. If no matching debt exists, ask before writing ordinary income. When the user pays someone toward an open you_owe debt, call record_debt_repayment. If no matching debt exists, log the completed payment as an ordinary expense.
 - Use the separate untrusted ledger data message to match the exact counterparty in the current request or active follow-up, applying a payment to the oldest open debt in that direction. Ask without writing when wording is negated or uncertain, the payer does not match, multiple open counterparties are named, or payment exceeds the balance.
 - For hypothetical, negated, or uncertain debt statements, ask whether the user wants to record them instead of calling log_debt.
 - For a new debt, infer direction from the user's perspective: another person owing the user means owed_to_you; the user owing another person means you_owe. Do not reverse direction based on who paid whom.
-- A category's type determines whether the transaction is income or expense. Never ask for a transaction type when its category is clear.
+- A category's type determines whether an ordinary transaction is income or expense. A received debt repayment is principal, has no category, and is not income. Never ask for an ordinary transaction type when its category is clear.
 - If identical category names exist for both types, use the user's wording to disambiguate and include kind; ask only if the wording is not enough.
 - If no category determines type and kind is omitted, default to expense unless the message clearly describes incoming money.
 - Descriptions are optional. The application validates category and account names against the user's private settings; an omitted account uses the default.

@@ -53,21 +53,21 @@ Every personal-data operation must be scoped to the signed-in owner on the serve
 - Users can manually create, view, edit, and delete their own income, expense, and transfer records. Income and expense records have an amount, date, account, category, and optional description. The selected category determines whether a record is income or expense. Transfers identify source and destination accounts and are managed from Accounts.
 - Seed every user with income categories **Salary** and **Other income**, and expense categories **Food**, **Transport**, **Housing**, **Utilities**, **Health**, **Shopping**, **Education**, **Entertainment**, **Travel**, and **Other**. Users can add, rename, and choose icons for categories in **Transactions → Manage categories**.
 - A user can privately track current debts in two directions: **owed to you** and **you owe**. Each record has a counterparty, positive PHP amount, optional due date and note, and open or settled status. Users can create, edit, settle, reopen, and delete only their own records.
-- An open debt's amount represents the current outstanding balance. A settled debt retains its last positive amount for display; status is authoritative. V1 has no repayment schedule or per-payment debt history. Manual repayments are recorded as transactions, and the user updates or settles the debt.
-- Creating or editing a debt does not change accounts, transactions, balances, income, spending, or analytics. Ask Tally's received-repayment action is the exception: it writes income and updates the matching debt together while keeping both records private to their owner.
+- An open debt's amount represents the current outstanding balance. A settled debt retains its last positive amount for display; status is authoritative. V1 has no repayment schedule. Assistant-recorded advances and repayments keep linked transaction history. Editing a debt by itself does not create a transaction, and Tally does not guess links for manually created transactions.
+- Creating or editing a debt does not change accounts, transactions, balances, income, spending, or analytics. Ask Tally's received-repayment action records returned principal as a category-free debt repayment, increases cash and net cash flow, stays out of income and spending, and reduces the oldest open debt for the exact normalized payer in one atomic operation.
 - Accounts, categories, transactions, and debt records are private to their owner, including when another user is the admin.
 
 ### 3. Dashboard and analytics
 
 The dashboard is the signed-in user's overview and shows:
 
-- Four summary cards: total balance across all accounts, plus income, spending, and net activity for the selected period.
+- Five summary cards: total balance across all accounts, income, spending, repayments received, and net cash flow for the selected period.
 - An Assets section with the positive-balance total and each account's current balance and proportional weight. Zero and negative balances remain visible but are excluded from the asset total and weights.
 - Recent transactions with category icons and active shared goals.
 - The date range represented by period-based figures.
 - Category management is in **Transactions → Manage categories**; the dashboard has no spending-by-category panel or separate quick-entry form.
 
-Use Asia/Manila for relative dates, the current day, and month boundaries. Set balances affect current balances but are not income. Transfers affect account balances but are not income or spending. All dashboard figures must use only the signed-in user's personal records, except that shared-goal progress is visible to that goal's members.
+Use Asia/Manila for relative dates, the current day, and month boundaries. Set balances affect current balances but are not income. Transfers affect account balances but are not income or spending. Repayment principal affects cash and net cash flow but is not income or spending. All dashboard figures must use only the signed-in user's personal records, except that shared-goal progress is visible to that goal's members.
 
 ### 4. Optional in-app assistant
 
@@ -86,16 +86,16 @@ Use Asia/Manila for relative dates, the current day, and month boundaries. Set b
 - Use the user's default account when none is named, and use a best-guess category when none is named. The user can edit the category on the result card or later.
 - Respect an explicitly named account and date. Interpret relative dates in Asia/Manila; when no date is specified, use today in that timezone.
 - If required information cannot be inferred from the prompt or user settings, ask only for the missing information. Do not save an incomplete transaction.
-- After an ordinary assistant transaction, show a card with amount, category, account, and date, plus a description when provided. Provide an approximately 10-second Undo action for that entry. Compound debt repayments have no generic Undo because it would remove income without restoring the debt.
+- After an ordinary assistant transaction, show a card with amount, category, account, and date, plus a description when provided. Provide an approximately 10-second Undo action for that entry. A linked debt repayment has no generic Undo because deleting its transaction alone would leave the debt balance unchanged.
 - Users can edit their own saved records after the Undo period. Deletion after the approximately 10-second assistant Undo window is permanent in the app. Manual entry remains available to users who do not opt in to AI.
 
 #### Debt capture and repayments
 
 - For a clear debt statement, such as “Mom owes me 3486” or “I owe Mom 3486,” create an open debt in the correct direction in the private debt register. Ask only when the counterparty, direction, or amount is unclear.
-- For a received repayment against an open debt owed to the user, record income and reduce the oldest matching debt in one action. Use the named account or the user's default account and the **Other income** category.
-- If no debt matches or the payment exceeds the oldest matching debt's outstanding amount, ask before saving. Do not create another debt for a repayment. Existing duplicate debt records are not merged.
+- For a received repayment against an open debt owed to the user, record a category-free **Debt repayment** and reduce the oldest open debt for the exact normalized payer in one action. Use the named account or the user's default account. A repayment increases cash and net cash flow, but does not count as income or spending. Explicit borrowing remains income.
+- Ask without writing when the wording is uncertain or negated, no debt matches, multiple debt counterparties are named, the provider selects a different payer, or the payment exceeds the oldest matching debt's outstanding amount. Do not create another debt for a repayment. Existing duplicate debt records are not merged.
 - Creating a debt never creates a transaction or changes account balances or analytics. Respect an explicitly stated due date or note when creating a debt.
-- The transaction and debt are not linked after creation. Editing or deleting the transaction later does not update the debt; the user must adjust the debt separately.
+- Link the repayment transaction to its debt. Keep its amount and kind locked while the debt exists. Deleting the debt clears the link and preserves the repayment transaction. The linked action has no generic Undo.
 
 #### Factual questions and conversation history
 
@@ -152,13 +152,13 @@ V1 is acceptable when the following outcomes work for multiple independent users
 7. **Shared goals:** A user can create a goal, invite another registered user, and require acceptance. Members can see goal progress and contributions, add their own contribution, and edit or delete only their own entries. Contributions do not alter personal balances.
 8. **Deletion:** Account deletion removes private finance and chat data while preserving goal contributions under “Former member” and preserving group progress. Goal management passes to the next invited user when its manager deletes their account.
 9. **Recovery:** Recreating the app container preserves the SQLite database. Nightly backups are stored persistently, and a documented restore recovers personal ledgers, transfers, goals, contributions, assistant history, and former-member goal history.
-10. **Debt register:** A user can see separate “Owed to you” and “You owe” lists, maintain current amounts and optional due dates/notes, filter outstanding and settled records, and settle or reopen their own debts. Another user, including the admin, cannot access those records. Creating or editing a debt does not change accounts, transactions, balances, income, spending, or analytics; repayments are entered separately as transactions.
+10. **Debt register:** A user can see separate “Owed to you” and “You owe” lists, maintain current amounts and optional due dates/notes, filter outstanding and settled records, and settle or reopen their own debts. Another user, including the admin, cannot access those records. Adding or editing a debt alone does not change accounts or analytics. A linked repayment increases account cash and net cash flow, but stays out of income and spending.
 
 ## Verification approach
 
 Use browser end-to-end tests against the running Next.js application with an isolated SQLite database and a deterministic fake Codex-LB endpoint. Tests should observe user-visible outcomes and authorization boundaries rather than internal helper names or database implementation details.
 
-Use multiple users to exercise registration and admin bootstrap, private ledgers and debt registers, admin access boundaries, manual entry, assistant opt-in and capture, date-range analytics, transfers, goal invitations and contributions, account deletion, and backup/restore. Verify accounting invariants through visible balances and analytics; specifically confirm debt records never affect ledger figures and repayment transactions remain independently recorded.
+Use multiple users to exercise registration and admin bootstrap, private ledgers and debt registers, admin access boundaries, manual entry, assistant opt-in and capture, date-range analytics, transfers, goal invitations and contributions, account deletion, and backup/restore. Verify accounting invariants through visible balances and analytics. Confirm debt records alone do not affect ledger figures, while a linked principal repayment increases cash and net cash flow without raising income or spending.
 
 ## Open product and implementation details
 

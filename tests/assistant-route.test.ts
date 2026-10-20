@@ -19,6 +19,26 @@ function assistantRequest(prompt: string, conversationId?: string) {
     body: JSON.stringify({ prompt, ...(conversationId ? { conversationId } : {}) }),
   });
 }
+function seedDebtFinanceFacts() {
+  const account = store.listAccounts(user.id)[0];
+  const expenseCategory = store.listCategories(user.id).find((category) => category.type === "expense")!;
+  const incomingDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Riley", amountMinor: 30_000 });
+  store.recordDebtPayment(user.id, incomingDebt.id, {
+    amountMinor: 12_000, description: "Riley paid me", accountId: account.id, date: "2026-10-05", time: "12:00",
+  });
+  const outgoingDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Morgan", amountMinor: 100_000 });
+  store.recordDebtRepayment(user.id, outgoingDebt.id, {
+    kind: "expense", amountMinor: 50_000, description: "Paid Morgan back", accountId: account.id,
+    categoryId: expenseCategory.id, date: "2026-10-06", time: "12:00",
+  });
+  store.createTransaction(user.id, {
+    kind: "expense", amountMinor: 25_000, description: "Groceries", accountId: account.id,
+    categoryId: expenseCategory.id, date: "2026-10-07", time: "12:00",
+  });
+}
+function financeQuestionResponse() {
+  return providerTool("finance_question", { start: "2026-10-01", end: "2026-10-09" });
+}
 
 const mocks = vi.hoisted(() => ({ getStore: vi.fn(), requireUser: vi.fn() }));
 
@@ -185,6 +205,54 @@ describe("assistant transaction capture", () => {
     const result = await response.json();
 
     expect(result.transaction).toMatchObject({ kind: "income", categoryName: "Salary", amountMinor: 500000 });
+  });
+});
+
+describe("assistant finance reporting", () => {
+  it("routes a debt repayment report to period finance facts instead of current debt balances", async () => {
+    seedDebtFinanceFacts();
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+    const response = await POST(assistantRequest("Show debt repayments this month"));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Repayments received: ₱120.00");
+    expect(result.answer).not.toContain("Open debts");
+  });
+
+  it("reports the user's debt repayments made instead of repayments received", async () => {
+    seedDebtFinanceFacts();
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+    const response = await POST(assistantRequest("Total debt repayments made this month"));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Debt repayments made: ₱500.00");
+    expect(result.answer).not.toContain("Repayments received");
+  });
+
+  it("answers a repayment amount question without treating it as an unconfirmed payment", async () => {
+    seedDebtFinanceFacts();
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+    const response = await POST(assistantRequest("How much did I repay?"));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Debt repayments made: ₱500.00");
+    expect(result.transaction).toBeNull();
+    expect(result.debt).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(3);
+  });
+
+  it("includes spending and received repayments when a finance question asks for both", async () => {
+    seedDebtFinanceFacts();
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+    const response = await POST(assistantRequest("How much did I spend and receive in debt repayments this month?"));
+    const result = await response.json();
+
+    expect(result.answer).toContain("Total Spent: ₱750.00");
+    expect(result.answer).toContain("Repayments received: ₱120.00");
   });
 });
 
@@ -731,9 +799,8 @@ describe("assistant debt capture", () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
     const settledDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mika", amountMinor: 10000 });
     store.recordDebtPayment(user.id, settledDebt.id, {
-      kind: "income", amountMinor: 10000, description: "Mika paid me", accountId: store.listAccounts(user.id)[0].id,
-      categoryId: store.listCategories(user.id).find((category) => category.type === "income")!.id,
-      date: "2026-10-13", time: "12:00", source: "assistant",
+      amountMinor: 10000, description: "Mika paid me", accountId: store.listAccounts(user.id)[0].id,
+      date: "2026-10-13", time: "12:00",
     });
     vi.stubGlobal("fetch", vi.fn());
 
@@ -828,9 +895,8 @@ describe("assistant debt capture", () => {
   it("labels settled debt totals as historical balances", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ari", amountMinor: 20000 });
     store.recordDebtPayment(user.id, debt.id, {
-      kind: "income", amountMinor: 20000, description: "Ari paid me", accountId: store.listAccounts(user.id)[0].id,
-      categoryId: store.listCategories(user.id).find((category) => category.type === "income")!.id,
-      date: "2026-10-09", time: "12:00", source: "assistant",
+      amountMinor: 20000, description: "Ari paid me", accountId: store.listAccounts(user.id)[0].id,
+      date: "2026-10-09", time: "12:00",
     });
     vi.stubGlobal("fetch", vi.fn());
 
@@ -866,7 +932,7 @@ describe("assistant debt capture", () => {
     }));
     const result = await second.json();
 
-    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000 });
+    expect(result.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 10000, categoryName: null, undoUntil: null });
     expect(result.debt).toMatchObject({ id: mikaDebt.id, amountMinor: 30000 });
   });
 
@@ -902,7 +968,7 @@ describe("assistant debt capture", () => {
     }));
     const result = await payment.json();
 
-    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000 });
+    expect(result.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 10000, categoryName: null, undoUntil: null });
     expect(result.debt).toMatchObject({ id: mikaDebt.id, amountMinor: 30000 });
   });
 
@@ -926,7 +992,7 @@ describe("assistant debt capture", () => {
     }));
     const result = await accountQuestion.json();
 
-    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000, accountName: "Wallet" });
+    expect(result.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 10000, accountName: "Wallet", categoryName: null, undoUntil: null });
     expect(result.debt).toMatchObject({ id: debt.id, amountMinor: 30000, status: "open" });
   });
 
@@ -1644,7 +1710,7 @@ describe("assistant debt capture", () => {
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(-2_700);
   });
 
-  it("applies a repayment to the same-payer debt identified by its note", async () => {
+  it("applies a repayment to the oldest open debt for the exact payer", async () => {
     const earlierDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600, note: "Car repair" });
     vi.setSystemTime(new Date("2026-10-09T08:00:00.001Z"));
     const jacketDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 50000, note: "About jacket" });
@@ -1663,13 +1729,35 @@ describe("assistant debt capture", () => {
     }));
     const result = await response.json();
 
-    expect(result.debt).toMatchObject({ id: jacketDebt.id, amountMinor: 50000, status: "settled" });
-    expect(store.listDebts(user.id).find((debt) => debt.id === earlierDebt.id)).toMatchObject({ amountMinor: 348600, status: "open" });
-    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 50000, undoUntil: null });
+    expect(result.debt).toMatchObject({ id: earlierDebt.id, amountMinor: 298600, status: "open" });
+    expect(store.listDebts(user.id).find((debt) => debt.id === jacketDebt.id)).toMatchObject({ amountMinor: 50000, status: "open" });
+    expect(result.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 50000, categoryName: null, undoUntil: null });
     expect(providerRequest?.messages.at(-2)?.content).toBe('Untrusted ledger data for matching only: {"owed_to_you":[{"counterparty":"Mom","amount":"₱3,486.00"},{"counterparty":"Mom","amount":"₱500.00"}],"you_owe":[]}');
   });
 
-  it("records a repayment as income and reduces the matching debt", async () => {
+  it("asks before applying a payment larger than the oldest open debt for the payer", async () => {
+    const oldestDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 50000, note: "Older loan" });
+    const newerDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 400000, note: "Newer loan" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+      name: "record_debt_payment", arguments: JSON.stringify({ counterparty: "Mom", amount: "1000" }),
+    } }] } }] }), { headers: { "content-type": "application/json" } })));
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST",
+      headers: { origin: "https://tally.test", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Mom paid me 1000 for the newer loan" }),
+    }));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null });
+    expect(result.answer).toContain("more than");
+    expect(store.listDebts(user.id).find((debt) => debt.id === oldestDebt.id)).toMatchObject({ amountMinor: 50000, status: "open", activity: [] });
+    expect(store.listDebts(user.id).find((debt) => debt.id === newerDebt.id)).toMatchObject({ amountMinor: 400000, status: "open", activity: [] });
+    expect(store.listTransactions(user.id)).toEqual([]);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+  });
+
+  it("records a repayment separately from income and reduces the matching debt", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
     const account = store.listAccounts(user.id)[0];
     let providerRequest: ProviderRequest | undefined;
@@ -1689,7 +1777,7 @@ describe("assistant debt capture", () => {
     }));
     const result = await response.json();
 
-    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000, accountName: account.name, categoryName: "Other income", description: "Mom paid me" });
+    expect(result.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 10000, accountName: account.name, categoryName: null, description: "Mom paid me" });
     expect(result.undoUntil).toBeNull();
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
     expect(result.debt).toMatchObject({ id: debt.id, direction: "owed_to_you", counterparty: "Mom", amountMinor: 338600, status: "open" });
@@ -1766,7 +1854,7 @@ describe("assistant debt capture", () => {
     }));
     const result = await followupResponse.json();
 
-    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000 });
+    expect(result.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 10000, categoryName: null, undoUntil: null });
     expect(result.debt).toMatchObject({ id: debt.id, amountMinor: 338600, status: "open" });
     expect(store.listDebts(user.id)).toHaveLength(1);
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(10000);
@@ -1854,6 +1942,25 @@ describe("assistant debt capture", () => {
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
   });
 
+  it.each([
+    ["uncertain gave back", "Maybe Ana gave back ₱500 for the loan"],
+    ["negated settled", "Ana did not settle ₱500 of her loan"],
+    ["hadn't settled", "Ana hadn't settled ₱500 of her loan"],
+    ["hadn't paid back", "Ana hadn't paid me back ₱500"],
+    ["curly-apostrophe wasn't paid back", "Ana wasn’t able to say she paid me back ₱500"],
+  ] as const)("does not record %s repayment wording", async (_wording, prompt) => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })));
+
+    const response = await POST(assistantRequest(prompt));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null, undoUntil: null });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)?.amountMinor).toBe(100000);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
   it.each(["Mom paid back 100", "Mom returned 100", "Mom paid me back ₱100"])("recognizes incoming repayment wording: %s", async (prompt) => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
@@ -1867,7 +1974,7 @@ describe("assistant debt capture", () => {
     }));
     const result = await response.json();
 
-    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 10000 });
+    expect(result.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 10000, categoryName: null, undoUntil: null });
     expect(result.debt).toMatchObject({ id: debt.id, amountMinor: 338600, status: "open" });
     expect(store.listDebts(user.id)).toHaveLength(1);
   });

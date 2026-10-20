@@ -136,7 +136,7 @@ describe("assistant data minimization", () => {
     let requestUrl: string | undefined;
     let requestBody: {
       messages: { role: string; content: string }[];
-      tools: { type: string; function: { name: string; parameters?: { required?: string[]; properties: Record<string, { enum?: string[]; pattern?: string }> } } }[];
+      tools: { type: string; function: { name: string; description?: string; parameters?: { required?: string[]; properties: Record<string, { enum?: string[]; pattern?: string }> } } }[];
       tool_choice: string;
     } | undefined;
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -191,6 +191,11 @@ describe("assistant data minimization", () => {
     expect(requestBody?.tools.find(({ function: fn }) => fn.name === "record_debt_payment")?.function.parameters?.properties).toMatchObject({
       counterparty: expect.any(Object), amount: expect.any(Object), account: expect.any(Object), date: expect.any(Object), time: expect.any(Object),
     });
+    const receivedRepayment = requestBody?.tools.find(({ function: fn }) => fn.name === "record_debt_payment")?.function;
+    expect(receivedRepayment?.description).toContain("principal");
+    expect(receivedRepayment?.description).toContain("separate from income and spending");
+    expect(receivedRepayment?.parameters?.properties).not.toHaveProperty("category");
+    expect(systemPrompt.toLowerCase()).toContain("a received debt repayment is principal");
     expect(requestBody?.tool_choice).toBe("required");
     expect(systemPrompt.toLowerCase()).toContain("a debt statement alone never changes an account balance");
     expect(systemPrompt.toLowerCase()).toContain("set recordtransaction to true only when the user explicitly asks");
