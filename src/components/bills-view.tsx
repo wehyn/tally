@@ -9,6 +9,7 @@ import { todayInManila } from "@/lib/dates";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { BILLS_UPDATED_EVENT } from "@/lib/client-events";
 import { ModalPresence } from "./modal-presence";
+import { useAddIntent } from "@/lib/add-intent";
 
 const billIcons: { key: BillIcon; label: string; Icon?: LucideIcon }[] = [
   { key: "calendar", label: "Calendar", Icon: CalendarDays }, { key: "home", label: "Home", Icon: Home },
@@ -68,6 +69,7 @@ export function BillsView({ initialBills, accounts, categories }: { initialBills
     return () => window.removeEventListener(BILLS_UPDATED_EVENT, refreshAfterAssistantBill);
   }, [refresh]);
   function create() { setEditing(null); setDraft(blank(accounts, categories)); setError(""); setOpen(true); }
+  useAddIntent("bill", create);
   function edit(bill: Bill) {
     setEditing(bill);
     setDraft({

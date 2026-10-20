@@ -12,8 +12,8 @@ vi.mock("next/navigation", () => ({ usePathname: () => "/debts" }));
 vi.mock("../src/components/assistant-widget", () => ({ AssistantWidget: () => null }));
 vi.mock("../src/components/sign-out-button", () => ({ SignOutButton: () => null }));
 
-describe("AppShell mobile navigation", () => {
-  it("keeps primary destinations in mobile navigation and puts Settings in the account menu", () => {
+describe("AppShell dock navigation", () => {
+  it("keeps primary destinations in the dock and puts Settings in the account menu", () => {
     const props = {
       user: {
         id: "user-1",
@@ -28,7 +28,7 @@ describe("AppShell mobile navigation", () => {
     } as Parameters<typeof AppShell>[0];
     const html = renderToStaticMarkup(createElement(AppShell, props, null));
     const document = new DOMParser().parseFromString(html, "text/html");
-    const navigation = document.querySelector('nav[aria-label="Mobile navigation"]');
+    const navigation = document.querySelector('nav[aria-label="Main navigation"]');
     const links = Array.from(navigation?.querySelectorAll("a") ?? []);
 
     expect(links.map((link) => ({
@@ -38,20 +38,28 @@ describe("AppShell mobile navigation", () => {
       icon: Array.from(link.querySelector("svg")?.classList ?? []).find((name) => name.startsWith("lucide-")) ?? null,
       text: link.textContent?.trim() ?? "",
     }))).toEqual([
-      { href: "/dashboard", label: "Home", current: null, icon: "lucide-layout-dashboard", text: "Home" },
+      { href: "/dashboard", label: "Home", current: null, icon: "lucide-house", text: "Home" },
       { href: "/money", label: "Money", current: null, icon: "lucide-wallet", text: "Money" },
       { href: "/plan", label: "Plan", current: "location", icon: "lucide-calendar-days", text: "Plan" },
     ]);
 
     const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
-    expect(primaryLinks.map((link) => link.getAttribute("href"))).toEqual(["/dashboard", "/money", "/plan"]);
     expect(primaryLinks[2].getAttribute("aria-current")).toBe("location");
+    expect(document.querySelector('nav[aria-label="Main navigation"] [aria-label="Add something"]')).not.toBeNull();
+    expect(document.querySelector('nav[aria-label="Main navigation"] [aria-label="Open Tally assistant"]')).not.toBeNull();
+    expect(Array.from(document.querySelectorAll("#add-sheet a")).map((link) => link.getAttribute("href"))).toEqual([
+      "/transactions?add=transaction",
+      "/accounts?add=transfer",
+      "/bills?add=bill",
+      "/debts?add=debt",
+      "/goals?add=goal",
+    ]);
     expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/settings");
     expect(primaryLinks.map((link) => link.getAttribute("href"))).not.toContain("/admin");
     expect(Array.from(document.querySelectorAll('nav[aria-label="Account navigation"] a')).map((link) => link.getAttribute("href"))).toEqual(["/settings"]);
   });
 
-  it("keeps Administration out of mobile navigation and in the admin account menu", () => {
+  it("keeps Administration out of the dock and in the admin account menu", () => {
     const props = {
       user: {
         id: "admin-1",
@@ -66,7 +74,7 @@ describe("AppShell mobile navigation", () => {
     } as Parameters<typeof AppShell>[0];
     const html = renderToStaticMarkup(createElement(AppShell, props, null));
     const document = new DOMParser().parseFromString(html, "text/html");
-    const links = Array.from(document.querySelectorAll('nav[aria-label="Mobile navigation"] a'));
+    const links = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
     const primaryLinks = Array.from(document.querySelectorAll('nav[aria-label="Main navigation"] a'));
 
     expect(links).toHaveLength(3);
