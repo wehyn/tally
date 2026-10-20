@@ -60,7 +60,7 @@ describe("DebtsView", () => {
         createdAt: "2026-10-10T08:00:00.000Z", updatedAt: "2026-10-10T08:00:00.000Z",
         activity: [
           { transactionId: "advance", date: "2026-10-10", time: "12:00", kind: "expense", amountMinor: -12_500, categoryName: "Food", accountName: "Wallet", description: "Lunch advance" },
-          { transactionId: "repayment", date: "2026-10-12", time: "09:30", kind: "income", amountMinor: 2_500, categoryName: "Other income", accountName: "Wallet", description: "Mina paid me" },
+          { transactionId: "repayment", date: "2026-10-12", time: "09:30", kind: "debt_repayment", amountMinor: 2_500, categoryName: null, accountName: "Wallet", description: "Mina paid me" },
         ],
       },
       { id: "mina-2", direction: "owed_to_you", counterparty: "mina", amountMinor: 5_000, note: "", dueDate: null, status: "open", createdAt: "2026-10-09T08:00:00.000Z", updatedAt: "2026-10-09T08:00:00.000Z", activity: [] },
@@ -91,7 +91,7 @@ describe("DebtsView", () => {
     expect(activityLines).toHaveLength(2);
     expect(activityLines[0]).toContain("Food");
     expect(activityLines[0]).toContain("-₱125.00");
-    expect(activityLines[1]).toContain("Other income");
+    expect(activityLines[1]).toContain("Debt repayment");
     expect(activityLines[1]).toContain("₱25.00");
     expect(activityLines[0].indexOf("Oct 10")).toBeGreaterThanOrEqual(0);
     expect(activityLines[1].indexOf("Oct 12")).toBeGreaterThanOrEqual(0);
@@ -107,7 +107,7 @@ describe("DebtsView", () => {
         createdAt: "2026-10-10T08:00:00.000Z", updatedAt: "2026-10-10T08:00:00.000Z",
         activity: [
           { transactionId: "z-first", date: "2026-10-10", time: "09:00", kind: "expense", amountMinor: -10_000, categoryName: "Food", accountName: "Wallet", description: "First saved" },
-          { transactionId: "a-second", date: "2026-10-10", time: "09:00", kind: "income", amountMinor: 2_000, categoryName: "Other income", accountName: "Wallet", description: "Second saved" },
+          { transactionId: "a-second", date: "2026-10-10", time: "09:00", kind: "debt_repayment", amountMinor: 2_000, categoryName: null, accountName: "Wallet", description: "Second saved" },
         ],
       },
       { id: "mina-second", direction: "owed_to_you", counterparty: "mina", amountMinor: 5_000, note: "", dueDate: null, status: "open", createdAt: "2026-10-09T08:00:00.000Z", updatedAt: "2026-10-09T08:00:00.000Z", activity: [] },
@@ -131,7 +131,7 @@ describe("DebtsView", () => {
     const updated: Debt = {
       ...before,
       amountMinor: 10_000,
-      activity: [{ transactionId: "payment", date: "2026-10-12", time: "09:30", kind: "income", amountMinor: 2_500, categoryName: "Other income", accountName: "Wallet", description: "Mina paid me" }],
+      activity: [{ transactionId: "payment", date: "2026-10-12", time: "09:30", kind: "debt_repayment", amountMinor: 2_500, categoryName: null, accountName: "Wallet", description: "Mina paid me" }],
     };
     const container = document.createElement("div");
     const root = createRoot(container);
@@ -139,7 +139,7 @@ describe("DebtsView", () => {
     await act(async () => root.render(createElement(DebtsView, { initial: records })));
     await act(async () => window.dispatchEvent(new CustomEvent<Debt>(DEBTS_UPDATED_EVENT, { detail: updated })));
 
-    expect(container.querySelector(".debt-person-group")?.textContent).toContain("Other income");
+    expect(container.querySelector(".debt-person-group")?.textContent).toContain("Debt repayment");
     expect(container.querySelector(".debt-person-group")?.textContent).toContain("₱25.00");
 
     await act(async () => root.unmount());

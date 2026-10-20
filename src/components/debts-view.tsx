@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { ArrowDownLeft, ArrowUpRight, Check, HandCoins, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import type { Debt, DebtDirection, DebtStatus } from "@/lib/store";
 import { formatPHP, formatPHPFromMinorString, minorToInput } from "@/lib/money";
+import { transactionKindLabel } from "@/lib/transaction-model";
 import { DEBTS_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 import { ModalPresence } from "./modal-presence";
@@ -201,7 +202,7 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
                     {activity.length ? <ol className="debt-activity-list" aria-label={`Linked activity for debt with ${debt.counterparty.trim()}`}>
                       {activity.map((movement) => <li className={`debt-activity-item ${movement.kind}`} key={movement.transactionId}>
                         <div><time dateTime={movement.time ? `${movement.date}T${movement.time}` : movement.date}>{formatActivityDate(movement.date)}{movement.time ? ` · ${movement.time}` : ""}</time>
-                          <span>{movement.categoryName ?? "Uncategorized"} · {movement.accountName}{movement.description ? ` · ${movement.description}` : ""}</span></div>
+                          <span>{movement.categoryName ?? transactionKindLabel(movement.kind)} · {movement.accountName}{movement.description ? ` · ${movement.description}` : ""}</span></div>
                         <strong>{formatPHP(movement.amountMinor)}</strong>
                       </li>)}
                     </ol> : <p className="debt-no-history">No linked transaction history</p>}
