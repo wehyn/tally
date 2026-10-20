@@ -76,8 +76,8 @@ function CalendarAmount({ kind, amountMinor }: { kind: "income" | "spending" | "
   const exactAmount = formatted.slice(1);
   const ungroupedAmount = exactAmount.replaceAll(",", "");
   const compactAmount = compactAmountFormatter.format(amountMinor / 100);
-  const compactOnMobile = ungroupedAmount.length > 7;
-  const compactOnNarrowMobile = ungroupedAmount.length > 6;
+  const compactOnMobile = ungroupedAmount.length > 9;
+  const compactOnNarrowMobile = ungroupedAmount.length > 9;
   const positive = kind !== "spending";
   const label = kind === "income" ? "Income" : kind === "spending" ? "Spending" : "Debt repayment";
   return <span
@@ -90,7 +90,7 @@ function CalendarAmount({ kind, amountMinor }: { kind: "income" | "spending" | "
     <span aria-hidden="true">
       <span className="month-calendar-total-exact">{exactAmount}</span>
       <span className="month-calendar-total-ungrouped">{ungroupedAmount}</span>
-      {compactOnNarrowMobile ? <span className="month-calendar-total-compact">{compactAmount}</span> : null}
+      <span className="month-calendar-total-compact">{compactAmount}</span>
     </span>
   </span>;
 }

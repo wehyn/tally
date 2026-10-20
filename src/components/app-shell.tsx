@@ -2,10 +2,11 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, LayoutDashboard, Send, Settings, Shield, Sparkles, Wallet, X } from "lucide-react";
+import { ArrowLeftRight, CalendarDays, HandCoins, House, Plus, Receipt, Send, Settings, Shield, Sparkles, Target, Wallet, X, type LucideIcon } from "lucide-react";
 import { flushSync } from "react-dom";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { PublicUser } from "@/lib/store";
+import { ADD_INTENT_EVENT, ADD_INTENT_PARAM, type AddIntent } from "@/lib/add-intent";
 import {
   ASSISTANT_SETTINGS_UPDATED_EVENT,
   assistantAvailabilityFromEvent,
@@ -56,19 +57,16 @@ const AssistantWidget = dynamic(() => import("./assistant-widget").then((module)
 });
 
 const navigation = [
-  { href: "/dashboard", label: "Home", icon: LayoutDashboard, routes: ["/dashboard"] },
+  { href: "/dashboard", label: "Home", icon: House, routes: ["/dashboard"] },
   { href: "/money", label: "Money", icon: Wallet, routes: ["/money", "/transactions", "/accounts"] },
   { href: "/plan", label: "Plan", icon: CalendarDays, routes: ["/plan", "/bills", "/debts", "/goals"] },
 ];
-const pageLabels = [
-  { href: "/dashboard", label: "Home" },
-  { href: "/money", label: "Money" },
-  { href: "/transactions", label: "Transactions" },
-  { href: "/accounts", label: "Accounts" },
-  { href: "/plan", label: "Plan" },
-  { href: "/bills", label: "Bills" },
-  { href: "/debts", label: "Debts" },
-  { href: "/goals", label: "Shared goals" },
+const addActions: { intent: AddIntent; href: string; label: string; detail: string; icon: LucideIcon; tone: string }[] = [
+  { intent: "transaction", href: "/transactions", label: "Income or expense", detail: "Log money in or out", icon: Receipt, tone: "lime" },
+  { intent: "transfer", href: "/accounts", label: "Transfer", detail: "Move between accounts", icon: ArrowLeftRight, tone: "sky" },
+  { intent: "bill", href: "/bills", label: "Bill", detail: "Track a due date", icon: CalendarDays, tone: "coral" },
+  { intent: "debt", href: "/debts", label: "Debt", detail: "Money owed either way", icon: HandCoins, tone: "sand" },
+  { intent: "goal", href: "/goals", label: "Shared goal", detail: "Save toward something", icon: Target, tone: "lilac" },
 ];
 const accountNavigation = [{ href: "/settings", label: "Settings", icon: Settings }];
 const PAGE_CARD_SELECTOR = ".page-stack .panel, .page-stack .stat-card, .page-stack .account-card, .page-stack .goal-card, .page-stack .admin-card, .page-stack .debt-summary-card, .page-stack .section-destination";
@@ -132,9 +130,15 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
   const mode = assistantMode(assistantOpening);
   const panelOpen = mode === "chat" || (!assistantAccess.enabled && mode === "composing");
   const accountEntries = user.role === "admin" ? [...accountNavigation, { href: "/admin", label: "Administration", icon: Shield }] : accountNavigation;
-  const pageLabel = [...pageLabels, ...accountEntries].find((item) => active === item.href || active.startsWith(`${item.href}/`))?.label ?? "Home";
   const isCurrentSection = (routes: string[]) => routes.some((route) => active === route || active.startsWith(`${route}/`));
-  const accountMenuTrigger = (className: string) => <button type="button" className={`${className} account-menu-trigger`} popoverTarget="account-menu" aria-label={`${user.username} account menu`}><span className="avatar avatar-small" aria-hidden="true">{user.username.slice(0,1).toUpperCase()}</span></button>;
+  const hidePopover = (id: string) => document.getElementById(id)?.hidePopover();
+  const startAdd = (event: MouseEvent<HTMLAnchorElement>, action: (typeof addActions)[number]) => {
+    if (active === action.href) {
+      event.preventDefault();
+      window.dispatchEvent(new CustomEvent(ADD_INTENT_EVENT, { detail: action.intent }));
+    }
+    hidePopover("add-sheet");
+  };
 
   const handleAssistantAvailability = useCallback((availability: AssistantAvailability) => {
     setAssistantAccess((current) => current.enabled === availability.enabled && current.configured === availability.configured ? current : availability);
@@ -228,35 +232,37 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
   }, [assistantOpening, assistantAccess.enabled, assistantBusy, focusAssistant]);
 
   return <div className={`app-frame ${active === "/debts" ? "debts-shell" : ""}`}>
-    <aside className="sidebar">
-      <Link href="/dashboard" className="brand"><span className="brand-mark">t</span><span>Tally</span></Link>
-      <div className="nav-label">WORKSPACE</div>
-      <nav className="side-nav" aria-label="Main navigation">
-        {navigation.map(({ href, label, icon: Icon, routes }) => {
-          const selected = isCurrentSection(routes);
-          return <Link href={href} className={`nav-item ${selected ? "active" : ""}`} key={href} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={18} strokeWidth={1.8}/><span>{label}</span></Link>;
-        })}
+    <header className="topbar">
+      <Link href="/dashboard" className="brand"><span className="brand-mark">t</span><span>tally</span></Link>
+      <button type="button" className="account-menu-trigger" popoverTarget="account-menu" aria-label={`${user.username} account menu`}><span className="avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span></button>
+    </header>
+    <div id="account-menu" className="account-menu-panel" popover="auto">
+      <div className="account-menu-heading"><strong>{user.username}</strong><span>{user.role === "admin" ? "Administrator" : "Personal ledger"}</span></div>
+      <nav className="account-menu-links" aria-label="Account navigation">
+        {accountEntries.map(({ href, label, icon: Icon }) => <Link href={href} className="account-menu-link" key={href} aria-current={active === href ? "page" : undefined} onNavigate={() => hidePopover("account-menu")}><Icon size={16} aria-hidden="true"/><span>{label}</span></Link>)}
       </nav>
-      <div className="sidebar-spacer"/>
-      <div className="sidebar-note"><span className="privacy-dot"/>Private by default</div>
-      <div className="sidebar-user">{accountMenuTrigger("sidebar-account-trigger")}<div className="user-lines"><strong>{user.username}</strong><span>{user.role === "admin" ? "Administrator" : "Personal ledger"}</span></div><SignOutButton/></div>
-    </aside>
-    <div className="main-column">
-      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{pageLabel}</strong></div></header>
-      {accountMenuTrigger("mobile-account-trigger")}
-      <div id="account-menu" className="account-menu-panel" popover="auto">
-        <div className="account-menu-heading"><strong>{user.username}</strong><span>{user.role === "admin" ? "Administrator" : "Personal ledger"}</span></div>
-        <nav className="account-menu-links" aria-label="Account navigation">
-          {accountEntries.map(({ href, label, icon: Icon }) => <Link href={href} className="account-menu-link" key={href} aria-current={active === href ? "page" : undefined} onNavigate={() => document.getElementById("account-menu")?.hidePopover()}><Icon size={16} aria-hidden="true"/><span>{label}</span></Link>)}
-        </nav>
-      </div>
-      <main ref={pageContentRef} className="page-content">{children}</main>
+      <div className="account-menu-footer"><SignOutButton/><span>Sign out</span></div>
     </div>
+    <div id="add-sheet" className="add-sheet" popover="auto" aria-label="Create new">
+      <div className="add-sheet-heading"><strong>Add something</strong><button type="button" className="icon-button" aria-label="Close" popoverTarget="add-sheet" popoverTargetAction="hide"><X size={16}/></button></div>
+      <div className="add-sheet-grid">
+        {addActions.map((action) => <Link key={action.intent} href={`${action.href}?${ADD_INTENT_PARAM}=${action.intent}`} className={`add-sheet-item ${action.tone}`} onClick={(event) => startAdd(event, action)}><span className="add-sheet-icon"><action.icon size={18} aria-hidden="true"/></span><strong>{action.label}</strong><span>{action.detail}</span></Link>)}
+      </div>
+    </div>
+    <main ref={pageContentRef} className="page-content">{children}</main>
     <div className="mobile-controls">
-      <nav className="mobile-nav" aria-label="Mobile navigation">{navigation.map(({ href, label, icon: Icon, routes }) => {
-        const selected = isCurrentSection(routes);
-        return <Link key={href} href={href} className={selected ? "selected" : ""} aria-label={label} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={19} aria-hidden="true"/><span>{label}</span></Link>;
-      })}</nav>
+      <nav className="dock" aria-label="Main navigation">
+        {navigation.slice(0, 2).map(({ href, label, icon: Icon, routes }) => {
+          const selected = isCurrentSection(routes);
+          return <Link key={href} href={href} className={`dock-item ${selected ? "selected" : ""}`} aria-label={label} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={19} aria-hidden="true"/><span>{label}</span></Link>;
+        })}
+        <button type="button" className="dock-add" popoverTarget="add-sheet" aria-label="Add something"><Plus size={22} strokeWidth={2.4} aria-hidden="true"/></button>
+        {navigation.slice(2).map(({ href, label, icon: Icon, routes }) => {
+          const selected = isCurrentSection(routes);
+          return <Link key={href} href={href} className={`dock-item ${selected ? "selected" : ""}`} aria-label={label} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={19} aria-hidden="true"/><span>{label}</span></Link>;
+        })}
+        <button ref={launcherButton} type="button" className={`dock-item dock-ask ${mode === "closed" ? "" : "selected"}`} aria-label={mode === "closed" ? "Open Tally assistant" : "Close Tally assistant"} aria-expanded={panelOpen} aria-controls="assistant-widget-panel" onClick={mode === "closed" ? openAssistant : closeAssistant}><Sparkles size={19} aria-hidden="true"/><span>Ask</span></button>
+      </nav>
       <div className={`assistant-widget ${mode}`}>
         <section id="assistant-widget-panel" className={`assistant-widget-panel ${assistantAccess.enabled ? "has-composer" : ""}`} data-open={panelOpen} role="dialog" aria-modal="false" aria-label="Tally assistant" aria-hidden={!panelOpen} inert={!panelOpen} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeAssistant(); } }}>
           <header className="assistant-widget-header">
@@ -277,14 +283,14 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
             onSubmitReady={handleAssistantSubmitReady}
           />}
         </section>
-        {assistantAccess.enabled ? <form className={`assistant-widget-composer ${mode}`} onSubmit={submitAssistant}>
-          <button ref={launcherButton} type="button" className="assistant-widget-mode-button" aria-label={mode === "closed" ? "Open Tally assistant" : "Close message composer"} aria-expanded={panelOpen} aria-controls="assistant-widget-panel" hidden={mode === "chat"} onClick={mode === "closed" ? openAssistant : closeAssistant}>
-            {mode === "closed" ? <Sparkles size={19}/> : <X size={16}/>}
+        {assistantAccess.enabled ? <form className={`assistant-widget-composer ${mode}`} hidden={mode === "closed"} onSubmit={submitAssistant}>
+          <button type="button" className="assistant-widget-mode-button" aria-label="Close message composer" aria-expanded={panelOpen} aria-controls="assistant-widget-panel" hidden={mode === "chat"} onClick={closeAssistant}>
+            <X size={16}/>
           </button>
           <label className="sr-only" htmlFor="assistant-widget-prompt" hidden={mode === "closed"}>Message Tally</label>
           <textarea ref={composerField} id="assistant-widget-prompt" aria-controls="assistant-widget-panel" rows={1} maxLength={2000} value={assistantPrompt} disabled={assistantBusy} hidden={mode === "closed"} onChange={(event) => setAssistantPrompt(event.target.value)} onKeyDown={onPromptKeyDown} placeholder="Ask Tally anything…"/>
           <button className="assistant-widget-send" hidden={mode === "closed"} disabled={assistantBusy || !assistantSubmitReady || !assistantPrompt.trim()} aria-label="Send message" title="Send"><Send size={16}/></button>
-        </form> : mode === "closed" ? <button ref={launcherButton} type="button" className="assistant-widget-disabled-trigger" aria-label="Open Tally assistant" aria-expanded={panelOpen} aria-controls="assistant-widget-panel" onClick={openAssistant}><Sparkles size={19}/></button> : null}
+        </form> : null}
       </div>
     </div>
   </div>;

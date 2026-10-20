@@ -7,6 +7,7 @@ import { formatPHP, minorToInput } from "@/lib/money";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 import { ModalPresence } from "./modal-presence";
+import { useAddIntent } from "@/lib/add-intent";
 
 type AccountDraft = { name: string; type: "cash" | "bank"; balance: string };
 type TransferDraft = { amount: string; description: string; accountId: string; destinationAccountId: string; date: string; time: string };
@@ -119,6 +120,8 @@ export function AccountsView({ initial, initialTransfers, initialHasMoreTransfer
     setTransferError("");
     setTransferOpen(true);
   }
+
+  useAddIntent("transfer", createTransfer);
 
   function editTransfer(transfer: Transaction) {
     setEditingTransfer(transfer);

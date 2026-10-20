@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, HandCoins, Landmark, Wallet } from "lucide-react";
+import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, CalendarDays, HandCoins, Landmark, Wallet } from "lucide-react";
 import { CategoryGlyph } from "@/components/category-glyph";
 import { DashboardCalendar } from "@/components/dashboard-calendar";
 import { formatPHP, formatPHPFromMinorString } from "@/lib/money";
@@ -13,13 +13,17 @@ import type { Store } from "@/lib/store";
 import { transactionKindLabel } from "@/lib/transaction-model";
 
 type Dashboard = ReturnType<Store["getDashboard"]>;
+export type DashboardBill = { id: string; name: string; amountMinor: number; nextDueDate: string };
+export type DashboardDebtSummary = { owedToYouMinor: number; youOweMinor: number };
 
 const ASSET_COLORS = ["#256b51", "#367daf", "#8b7ab8", "#d28b50", "#c66f62", "#24a4a2", "#718078", "#ab86a6"];
 const formatWeight = (basisPoints: number) => `${(basisPoints / 100).toFixed(2)}%`;
 const periodDateFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "2-digit", year: "numeric", timeZone: "UTC" });
+const ticketDateFormatter = new Intl.DateTimeFormat("en-US", { weekday: "short", day: "numeric", timeZone: "UTC" });
+const ticketDate = (date: string) => ticketDateFormatter.format(new Date(`${date}T00:00:00.000Z`)).toUpperCase();
 const formatPeriodDate = (date: string) => date ? periodDateFormatter.format(new Date(`${date}T00:00:00.000Z`)) : "Select date";
 
-export function DashboardView({ initial, initialCalendar }: { initial: Dashboard; initialCalendar?: CalendarSeed }) {
+export function DashboardView({ initial, initialCalendar, upcomingBills = [], debtSummary }: { initial: Dashboard; initialCalendar?: CalendarSeed; upcomingBills?: DashboardBill[]; debtSummary?: DashboardDebtSummary }) {
   const [data, setData] = useState(initial);
   const [start, setStart] = useState(initial.start);
   const [end, setEnd] = useState(initial.end);
@@ -52,11 +56,21 @@ export function DashboardView({ initial, initialCalendar }: { initial: Dashboard
     <section className="period-row"><details className="period-filter"><summary className="period-filter-summary">{formatPeriodDate(data.start)} — {formatPeriodDate(data.end)}</summary><form className="date-range-form" onSubmit={(event) => { event.preventDefault(); void refresh(start, end); }}><label><span className="sr-only">Start date</span><input type="date" value={start} onChange={(event) => setStart(event.target.value)}/></label><span>to</span><label><span className="sr-only">End date</span><input type="date" value={end} onChange={(event) => setEnd(event.target.value)}/></label><button className="button button-small" type="submit">Apply</button><button className="button button-text button-small" type="button" onClick={() => { const range = monthToDateRange(); setStart(range.start); setEnd(range.end); void refresh(range.start, range.end); }}>Month to date</button></form></details></section>
 
     <section className="stat-grid dashboard-period-stats" aria-label="Period summary">
-      <article className="stat-card"><div className="stat-top"><span>Total balance</span><span className="stat-icon green-light"><Wallet size={18}/></span></div><strong className={`stat-value ${totalBalanceMinor < 0 ? "negative" : ""}`}>{formatPHP(totalBalanceMinor)}</strong></article>
+      <article className="stat-card"><div className="stat-top"><span>Total balance</span><span className="stat-icon green-light"><Wallet size={18}/></span></div><strong className={`stat-value ${totalBalanceMinor < 0 ? "negative" : ""}`}>{formatPHP(totalBalanceMinor)}</strong>{data.accounts.length ? <ul className="stat-accounts" aria-label="Account balances">{data.accounts.slice(0, 3).map((account) => <li key={account.id}><span>{account.name}</span><strong>{formatPHP(account.balanceMinor)}</strong></li>)}</ul> : null}</article>
       <article className="stat-card"><div className="stat-top"><span>Income</span><span className="stat-icon green-light"><ArrowDownRight size={18}/></span></div><strong className="stat-value">{formatPHP(data.incomeMinor)}</strong></article>
       <article className="stat-card"><div className="stat-top"><span>Spending</span><span className="stat-icon coral-light"><ArrowUpRight size={18}/></span></div><strong className="stat-value">{formatPHP(data.spendingMinor)}</strong></article>
       <article className="stat-card"><div className="stat-top"><span>Repayments received</span><span className="stat-icon green-light"><HandCoins size={18}/></span></div><strong className="stat-value">{formatPHP(data.debtRepaymentMinor)}</strong></article>
       <article className="stat-card"><div className="stat-top"><span>Net cash flow</span><span className="stat-icon violet-light"><ArrowLeftRight size={18}/></span></div><strong className={`stat-value ${data.netCashFlowMinor < 0 ? "negative" : ""}`}>{formatPHP(data.netCashFlowMinor)}</strong></article>
+    </section>
+
+    <section className="pocket-row" aria-label="Upcoming">
+      <article className="panel bills-panel"><div className="panel-heading"><div><h2>Bills coming up</h2></div><Link href="/bills" className="quiet-link">All bills</Link></div>
+        {upcomingBills.length ? <ul className="ticket-row">{upcomingBills.map((bill) => <li className="ticket" key={bill.id}><span className="ticket-when">{ticketDate(bill.nextDueDate)}</span><strong>{formatPHP(bill.amountMinor)}</strong><span>{bill.name}</span></li>)}</ul> : <div className="ticket-empty"><CalendarDays size={18} aria-hidden="true"/><span>No bills due soon.</span></div>}
+      </article>
+      {debtSummary ? <Link href="/debts" className="panel debt-tile"><div className="panel-heading"><div><h2>Debts</h2></div><HandCoins size={17} aria-hidden="true"/></div>
+        <div className="debt-tile-line"><span>Owed to you</span><strong className="positive">{formatPHP(debtSummary.owedToYouMinor)}</strong></div>
+        <div className="debt-tile-line"><span>You owe</span><strong className={debtSummary.youOweMinor > 0 ? "negative" : ""}>{formatPHP(debtSummary.youOweMinor)}</strong></div>
+      </Link> : null}
     </section>
 
     {initialCalendar ? <DashboardCalendar initial={initialCalendar}/> : null}

@@ -5,6 +5,7 @@ import { formatPHP, minorToInput } from "@/lib/money";
 import { todayInManila } from "@/lib/dates";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 import { ModalPresence } from "./modal-presence";
+import { useAddIntent } from "@/lib/add-intent";
 
 export type GoalMemberView={userId:string|null;username:string;status:string};
 export type ContributionView={id:string;userId:string|null;memberName:string;amountMinor:number;note:string;date:string};
@@ -15,6 +16,7 @@ export function GoalsView({initialGoals,initialInvitations,userId}:{initialGoals
  const [goals,setGoals]=useState(initialGoals);const [invitations,setInvitations]=useState(initialInvitations);const [modal,setModal]=useState<"create"|"edit"|null>(null);const [editing,setEditing]=useState<GoalView|null>(null);const [draft,setDraft]=useState<GoalDraft>({name:"",target:"",deadline:""});const [error,setError]=useState("");const [busy,setBusy]=useState(false);const [inviteName,setInviteName]=useState<Record<string,string>>({});const [contrib,setContrib]=useState<Record<string,{amount:string;note:string}>>({});const [notice,setNotice]=useState("");const [confirmation,setConfirmation]=useState<ConfirmationRequest|null>(null);
  async function refresh(){const r=await fetch("/api/goals").then(x=>x.json());if(r.goals)setGoals(r.goals);if(r.invitations)setInvitations(r.invitations);}
  function create(){setEditing(null);setDraft({name:"",target:"",deadline:""});setError("");setModal("create");}
+ useAddIntent("goal",create);
  function edit(goal:GoalView){setEditing(goal);setDraft({name:goal.name,target:minorToInput(goal.targetMinor),deadline:goal.deadline??""});setError("");setModal("edit");}
  async function saveGoal(e:React.FormEvent){e.preventDefault();setBusy(true);setError("");try{const response=await fetch(editing?`/api/goals/${editing.id}`:"/api/goals",{method:editing?"PATCH":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:draft.name,target:draft.target,deadline:draft.deadline||null})});const result=await response.json();if(!response.ok)throw new Error(result.error??"Could not save goal.");setModal(null);await refresh();}catch(err){setError(err instanceof Error?err.message:"Could not save goal.");}finally{setBusy(false);}}
  async function answerInvite(id:string,accept:boolean){const response=await fetch("/api/invitations",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({membershipId:id,accept})});const result=await response.json();if(!response.ok){setNotice(result.error);return;}await refresh();}

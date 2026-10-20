@@ -8,6 +8,7 @@ import { transactionKindLabel } from "@/lib/transaction-model";
 import { DEBTS_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 import { ModalPresence } from "./modal-presence";
+import { useAddIntent } from "@/lib/add-intent";
 
 type DebtDraft = { direction: DebtDirection; counterparty: string; amount: string; dueDate: string; note: string };
 type StatusFilter = DebtStatus | "all";
@@ -71,6 +72,8 @@ export function DebtsView({ initial }: { initial: Debt[] }) {
     setError("");
     setDialogOpen(true);
   }
+
+  useAddIntent("debt", () => create());
 
   function edit(debt: Debt) {
     setEditing(debt);

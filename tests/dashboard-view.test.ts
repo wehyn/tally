@@ -140,6 +140,20 @@ describe("DashboardView", () => {
     expect(html.match(/class="stat-card"/g)).toHaveLength(5);
   });
 
+  it("shows upcoming bills as tickets and a debt summary when provided", () => {
+    const initial = dashboardData();
+    const html = renderToStaticMarkup(createElement(DashboardView, {
+      initial,
+      upcomingBills: [{ id: "bill-1", name: "Meralco", amountMinor: 342_000, nextDueDate: "2026-10-24" }],
+      debtSummary: { owedToYouMinor: 500_000, youOweMinor: 0 },
+    }));
+    expect(html).toContain("Bills coming up");
+    expect(html).toMatch(/class="ticket-when">24 SAT<\/span><strong>₱3,420.00<\/strong><span>Meralco/);
+    expect(html).toContain("Owed to you");
+    expect(html).toContain("₱5,000.00");
+    expect(renderToStaticMarkup(createElement(DashboardView, { initial }))).toContain("No bills due soon.");
+  });
+
   it("sums balances exactly when an intermediate total exceeds the safe-integer limit", () => {
     const user = store.registerUser("dashboard_large_balance", "hash");
     store.createAccount(user.id, { name: "Largest balance", type: "bank", openingMinor: Number.MAX_SAFE_INTEGER });

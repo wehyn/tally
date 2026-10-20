@@ -9,6 +9,7 @@ import { isUndoAvailable, todayInManila, timeInManila } from "@/lib/dates";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 import { ConfirmDialog, type ConfirmationRequest } from "./confirm-dialog";
 import { ModalPresence } from "./modal-presence";
+import { useAddIntent } from "@/lib/add-intent";
 import { CategoryManager } from "./category-manager";
 import { CategoryGlyph } from "./category-glyph";
 import { transactionKindLabel } from "@/lib/transaction-model";
@@ -25,6 +26,7 @@ export function TransactionsView({initial,initialAccounts,initialCategories}:{in
   const refresh=useCallback(async()=>{const [t,a,c]=await Promise.all([fetch("/api/transactions").then(r=>r.json()),fetch("/api/accounts").then(r=>r.json()),fetch("/api/categories").then(r=>r.json())]);if(t.transactions)setTransactions(t.transactions);if(a.accounts)setAccounts(a.accounts);if(c.categories)setCategories(c.categories);},[]);
   useEffect(()=>{const update=()=>setNow(Date.now());update();const id=window.setInterval(update,1000);const refreshAfterAssistantTransaction=()=>{void refresh().catch(()=>undefined);};window.addEventListener(LEDGER_UPDATED_EVENT,refreshAfterAssistantTransaction);return()=>{window.clearInterval(id);window.removeEventListener(LEDGER_UPDATED_EVENT,refreshAfterAssistantTransaction);};},[refresh]);
   function startNew(){setEditing(null);setDraft(blank(accounts));setError("");setOpen(true);}
+  useAddIntent("transaction",startNew);
   function startEdit(tx:Transaction){if(tx.kind==="transfer"){router.push("/accounts");return;}setEditing(tx);setDraft({amount:minorToInput(tx.amountMinor),description:tx.description,accountId:tx.accountId,categoryId:tx.categoryId??"",date:tx.date,time:tx.time??""});setError("");setOpen(true);}
   async function save(e:React.FormEvent){
     e.preventDefault();
