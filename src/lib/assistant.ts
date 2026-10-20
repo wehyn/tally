@@ -414,7 +414,7 @@ function hasIncomingDebtRepaymentWording(text: string): boolean {
   });
 }
 function isUncertainStatement(text: string): boolean {
-  return text.includes("?") || /\b(?:did not|didn't|does not|doesn't|do not|don't|has not|hasn't|have not|haven't|never|not|maybe|perhaps|possibly|probably|might|may|could|would|will|if|whether|think|thought|unsure|uncertain)\b/i.test(text);
+  return text.includes("?") || /\b(?:\w+n['’]t|cannot|never|not|maybe|perhaps|possibly|probably|might|may|could|would|will|if|whether|think|thought|unsure|uncertain)\b/i.test(text);
 }
 function isUnconfirmedIncomingDebtPayment(text: string): boolean {
   return /\b(?:pay|paid|pays|paying)\s+(?:me|back)\b|\b(?:repay|repays|repaid|repayment|return|returns|returned|returning)\b/i.test(text)
