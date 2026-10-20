@@ -1942,6 +1942,25 @@ describe("assistant debt capture", () => {
     expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
   });
 
+  it.each([
+    ["uncertain gave back", "Maybe Ana gave back ₱500 for the loan"],
+    ["negated settled", "Ana did not settle ₱500 of her loan"],
+    ["hadn't settled", "Ana hadn't settled ₱500 of her loan"],
+    ["hadn't paid back", "Ana hadn't paid me back ₱500"],
+    ["curly-apostrophe wasn't paid back", "Ana wasn’t able to say she paid me back ₱500"],
+  ] as const)("does not record %s repayment wording", async (_wording, prompt) => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })));
+
+    const response = await POST(assistantRequest(prompt));
+    const result = await response.json();
+
+    expect(result).toMatchObject({ transaction: null, debt: null, undoUntil: null });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)?.amountMinor).toBe(100000);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
   it.each(["Mom paid back 100", "Mom returned 100", "Mom paid me back ₱100"])("recognizes incoming repayment wording: %s", async (prompt) => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 348600 });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
