@@ -16,7 +16,25 @@ function formatAssistantDate(date: string, month: "short" | "long" = "short"): s
   const options: Intl.DateTimeFormatOptions = month === "long" ? { month, timeZone: "UTC" } : { month, day: "numeric", timeZone: "UTC" };
   return new Intl.DateTimeFormat("en-US", options).format(new Date(`${date}T00:00:00Z`));
 }
-function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>, prompt: string) {
+type FinanceMetric = "income" | "spending" | "repaymentsReceived" | "repaymentsMade" | "cashFlow";
+function requestedFinanceMetrics(prompt: string): ReadonlySet<FinanceMetric> {
+  const metrics = new Set<FinanceMetric>();
+  const asksRepaymentsMade = /\b(?:how much|what amount)\s+(?:did|have)\s+(?:i|we)\s+(?:repay|repaid|pay back|paid back)\b|\b(?:i|we)\s+(?:repaid|paid back)\b|\b(?:debt|loan)\s+repayments?\s+made\b|\b(?:repayments?|payments?)\s+(?:i|we)\s+made\b/i.test(prompt)
+    || /\b(?:how much|what amount)\s+(?:did|have)\s+(?:i|we)(?:\s+\w+){0,3}\s+and\s+(?:repay|repaid|pay back|paid back)\b/i.test(prompt);
+  const asksRepaymentsReceived = /\b(?:repayments? received|paid me(?: back)?|repaid me|paid back to me|returned (?:my )?money)\b/i.test(prompt)
+    || !asksRepaymentsMade && /\b(?:(?:debt|loan)\s+repayments?|paid(?: me)? back|repaid|returned (?:my )?money)\b/i.test(prompt);
+  if (asksRepaymentsReceived) metrics.add("repaymentsReceived");
+  if (asksRepaymentsMade) metrics.add("repaymentsMade");
+  if (/\b(?:income|earnings?|salary|earned)\b/i.test(prompt)) metrics.add("income");
+  if (/\b(?:spend(?:ing)?|spent|expenses?|purchases?)\b/i.test(prompt)) metrics.add("spending");
+  if (/\b(?:net cash flow|cash flow|net activity)\b/i.test(prompt)) metrics.add("cashFlow");
+  return metrics;
+}
+function isDebtRepaymentReportQuestion(prompt: string, metrics: ReadonlySet<FinanceMetric>): boolean {
+  return (metrics.has("repaymentsReceived") || metrics.has("repaymentsMade"))
+    && /\b(?:how much|what amount|what (?:were|was|are|is)|total|sum|show|display|list|report|breakdown)\b/i.test(prompt);
+}
+function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>, prompt: string, requestedMetrics: ReadonlySet<FinanceMetric>) {
   if (/\b(?:assets?|balances?|account totals?)\b/i.test(prompt)) {
     return `Account Balances\n\n${facts.accounts.map((account) => `${account.name}: ${formatPHP(account.balanceMinor)}`).join("\n") || "No accounts yet."}`;
   }
@@ -24,15 +42,26 @@ function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanc
   const period = facts.start === currentPeriod.start && facts.end === currentPeriod.end
     ? `This ${formatAssistantDate(facts.end, "long")}`
     : `From ${formatAssistantDate(facts.start)} to ${formatAssistantDate(facts.end)}`;
-  if (facts.requestedCategory) return `${period}\n\n${facts.requestedCategory}: ${formatPHP(facts.categoryAmountMinor ?? 0)}`;
   const topCategories = facts.byCategory.slice(0, 3).map((item) => `${item.name}: ${formatPHP(item.amountMinor)}`).join("\n");
-  const asksIncome = /\b(?:income|earnings?|salary|earned|received)\b/i.test(prompt);
-  const asksSpending = /\b(?:spend(?:ing)?|spent|expenses?|purchases?)\b/i.test(prompt);
-  if (asksSpending && !asksIncome) return `${period}\n\nTotal Spent: ${formatPHP(facts.spendingMinor)}${topCategories ? `\n${topCategories}` : ""}`;
-  if (asksIncome && !asksSpending) return `${period}\n\nTotal Income: ${formatPHP(facts.incomeMinor)}`;
-  return `${period}\n\nTotal Income: ${formatPHP(facts.incomeMinor)}\nTotal Spent: ${formatPHP(facts.spendingMinor)}${topCategories ? `\n${topCategories}` : ""}`;
+  const categoryTotal = facts.requestedCategory ? `${facts.requestedCategory}: ${formatPHP(facts.categoryAmountMinor ?? 0)}` : null;
+  const metrics = new Set(requestedMetrics);
+  const asksReceived = /\b(?:received|money in|inflows?)\b/i.test(prompt);
+  if (!metrics.size && asksReceived) {
+    metrics.add("income");
+    metrics.add("repaymentsReceived");
+  }
+  const requestedTotals: string[] = [];
+  if (metrics.has("income")) requestedTotals.push(`Total Income: ${formatPHP(facts.incomeMinor)}`);
+  if (metrics.has("repaymentsReceived")) requestedTotals.push(`Repayments received: ${formatPHP(facts.debtRepaymentMinor)}`);
+  if (metrics.has("repaymentsMade")) requestedTotals.push(`Debt repayments made: ${formatPHP(facts.outgoingDebtRepaymentMinor)}`);
+  if (metrics.has("spending")) requestedTotals.push(categoryTotal ?? `Total Spent: ${formatPHP(facts.spendingMinor)}${topCategories ? `\n${topCategories}` : ""}`);
+  else if (categoryTotal) requestedTotals.push(categoryTotal);
+  if (metrics.has("cashFlow")) requestedTotals.push(`Net cash flow: ${formatPHP(facts.netCashFlowMinor)}`);
+  if (requestedTotals.length) return `${period}\n\n${requestedTotals.join("\n")}`;
+  return `${period}\n\nTotal Income: ${formatPHP(facts.incomeMinor)}\nDebt repayments received: ${formatPHP(facts.debtRepaymentMinor)}\nTotal Spent: ${formatPHP(facts.spendingMinor)}\nNet cash flow: ${formatPHP(facts.netCashFlowMinor)}${topCategories ? `\n${topCategories}` : ""}`;
 }
-function debtQuestion(prompt: string): boolean {
+function debtQuestion(prompt: string, metrics: ReadonlySet<FinanceMetric>): boolean {
+  if (isDebtRepaymentReportQuestion(prompt, metrics)) return false;
   return /\b(?:list|show|display)\b.*\b(?:debts?|people who owe|people i owe|people who currently owe)\b/i.test(prompt)
     || /\b(?:open debt list|debt list|list of debts)\b/i.test(prompt)
     || /\b(?:who owes me(?: money)?|how much do (?:people|they) owe me|what debt do i owe|who do i owe|how much do i owe|how much is owed to me)\b/i.test(prompt);
@@ -375,11 +404,6 @@ function containsCounterparty(text: string, counterparty: string): boolean {
   const normalizedCounterparty = normalizeCounterparty(counterparty);
   return normalizedCounterparty.length > 0 && ` ${normalizeCounterparty(text)} `.includes(` ${normalizedCounterparty} `);
 }
-function debtNoteMatches(text: string, note: string): boolean {
-  // shortcut: matches full note phrases after one leading filler; broaden when users need partial note matching.
-  const normalizedNote = normalizeWords(note).replace(/^(?:about|for|the|a|an)\s+/, "");
-  return Boolean(normalizedNote && containsCounterparty(text, normalizedNote));
-}
 function hasIncomingDebtRepaymentWording(text: string): boolean {
   if (/\b(?:paid\s+me|repaid\s+me|repayment)\b/i.test(text)) return true;
   const payment = /\b(?:paid\s+back|repaid|returned)\s+(?:(?:₱|PHP|\$)\s*)?\d|\breturned\s+(?:the|my)\s+money\b/giu;
@@ -390,7 +414,7 @@ function hasIncomingDebtRepaymentWording(text: string): boolean {
   });
 }
 function isUncertainStatement(text: string): boolean {
-  return text.includes("?") || /\b(?:did not|didn't|does not|doesn't|do not|don't|has not|hasn't|have not|haven't|never|not|maybe|perhaps|possibly|probably|might|may|could|would|will|if|whether|think|thought|unsure|uncertain)\b/i.test(text);
+  return text.includes("?") || /\b(?:\w+n['’]t|cannot|never|not|maybe|perhaps|possibly|probably|might|may|could|would|will|if|whether|think|thought|unsure|uncertain)\b/i.test(text);
 }
 function isUnconfirmedIncomingDebtPayment(text: string): boolean {
   return /\b(?:pay|paid|pays|paying)\s+(?:me|back)\b|\b(?:repay|repays|repaid|repayment|return|returns|returned|returning)\b/i.test(text)
@@ -642,8 +666,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       { content: input.prompt, createdAt: promptCreatedAt },
     ];
     const userMessageText = userMessages.map((message) => message.content);
+    const requestedMetrics = requestedFinanceMetrics(input.prompt);
+    const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
     store.addMessage(user.id, conversationId, "user", input.prompt);
-    if (debtQuestion(input.prompt)) {
+    if (debtQuestion(input.prompt, requestedMetrics)) {
       const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
       store.addMessage(user.id, conversationId, "assistant", answer);
       return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
@@ -691,10 +717,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const payerSelection = /\b(?:who paid|which person|which person's|which debt)\b/i.test(lastAssistantFollowup);
     const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
     const repaymentFollowup = /\b(?:what amount|how much|who paid|which person|which debt)\b/i.test(lastAssistantFollowup);
-    const uncertainRepayment = userMessageText.some((message) => isUnconfirmedIncomingDebtPayment(message) || isUnconfirmedOutgoingDebtPayment(message))
-      || repaymentFollowup && isUncertainStatement(input.prompt);
-    const incomingRepaymentIntent = hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
-    const outgoingRepaymentIntent = hasOutgoingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
+    const uncertainRepayment = !repaymentReportQuestion && (userMessageText.some((message) => isUnconfirmedIncomingDebtPayment(message) || isUnconfirmedOutgoingDebtPayment(message))
+      || repaymentFollowup && isUncertainStatement(input.prompt));
+    const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
+    const outgoingRepaymentIntent = !repaymentReportQuestion && hasOutgoingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const repaymentIntent = incomingRepaymentIntent || outgoingRepaymentIntent;
     const repaymentDebts = incomingRepaymentIntent ? openOwedToYouDebts : outgoingRepaymentIntent ? openYouOweDebts : [];
     const repaymentNames = repaymentIntent
@@ -703,8 +729,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const repaymentCandidates = repaymentNames.length === 1
       ? repaymentDebts.filter((debt) => normalizeCounterparty(debt.counterparty) === repaymentNames[0])
       : [];
-    const repaymentNoteMatches = repaymentCandidates.filter((debt) => debt.note && debtNoteMatches(repaymentMatchText, debt.note));
-    const repaymentDebt = repaymentNoteMatches.length === 1 ? repaymentNoteMatches[0] : repaymentCandidates[0];
+    const repaymentDebt = repaymentCandidates[0];
     const accountOrDateClarificationPending = /(?:couldn't find the account|set a default financial account|create a financial account first|what date should i use)/i.test(lastAssistantFollowup);
     const latestRepaymentPrompt = [...history].reverse().find((message) => message.role === "user"
       && (hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
@@ -714,7 +739,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
     let call = providerCall;
-    if (ordinaryIncomeFlow) {
+    if (repaymentReportQuestion) {
+      call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
+    } else if (ordinaryIncomeFlow) {
       if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
         const providerCounterparty = typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty.trim() : "";
         const description = typeof providerCall.args.description === "string" && providerCall.args.description.trim()
@@ -767,7 +794,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const billFollowupPending = history.some((message) => message.role === "user" && isBillTrackingIntent(message.content))
       && /^(?:please provide|what should i name this bill|what exact day|what valid first due|what valid exact end|the first due date|the end date must|an active bill|which schedule|what should i change|i couldn't find an active bill|which expense category|i couldn't find the account|set a default financial account)/i.test(lastAssistantFollowup);
     const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && providerCall.name !== "finance_question");
-    if (billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
+    if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
     let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let needsFollowup = false;
     if (call.name === "create_bill" || call.name === "update_bill") {
@@ -783,7 +810,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else {
         const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
         const facts = store.getFinanceFacts(user.id, start, end, category);
-        answer = answerForFacts(facts, input.prompt);
+        answer = answerForFacts(facts, input.prompt, requestedMetrics);
       }
     } else if (call.name === "log_debt") {
       const direction = call.args.direction === "owed_to_you" || call.args.direction === "you_owe" ? call.args.direction : statedDebtIntent?.direction ?? null;
@@ -886,9 +913,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const normalizedCounterparty = normalizeCounterparty(counterparty);
         const matchingDebt = repaymentDebt && normalizeCounterparty(repaymentDebt.counterparty) === normalizedCounterparty
           ? repaymentDebt
-          : normalizedCounterparty ? store.listDebts(user.id)
-          .filter((item) => item.direction === "owed_to_you" && item.status === "open" && normalizeCounterparty(item.counterparty) === normalizedCounterparty)
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] : undefined;
+          : undefined;
         const amountMinor = parsePHPToMinor(amount);
         if (!matchingDebt) {
           answer = `I couldn't find an open debt owed to you by ${counterparty}. Should I record ${formatPHP(amountMinor)} as ordinary income instead?`;
@@ -912,27 +937,22 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           const timeHint = timeHintFromMessages(userMessageText);
           const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
           const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
-          const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, "income");
-          const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, "income") : undefined;
-          const category = categoryHint.mentioned ? categoryHint.category : requestedCategory ?? fallbackCategory("income", categories);
           if (!account) {
             const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
             answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment.";
             needsFollowup = true;
           }
           else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
-          else if (!category && (categoryHint.mentioned || typeof call.args.category === "string")) { answer = "Which income category should I use? Choose one from your categories."; needsFollowup = true; }
-          else if (!category) { answer = "Create an income category before recording this repayment."; needsFollowup = true; }
           else {
             const description = typeof call.args.description === "string" && call.args.description.trim()
               ? call.args.description.trim().slice(0, 180)
               : `${matchingDebt.counterparty} paid me`;
             const saved = store.recordDebtPayment(user.id, matchingDebt.id, {
-              kind: "income", amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant",
+              amountMinor, description, accountId: account.id, date, time,
             });
             transaction = saved.transaction; debt = saved.debt;
             const debtStatus = debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to you.`;
-            answer = `Saved ${formatPHP(transaction.amountMinor)} from ${matchingDebt.counterparty}.\n${transaction.categoryName} · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\n${debtStatus}`;
+            answer = `Recorded ${formatPHP(transaction.amountMinor)} repayment from ${matchingDebt.counterparty}.\nRepayment received · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\n${debtStatus}`;
           }
         }
       }

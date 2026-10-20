@@ -6,6 +6,8 @@ import { Bot, Undo2 } from "lucide-react";
 import { formatPHP, minorToInput } from "@/lib/money";
 import { isUndoAvailable } from "@/lib/dates";
 import type { Debt } from "@/lib/store";
+import type { Transaction } from "@/lib/store";
+import { transactionKindLabel } from "@/lib/transaction-model";
 import {
   ASSISTANT_SETTINGS_UPDATED_EVENT,
   BILLS_UPDATED_EVENT,
@@ -15,19 +17,7 @@ import {
 } from "@/lib/client-events";
 import { AssistantDatePicker, AssistantSelect } from "./assistant-transaction-controls";
 
-type AssistantTransaction = {
-  id: string;
-  kind: "income" | "expense";
-  amountMinor: number;
-  accountId: string;
-  description: string;
-  date: string;
-  time: string | null;
-  categoryId: string;
-  categoryName: string | null;
-  accountName: string;
-  undoUntil: string | null;
-};
+type AssistantTransaction = Pick<Transaction, "id" | "kind" | "amountMinor" | "accountId" | "description" | "date" | "time" | "categoryId" | "categoryName" | "accountName" | "undoUntil" | "debtId">;
 type AssistantAccount = { id: string; name: string };
 type AssistantCategory = { id: string; name: string; type: "income" | "expense" };
 type TransactionEdit = Partial<Pick<AssistantTransaction, "accountId" | "categoryId" | "date">>;
@@ -240,12 +230,12 @@ export function AssistantWidget({
     const accountId = changes.accountId ?? transaction.accountId;
     const categoryId = changes.categoryId ?? transaction.categoryId;
     const account = transactionOptions?.accounts.find((item) => item.id === accountId);
-    const category = transactionOptions?.categories.find((item) => item.id === categoryId && item.type === transaction.kind);
-    if (!account || !category) {
+    const category = transaction.kind === "debt_repayment" ? undefined : transactionOptions?.categories.find((item) => item.id === categoryId && item.type === transaction.kind);
+    if (!account || (transaction.kind !== "debt_repayment" && !category)) {
       setNotice("Choose a valid category and account.");
       return;
     }
-    const optimistic = { ...transaction, ...changes, accountId, accountName: account.name, categoryId, categoryName: category.name };
+    const optimistic = { ...transaction, ...changes, accountId, accountName: account.name, categoryId, categoryName: category?.name ?? null };
     setSavingTransactionId(transaction.id);
     setNotice("");
     setMessages((previous) => previous.map((message) => message.transaction?.id === transaction.id ? { ...message, transaction: optimistic } : message));
@@ -257,7 +247,7 @@ export function AssistantWidget({
           kind: transaction.kind,
           amount: minorToInput(transaction.amountMinor),
           accountId,
-          categoryId,
+          ...(transaction.kind === "debt_repayment" ? {} : { categoryId }),
           description: transaction.description,
           date: changes.date ?? transaction.date,
           time: transaction.time,
@@ -277,22 +267,24 @@ export function AssistantWidget({
 
   return assistantEnabled ? <div ref={messageList} className="assistant-widget-messages" aria-label="Conversation" aria-live="polite">
           {messages.length ? messages.map((message) => message.transaction ? <article className="chat-transaction-card" key={message.id} aria-label="Recorded transaction">
-            <strong className={`chat-transaction-amount ${message.transaction.kind === "income" ? "positive" : "negative"}`}>{formatPHP(message.transaction.amountMinor)}</strong>
+            <strong className={`chat-transaction-amount ${message.transaction.kind === "income" || message.transaction.kind === "debt_repayment" ? "positive" : "negative"}`}>{formatPHP(message.transaction.amountMinor)}</strong>
             <span className="chat-transaction-description">{message.transaction.description || "No description"}</span>
             <div className="chat-transaction-fields">
-              <AssistantSelect
-                label="Category"
-                value={message.transaction.categoryId}
-                options={[
-                  { value: message.transaction.categoryId, label: message.transaction.categoryName ?? "Choose category" },
-                  ...(transactionOptions?.categories.filter((category) => category.type === message.transaction!.kind && category.id !== message.transaction!.categoryId).map((category) => ({ value: category.id, label: category.name })) ?? []),
-                ]}
-                disabled={!transactionOptions}
-                busy={savingTransactionId !== null}
-                open={openTransactionControl === `${message.transaction.id}:category`}
-                onOpenChange={(open) => setOpenTransactionControl(open ? `${message.transaction!.id}:category` : null)}
-                onChange={(categoryId) => void updateTransaction(message.transaction!, { categoryId })}
-              />
+              {message.transaction.kind === "debt_repayment"
+                ? <span className="assistant-transaction-kind">{transactionKindLabel(message.transaction.kind)}</span>
+                : <AssistantSelect
+                    label="Category"
+                    value={message.transaction.categoryId ?? ""}
+                    options={[
+                      { value: message.transaction.categoryId ?? "", label: message.transaction.categoryName ?? "Choose category" },
+                      ...(transactionOptions?.categories.filter((category) => category.type === message.transaction!.kind && category.id !== message.transaction!.categoryId).map((category) => ({ value: category.id, label: category.name })) ?? []),
+                    ]}
+                    disabled={!transactionOptions}
+                    busy={savingTransactionId !== null}
+                    open={openTransactionControl === `${message.transaction.id}:category`}
+                    onOpenChange={(open) => setOpenTransactionControl(open ? `${message.transaction!.id}:category` : null)}
+                    onChange={(categoryId) => void updateTransaction(message.transaction!, { categoryId })}
+                  />}
               <AssistantSelect
                 label="Account"
                 value={message.transaction.accountId}

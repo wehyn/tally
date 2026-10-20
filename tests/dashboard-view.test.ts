@@ -132,11 +132,12 @@ describe("DashboardView", () => {
     expect(totalBalanceCard).toContain("₱25.00");
     expect(html).toContain("Income");
     expect(html).toContain("Spending");
-    expect(html).toContain("Net activity");
+    expect(html).toContain("Repayments received");
+    expect(html).toContain("Net cash flow");
     expect(html).toContain("Assets");
     expect(html).toContain("₱75.00");
     expect(html).toContain("Recent activity");
-    expect(html.match(/class="stat-card"/g)).toHaveLength(4);
+    expect(html.match(/class="stat-card"/g)).toHaveLength(5);
   });
 
   it("sums balances exactly when an intermediate total exceeds the safe-integer limit", () => {

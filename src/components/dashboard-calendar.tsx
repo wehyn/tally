@@ -71,20 +71,21 @@ function formatCalendarDate(date: string): string {
   return dateFormatter.format(new Date(`${date}T00:00:00.000Z`));
 }
 
-function CalendarAmount({ kind, amountMinor }: { kind: "income" | "spending"; amountMinor: number }) {
+function CalendarAmount({ kind, amountMinor }: { kind: "income" | "spending" | "debt_repayment"; amountMinor: number }) {
   const formatted = formatPHP(amountMinor);
   const exactAmount = formatted.slice(1);
   const ungroupedAmount = exactAmount.replaceAll(",", "");
   const compactAmount = compactAmountFormatter.format(amountMinor / 100);
   const compactOnMobile = ungroupedAmount.length > 7;
   const compactOnNarrowMobile = ungroupedAmount.length > 6;
-  const income = kind === "income";
+  const positive = kind !== "spending";
+  const label = kind === "income" ? "Income" : kind === "spending" ? "Spending" : "Debt repayment";
   return <span
-    className={`month-calendar-total ${income ? "income" : "spending"}${compactOnMobile ? " compact-on-mobile" : ""}${compactOnNarrowMobile ? " compact-on-narrow-mobile" : ""}`}
-    aria-label={`${income ? "Income, plus" : "Spending, minus"} ${formatted}`}
+    className={`month-calendar-total ${kind}${compactOnMobile ? " compact-on-mobile" : ""}${compactOnNarrowMobile ? " compact-on-narrow-mobile" : ""}`}
+    aria-label={`${label}, ${positive ? "plus" : "minus"} ${formatted}`}
     title={formatted}
   >
-    <span aria-hidden="true">{income ? "+" : "−"}</span>
+    <span aria-hidden="true">{positive ? "+" : "−"}</span>
     <span className="month-calendar-currency" aria-hidden="true">₱</span>
     <span aria-hidden="true">
       <span className="month-calendar-total-exact">{exactAmount}</span>
@@ -159,7 +160,7 @@ export function DashboardCalendar({ initial }: { initial: CalendarSeed }) {
     </div> : null}
 
     <table className="month-calendar-table">
-      <caption className="sr-only">{monthLabel} income and spending by day</caption>
+      <caption className="sr-only">{monthLabel} income, spending, and debt repayments by day</caption>
       <thead>
         <tr>{weekdayLabels.map((weekday) => <th scope="col" key={weekday.full}><abbr title={weekday.full}>{weekday.short}</abbr></th>)}</tr>
       </thead>
@@ -174,6 +175,7 @@ export function DashboardCalendar({ initial }: { initial: CalendarSeed }) {
                   return activity ? <>
                     {activity.incomeMinor > 0 ? <CalendarAmount kind="income" amountMinor={activity.incomeMinor}/> : null}
                     {activity.spendingMinor > 0 ? <CalendarAmount kind="spending" amountMinor={activity.spendingMinor}/> : null}
+                    {activity.debtRepaymentMinor > 0 ? <CalendarAmount kind="debt_repayment" amountMinor={activity.debtRepaymentMinor}/> : null}
                   </> : null;
                 })()}
               </div>

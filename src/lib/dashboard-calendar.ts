@@ -4,6 +4,7 @@ import { isDateOnly } from "@/lib/dates";
 const dateOnlySchema = z.string().refine(isDateOnly).brand<"DateOnly">();
 const calendarMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).brand<"CalendarMonth">();
 const minorUnitsSchema = z.number().int().nonnegative().refine(Number.isSafeInteger);
+const signedMinorUnitsSchema = z.number().int().refine(Number.isSafeInteger);
 
 const dashboardCalendarPayloadSchema = z.object({
   start: dateOnlySchema,
@@ -12,10 +13,14 @@ const dashboardCalendarPayloadSchema = z.object({
     date: dateOnlySchema,
     income_minor: minorUnitsSchema,
     spending_minor: minorUnitsSchema,
-  })).transform((activity) => activity.map(({ date, income_minor, spending_minor }) => ({
+    debt_repayment_minor: minorUnitsSchema,
+    net_cash_flow_minor: signedMinorUnitsSchema,
+  })).transform((activity) => activity.map(({ date, income_minor, spending_minor, debt_repayment_minor, net_cash_flow_minor }) => ({
     date,
     incomeMinor: income_minor,
     spendingMinor: spending_minor,
+    debtRepaymentMinor: debt_repayment_minor,
+    netCashFlowMinor: net_cash_flow_minor,
   }))),
 });
 

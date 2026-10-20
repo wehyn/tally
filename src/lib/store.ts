@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
+import { isManualTransactionKind, type ManualTransactionKind, type TransactionKind } from "./transaction-model";
 
 export { BILL_ICONS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji } from "./bill-icons";
 export type { BillIcon } from "./bill-icons";
@@ -18,13 +19,17 @@ export type PublicUser = Omit<User, "passwordHash">;
 export type AccountType = "cash" | "bank";
 export type Account = { id: string; name: string; type: AccountType; openingMinor: number; balanceMinor: number; isDefault: boolean };
 export type Category = { id: string; name: string; type: CategoryType; icon: CategoryIconId };
-export type TransactionKind = "income" | "expense" | "transfer";
-export type TransactionInput = { kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; description: string; date: string; time?: string | null; source?: "manual" | "assistant" };
-export type Transaction = Omit<TransactionInput, "time"> & { time: string | null; id: string; categoryName: string | null; categoryIcon: CategoryIconId | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
+export type { TransactionKind } from "./transaction-model";
+type TransactionFields = { amountMinor: number; accountId: string; description: string; date: string; time?: string | null; source?: "manual" | "assistant" };
+export type TransactionInput = TransactionFields & { kind: ManualTransactionKind; destinationAccountId?: string; categoryId?: string };
+export type TransactionUpdateInput = Omit<TransactionInput, "kind"> & { kind: TransactionKind };
+type DebtRepaymentTransactionInput = Omit<TransactionFields, "source"> & { kind: "debt_repayment"; categoryId?: never; destinationAccountId?: never };
+export type DebtPaymentInput = Omit<TransactionFields, "source"> & { kind?: never; categoryId?: never; destinationAccountId?: never };
+export type Transaction = { id: string; kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; debtId?: string; description: string; date: string; time: string | null; source: "manual" | "assistant"; categoryName: string | null; categoryIcon: CategoryIconId | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
 export type DebtDirection = "owed_to_you" | "you_owe";
 export type DebtStatus = "open" | "settled";
 export type DebtActivity = {
-  transactionId: string; date: string; time: string | null; kind: "income" | "expense"; amountMinor: number;
+  transactionId: string; date: string; time: string | null; kind: Exclude<TransactionKind, "transfer">; amountMinor: number;
   categoryName: string | null; accountName: string; description: string;
 };
 export type Debt = { id: string; direction: DebtDirection; counterparty: string; amountMinor: number; note: string; dueDate: string | null; status: DebtStatus; createdAt: string; updatedAt: string; activity: DebtActivity[] };
@@ -89,14 +94,17 @@ export function createStore(db: Database.Database) {
       CREATE INDEX IF NOT EXISTS debts_owner_status_due ON debts(user_id,status,due_date,created_at DESC);
       CREATE TABLE IF NOT EXISTS transactions (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL CHECK(kind IN ('income','expense','transfer')), amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+        kind TEXT NOT NULL CHECK(kind IN ('income','expense','transfer','debt_repayment')), amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
         account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         destination_account_id TEXT REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
         debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
         description TEXT NOT NULL, date TEXT NOT NULL, time TEXT, source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','assistant')),
         undo_until TEXT, created_at TEXT NOT NULL,
-        CHECK((kind = 'transfer' AND destination_account_id IS NOT NULL AND category_id IS NULL) OR (kind != 'transfer' AND destination_account_id IS NULL AND category_id IS NOT NULL)),
+        CHECK((kind = 'transfer' AND destination_account_id IS NOT NULL AND category_id IS NULL)
+          OR (kind = 'debt_repayment' AND destination_account_id IS NULL AND category_id IS NULL)
+          OR (kind IN ('income','expense') AND destination_account_id IS NULL AND category_id IS NOT NULL)),
+        CHECK(kind != 'debt_repayment' OR undo_until IS NULL),
         CHECK(destination_account_id IS NULL OR destination_account_id != account_id)
       );
       CREATE INDEX IF NOT EXISTS transactions_owner_date ON transactions(user_id, date DESC);
@@ -165,7 +173,59 @@ export function createStore(db: Database.Database) {
     const transactionColumns = db.pragma("table_info(transactions)") as { name: string }[];
     if (!transactionColumns.some((column) => column.name === "time")) db.exec("ALTER TABLE transactions ADD COLUMN time TEXT");
     if (!transactionColumns.some((column) => column.name === "debt_id")) db.exec("ALTER TABLE transactions ADD COLUMN debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL");
+    const hasDebtRepaymentKind = () => {
+      const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'").get() as { sql: string } | undefined;
+      return schema?.sql.includes("'debt_repayment'") ?? false;
+    };
+    if (!hasDebtRepaymentKind()) {
+      if (db.inTransaction) throw new Error("Transaction kind migration must run outside a database transaction.");
+      db.pragma("foreign_keys = OFF");
+      try {
+        db.transaction(() => {
+          if (!hasDebtRepaymentKind()) {
+            db.exec(`CREATE TABLE transactions_rebuilt (
+              id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              kind TEXT NOT NULL CHECK(kind IN ('income','expense','transfer','debt_repayment')), amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+              account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+              destination_account_id TEXT REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+              category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+              debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
+              description TEXT NOT NULL, date TEXT NOT NULL, time TEXT, source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','assistant')),
+              undo_until TEXT, created_at TEXT NOT NULL,
+              CHECK((kind = 'transfer' AND destination_account_id IS NOT NULL AND category_id IS NULL)
+                OR (kind = 'debt_repayment' AND destination_account_id IS NULL AND category_id IS NULL)
+                OR (kind IN ('income','expense') AND destination_account_id IS NULL AND category_id IS NOT NULL)),
+              CHECK(kind != 'debt_repayment' OR undo_until IS NULL),
+              CHECK(destination_account_id IS NULL OR destination_account_id != account_id)
+            )`);
+            db.exec(`INSERT INTO transactions_rebuilt(rowid,id,user_id,kind,amount_minor,account_id,destination_account_id,category_id,debt_id,description,date,time,source,undo_until,created_at)
+              SELECT t.rowid,t.id,t.user_id,
+                CASE WHEN t.kind='income' AND EXISTS (
+                  SELECT 1 FROM debts d WHERE d.id=t.debt_id AND d.user_id=t.user_id AND d.direction='owed_to_you'
+                ) THEN 'debt_repayment' ELSE t.kind END,
+                t.amount_minor,t.account_id,t.destination_account_id,
+                CASE WHEN t.kind='income' AND EXISTS (
+                  SELECT 1 FROM debts d WHERE d.id=t.debt_id AND d.user_id=t.user_id AND d.direction='owed_to_you'
+                ) THEN NULL ELSE t.category_id END,
+                t.debt_id,t.description,t.date,t.time,t.source,
+                CASE WHEN t.kind='income' AND EXISTS (
+                  SELECT 1 FROM debts d WHERE d.id=t.debt_id AND d.user_id=t.user_id AND d.direction='owed_to_you'
+                ) THEN NULL ELSE t.undo_until END,
+                t.created_at
+              FROM transactions t`);
+            db.exec("DROP TABLE transactions");
+            db.exec("ALTER TABLE transactions_rebuilt RENAME TO transactions");
+            const violations = db.pragma("foreign_key_check") as { table: string; rowid: number | null; parent: string; fkid: number }[];
+            if (violations.length) throw new Error("Transaction kind migration found invalid foreign keys.");
+          }
+        }).immediate();
+      } finally {
+        db.pragma("foreign_keys = ON");
+      }
+    }
     db.exec("DROP INDEX IF EXISTS transactions_one_debt_advance");
+    db.exec("CREATE INDEX IF NOT EXISTS transactions_owner_date ON transactions(user_id, date DESC)");
+    db.exec("CREATE INDEX IF NOT EXISTS transactions_owner_balance ON transactions(user_id,kind,amount_minor,account_id,destination_account_id)");
     db.exec("CREATE INDEX IF NOT EXISTS transactions_owner_history ON transactions(user_id,date DESC,COALESCE(time,'00:00') DESC,created_at DESC)");
     const categoryColumns = db.pragma("table_info(categories)") as { name: string }[];
     if (!categoryColumns.some((column) => column.name === "icon")) {
@@ -256,7 +316,7 @@ export function createStore(db: Database.Database) {
       const amount = BigInt(String(transaction.amount_minor));
       const accountId = String(transaction.account_id);
       const balance = balances.get(accountId);
-      if (balance !== undefined && transaction.kind === "income") balances.set(accountId, balance + amount);
+      if (balance !== undefined && (transaction.kind === "income" || transaction.kind === "debt_repayment")) balances.set(accountId, balance + amount);
       else if (balance !== undefined && (transaction.kind === "expense" || transaction.kind === "transfer")) balances.set(accountId, balance - amount);
       if (transaction.kind === "transfer" && transaction.destination_account_id != null) {
         const destinationId = String(transaction.destination_account_id);
@@ -270,10 +330,13 @@ export function createStore(db: Database.Database) {
   function assertLedgerTotalsSafe(userId: string): void {
     const totals = db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN kind='income' THEN amount_minor ELSE 0 END),0) AS income_minor,
-      COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor
-      FROM transactions WHERE user_id=?`).get(userId) as { income_minor: number; spending_minor: number };
+      COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor,
+      COALESCE(SUM(CASE WHEN kind='debt_repayment' THEN amount_minor ELSE 0 END),0) AS debt_repayment_minor
+      FROM transactions WHERE user_id=?`).get(userId) as { income_minor: number; spending_minor: number; debt_repayment_minor: number };
     safeMinorNumber(totals.income_minor, "Recorded income total");
     safeMinorNumber(totals.spending_minor, "Recorded spending total");
+    safeMinorNumber(totals.debt_repayment_minor, "Recorded debt repayment total");
+    assertSafeMinorTotal(BigInt(totals.income_minor) + BigInt(totals.debt_repayment_minor) - BigInt(totals.spending_minor), "Net cash flow total");
     const totalBalance = listAccounts(userId).reduce((sum, account) => sum + BigInt(account.balanceMinor), 0n);
     assertSafeMinorTotal(totalBalance, "Combined account balance");
   }
@@ -380,7 +443,7 @@ export function createStore(db: Database.Database) {
       WHERE t.user_id=? ORDER BY t.date,COALESCE(t.time,'00:00'),t.created_at,t.rowid`).all(userId) as Record<string, unknown>[];
     for (const row of rows) {
       const debtId = String(row.debt_id);
-      const kind = row.kind as "income" | "expense";
+      const kind = row.kind as Exclude<TransactionKind, "transfer">;
       const amount = safeMinorNumber(row.amount_minor, "Debt activity amount");
       const activity = activityByDebt.get(debtId) ?? [];
       activity.push({
@@ -617,57 +680,63 @@ export function createStore(db: Database.Database) {
     return { processed, failures };
   }
 
-  function assertTransactionInput(userId: string, input: TransactionInput) {
+  function assertMovementFields(userId: string, input: Pick<TransactionFields, "amountMinor" | "accountId" | "description" | "date" | "time">) {
     if (!validMoney(input.amountMinor)) throw new Error("Transaction amount must be a positive PHP value.");
     if (input.description.trim().length > 180) throw new Error("Description must be 180 characters or fewer.");
     if (!isDateOnly(input.date)) throw new Error("Enter a valid transaction date.");
     if (input.time != null && !isTime(input.time)) throw new Error("Enter a valid transaction time in 24-hour HH:mm format.");
-    if (!(["income", "expense", "transfer"] as string[]).includes(input.kind)) throw new Error("Choose income, expense, or transfer.");
     const account = db.prepare("SELECT id FROM financial_accounts WHERE id=? AND user_id=?").get(input.accountId, userId);
     if (!account) throw new Error("Source account is not owned by this user.");
+  }
+  function assertTransactionInput(userId: string, input: TransactionUpdateInput) {
+    assertMovementFields(userId, input);
     if (input.kind === "transfer") {
       if (!input.destinationAccountId || input.destinationAccountId === input.accountId || input.categoryId) throw new Error("A transfer needs two different owned accounts and no category.");
       if (!db.prepare("SELECT 1 FROM financial_accounts WHERE id=? AND user_id=?").get(input.destinationAccountId, userId)) throw new Error("Destination account is not owned by this user.");
+    } else if (input.kind === "debt_repayment") {
+      if (input.destinationAccountId || input.categoryId) throw new Error("A debt repayment needs one account and no category.");
     } else {
       if (!input.categoryId || input.destinationAccountId) throw new Error("Income and expense need a category and one account.");
       if (!db.prepare("SELECT 1 FROM categories WHERE id=? AND user_id=? AND type=?").get(input.categoryId, userId, input.kind)) throw new Error("Category is not owned by this user or has the wrong type.");
     }
   }
+  function insertTransaction(userId: string, input: TransactionUpdateInput, options: { source: "manual" | "assistant"; undoUntil: string | null; debtId?: string | null }): Transaction {
+    const id = randomUUID();
+    db.prepare(`INSERT INTO transactions(id,user_id,kind,amount_minor,account_id,destination_account_id,category_id,debt_id,description,date,time,source,undo_until,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, input.kind, input.amountMinor, input.accountId, input.destinationAccountId ?? null,
+      input.categoryId ?? null, options.debtId ?? null, input.description.trim(), input.date, input.time ?? null, options.source, options.undoUntil, stamp());
+    assertLedgerTotalsSafe(userId);
+    return getTransaction(userId, id)!;
+  }
   function createTransaction(userId: string, input: TransactionInput): Transaction {
     return db.transaction(() => {
+      if (!isManualTransactionKind(input.kind)) throw new Error("Debt repayments must be recorded with a linked debt payment.");
       const time = input.time ?? timeInManila();
       const transactionInput = { ...input, time };
       assertTransactionInput(userId, transactionInput);
-      const id = randomUUID();
       const source = input.source ?? "manual";
       const undoUntil = source === "assistant" ? new Date(Date.now() + 10_000).toISOString() : null;
-      const description = input.description.trim();
-      db.prepare(`INSERT INTO transactions(id,user_id,kind,amount_minor,account_id,destination_account_id,category_id,description,date,time,source,undo_until,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, input.kind, input.amountMinor, input.accountId, input.destinationAccountId ?? null,
-        input.categoryId ?? null, description, input.date, time, source, undoUntil, stamp());
-      assertLedgerTotalsSafe(userId);
-      return getTransaction(userId, id)!;
+      return insertTransaction(userId, transactionInput, { source, undoUntil });
     }).immediate();
   }
-  function recordDebtPayment(userId: string, debtId: string, input: TransactionInput): { debt: Debt; transaction: Transaction } {
+  function recordDebtPayment(userId: string, debtId: string, input: DebtPaymentInput): { debt: Debt; transaction: Transaction } {
     return db.transaction(() => {
       const row = db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
         FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
       if (!row) throw new Error("Debt not found.");
       const debt = debtFromRow(row);
       if (debt.status !== "open" || debt.direction !== "owed_to_you") throw new Error("Only an open debt owed to you can receive a payment.");
-      if (input.kind !== "income") throw new Error("A debt payment must be recorded as income.");
-      const paymentInput = { ...input, kind: "income" as const, source: "assistant" as const };
+      if (["kind", "categoryId", "destinationAccountId", "source"].some((field) => Object.hasOwn(input, field))) {
+        throw new Error("A debt repayment accepts only the payment details.");
+      }
+      const paymentInput: DebtRepaymentTransactionInput = { ...input, kind: "debt_repayment", time: input.time ?? timeInManila() };
       assertTransactionInput(userId, paymentInput);
       if (paymentInput.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
       const remaining = debt.amountMinor - paymentInput.amountMinor;
       // Settled records retain their last positive balance; status is authoritative.
       const updated = updateDebt(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" });
-      const created = createTransaction(userId, paymentInput);
-      const linked = db.prepare("UPDATE transactions SET debt_id=? WHERE id=? AND user_id=?").run(debtId, created.id, userId);
-      if (!linked.changes) throw new Error("Debt repayment transaction could not be linked.");
-      db.prepare("UPDATE transactions SET undo_until=NULL WHERE id=? AND user_id=?").run(created.id, userId);
-      return { debt: listDebts(userId).find((item) => item.id === updated.id)!, transaction: getTransaction(userId, created.id)! };
+      const transaction = insertTransaction(userId, paymentInput, { source: "assistant", undoUntil: null, debtId });
+      return { debt: listDebts(userId).find((item) => item.id === updated.id)!, transaction };
     }).immediate();
   }
   function recordDebtRepayment(userId: string, debtId: string, input: TransactionInput): { debt: Debt; transaction: Transaction } {
@@ -701,7 +770,8 @@ export function createStore(db: Database.Database) {
     return {
       id: String(row.id), kind: row.kind as TransactionKind, amountMinor: Number(row.amount_minor), accountId: String(row.account_id),
       destinationAccountId: row.destination_account_id ? String(row.destination_account_id) : undefined,
-      categoryId: row.category_id ? String(row.category_id) : undefined, description: String(row.description), date: String(row.date), time: row.time ? String(row.time) : null,
+      categoryId: row.category_id ? String(row.category_id) : undefined, debtId: row.debt_id ? String(row.debt_id) : undefined,
+      description: String(row.description), date: String(row.date), time: row.time ? String(row.time) : null,
       source: row.source as "manual" | "assistant", undoUntil: row.undo_until ? String(row.undo_until) : null,
       categoryName: row.category_name ? String(row.category_name) : null,
       categoryIcon: row.category_icon && isCategoryIconId(row.category_icon) ? row.category_icon : row.category_name ? defaultCategoryIcon(row.kind as CategoryType, String(row.category_name)) : null,
@@ -721,10 +791,13 @@ export function createStore(db: Database.Database) {
       WHERE t.user_id=? AND t.date BETWEEN ? AND ? AND (? IS NULL OR t.kind=?)
       ORDER BY t.date DESC,COALESCE(t.time,'00:00') DESC,t.created_at DESC LIMIT ? OFFSET ?`).all(userId, start, end, kind, kind, boundedLimit, offset) as Record<string, unknown>[]).map(mapTransaction);
   }
-  function updateTransaction(userId: string, id: string, input: TransactionInput): Transaction {
+  function updateTransaction(userId: string, id: string, input: TransactionUpdateInput): Transaction {
     return db.transaction(() => {
       const existing = db.prepare("SELECT time,debt_id,kind,amount_minor FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { time: string | null; debt_id: string | null; kind: TransactionKind; amount_minor: number } | undefined;
       if (!existing) throw new Error("Transaction not found.");
+      if (input.kind === "debt_repayment" && existing.kind !== "debt_repayment") {
+        throw new Error("Debt repayments must be recorded with a linked debt payment.");
+      }
       if (existing.debt_id && (input.kind !== existing.kind || input.amountMinor !== existing.amount_minor)) {
         throw new Error("A transaction linked to a debt cannot change amount or kind.");
       }
@@ -754,14 +827,16 @@ export function createStore(db: Database.Database) {
     if (!isDateOnly(start) || !isDateOnly(end) || start > end) throw new Error("Choose a valid date range.");
     const totals = db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN kind='income' THEN amount_minor ELSE 0 END),0) AS income_minor,
-      COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor
-      FROM transactions WHERE user_id=? AND date BETWEEN ? AND ?`).get(userId, start, end) as { income_minor: number; spending_minor: number };
+      COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor,
+      COALESCE(SUM(CASE WHEN kind='debt_repayment' THEN amount_minor ELSE 0 END),0) AS debt_repayment_minor
+      FROM transactions WHERE user_id=? AND date BETWEEN ? AND ?`).get(userId, start, end) as { income_minor: number; spending_minor: number; debt_repayment_minor: number };
 
     const activity = db.prepare(`SELECT date,
       COALESCE(SUM(CASE WHEN kind='income' THEN amount_minor ELSE 0 END),0) AS income_minor,
-      COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor
+      COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor,
+      COALESCE(SUM(CASE WHEN kind='debt_repayment' THEN amount_minor ELSE 0 END),0) AS debt_repayment_minor
       FROM transactions WHERE user_id=? AND date BETWEEN ? AND ? AND kind!='transfer' GROUP BY date ORDER BY date`)
-      .all(userId, start, end) as { date: string; income_minor: number; spending_minor: number }[];
+      .all(userId, start, end) as { date: string; income_minor: number; spending_minor: number; debt_repayment_minor: number }[];
     const transactions = listTransactions(userId, undefined, 8);
     const goals = listGoals(userId);
     const accounts = listAccounts(userId);
@@ -774,21 +849,43 @@ export function createStore(db: Database.Database) {
       assetWeightValues[largestIndex] += 10_000 - assetWeightValues.reduce((sum, weight) => sum + weight, 0);
     }
     const assetWeights = Object.fromEntries(accounts.map((account, index) => [account.id, assetWeightValues[index]]));
-    return { start, end, incomeMinor: safeMinorNumber(totals.income_minor, "Period income total"), spendingMinor: safeMinorNumber(totals.spending_minor, "Period spending total"),
+    const incomeMinor = safeMinorNumber(totals.income_minor, "Period income total");
+    const spendingMinor = safeMinorNumber(totals.spending_minor, "Period spending total");
+    const debtRepaymentMinor = safeMinorNumber(totals.debt_repayment_minor, "Period debt repayment total");
+    const netCashFlowMinor = safeMinorNumber(BigInt(incomeMinor) + BigInt(debtRepaymentMinor) - BigInt(spendingMinor), "Period net cash flow total");
+    return { start, end, incomeMinor, spendingMinor, debtRepaymentMinor, netCashFlowMinor,
       accounts, assetTotalMinor: assetTotal.toString(), assetWeights,
-      activity: activity.map((row) => ({ date: row.date, income_minor: safeMinorNumber(row.income_minor, "Daily income total"), spending_minor: safeMinorNumber(row.spending_minor, "Daily spending total") })), transactions, goals };
+      activity: activity.map((row) => {
+        const income_minor = safeMinorNumber(row.income_minor, "Daily income total");
+        const spending_minor = safeMinorNumber(row.spending_minor, "Daily spending total");
+        const debt_repayment_minor = safeMinorNumber(row.debt_repayment_minor, "Daily debt repayment total");
+        const net_cash_flow_minor = safeMinorNumber(BigInt(income_minor) + BigInt(debt_repayment_minor) - BigInt(spending_minor), "Daily net cash flow total");
+        return { date: row.date, income_minor, spending_minor, debt_repayment_minor, net_cash_flow_minor };
+      }), transactions, goals };
   }
 
   function getFinanceFacts(userId: string, start: string, end: string, requestedCategory?: string) {
     if (!isDateOnly(start) || !isDateOnly(end) || start > end) throw new Error("Choose a valid date range.");
-    const totals = db.prepare(`SELECT COALESCE(SUM(CASE WHEN kind='income' THEN amount_minor ELSE 0 END),0) AS income_minor,
-      COALESCE(SUM(CASE WHEN kind='expense' THEN amount_minor ELSE 0 END),0) AS spending_minor FROM transactions
-      WHERE user_id=? AND date BETWEEN ? AND ?`).get(userId, start, end) as { income_minor: number; spending_minor: number };
+    const totals = db.prepare(`SELECT
+      COALESCE(SUM(CASE WHEN t.kind='income' THEN t.amount_minor ELSE 0 END),0) AS income_minor,
+      COALESCE(SUM(CASE WHEN t.kind='expense' THEN t.amount_minor ELSE 0 END),0) AS spending_minor,
+      COALESCE(SUM(CASE WHEN t.kind='debt_repayment' THEN t.amount_minor ELSE 0 END),0) AS debt_repayment_minor,
+      COALESCE(SUM(CASE WHEN t.kind='expense' AND EXISTS (
+        SELECT 1 FROM debts d WHERE d.id=t.debt_id AND d.user_id=t.user_id AND d.direction='you_owe'
+      ) THEN t.amount_minor ELSE 0 END),0) AS outgoing_debt_repayment_minor
+      FROM transactions t WHERE t.user_id=? AND t.date BETWEEN ? AND ?`).get(userId, start, end) as {
+        income_minor: number; spending_minor: number; debt_repayment_minor: number; outgoing_debt_repayment_minor: number;
+      };
     const byCategory = db.prepare(`SELECT c.name,SUM(t.amount_minor) AS amount_minor FROM transactions t JOIN categories c ON c.id=t.category_id
       WHERE t.user_id=? AND t.kind='expense' AND t.date BETWEEN ? AND ? GROUP BY c.name ORDER BY amount_minor DESC`).all(userId, start, end) as { name: string; amount_minor: number }[];
     const category = requestedCategory ? byCategory.find((entry) => entry.name.toLowerCase() === requestedCategory.trim().toLowerCase()) : undefined;
     const accounts = listAccounts(userId).map(({ name, type, balanceMinor }) => ({ name, type, balanceMinor }));
-    return { start, end, incomeMinor: safeMinorNumber(totals.income_minor, "Period income total"), spendingMinor: safeMinorNumber(totals.spending_minor, "Period spending total"),
+    const incomeMinor = safeMinorNumber(totals.income_minor, "Period income total");
+    const spendingMinor = safeMinorNumber(totals.spending_minor, "Period spending total");
+    const debtRepaymentMinor = safeMinorNumber(totals.debt_repayment_minor, "Period debt repayment total");
+    const outgoingDebtRepaymentMinor = safeMinorNumber(totals.outgoing_debt_repayment_minor, "Period outgoing debt repayment total");
+    const netCashFlowMinor = safeMinorNumber(BigInt(incomeMinor) + BigInt(debtRepaymentMinor) - BigInt(spendingMinor), "Period net cash flow total");
+    return { start, end, incomeMinor, spendingMinor, debtRepaymentMinor, outgoingDebtRepaymentMinor, netCashFlowMinor,
       byCategory: byCategory.map((entry) => ({ name: entry.name, amountMinor: safeMinorNumber(entry.amount_minor, "Category spending total") })),
       requestedCategory: requestedCategory ?? null, categoryAmountMinor: category ? safeMinorNumber(category.amount_minor, "Category spending total") : requestedCategory ? 0 : null, accounts };
   }
@@ -822,12 +919,19 @@ export function createStore(db: Database.Database) {
     const conversation = db.prepare("SELECT id,title FROM conversations WHERE user_id=? AND id=?").get(userId, id) as { id: string; title: string } | undefined;
     if (!conversation) return null;
     const messages = db.prepare(`SELECT m.id,m.role,m.content,m.created_at AS createdAt,m.transaction_id AS transactionId,m.needs_followup AS needsFollowup,
-      t.kind,t.amount_minor AS amountMinor,t.description AS transactionDescription,t.date AS transactionDate,c.name AS categoryName,a.name AS accountName,t.undo_until AS undoUntil
+      t.kind,t.amount_minor AS amountMinor,t.account_id AS accountId,t.category_id AS categoryId,t.debt_id AS debtId,t.description AS transactionDescription,
+      t.date AS transactionDate,t.time AS transactionTime,c.name AS categoryName,a.name AS accountName,t.source,t.undo_until AS undoUntil
       FROM assistant_messages m LEFT JOIN transactions t ON t.id=m.transaction_id
       LEFT JOIN categories c ON c.id=t.category_id LEFT JOIN financial_accounts a ON a.id=t.account_id
       WHERE m.user_id=? AND m.conversation_id=? ORDER BY m.created_at`).all(userId, id) as Record<string, unknown>[];
     return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), needsFollowup: Boolean(message.needsFollowup),
-      transaction: message.transactionId ? { id: String(message.transactionId), kind: message.kind as TransactionKind, amountMinor: Number(message.amountMinor), description: String(message.transactionDescription), date: String(message.transactionDate), categoryName: message.categoryName ? String(message.categoryName) : null, accountName: message.accountName ? String(message.accountName) : "", undoUntil: message.undoUntil ? String(message.undoUntil) : null } : null })) };
+      transaction: message.transactionId ? {
+        id: String(message.transactionId), kind: message.kind as TransactionKind, amountMinor: Number(message.amountMinor), accountId: String(message.accountId),
+        categoryId: message.categoryId ? String(message.categoryId) : undefined, debtId: message.debtId ? String(message.debtId) : undefined,
+        description: String(message.transactionDescription), date: String(message.transactionDate), time: message.transactionTime ? String(message.transactionTime) : null,
+        source: message.source as "manual" | "assistant", categoryName: message.categoryName ? String(message.categoryName) : null,
+        accountName: message.accountName ? String(message.accountName) : "", undoUntil: message.undoUntil ? String(message.undoUntil) : null,
+      } : null })) };
   }
   function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, needsFollowup = false): void {
     if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");

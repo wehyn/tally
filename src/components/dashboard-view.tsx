@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, Landmark, Wallet } from "lucide-react";
+import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, HandCoins, Landmark, Wallet } from "lucide-react";
 import { CategoryGlyph } from "@/components/category-glyph";
 import { DashboardCalendar } from "@/components/dashboard-calendar";
 import { formatPHP, formatPHPFromMinorString } from "@/lib/money";
@@ -10,6 +10,7 @@ import { monthToDateRange } from "@/lib/dates";
 import { LEDGER_UPDATED_EVENT } from "@/lib/client-events";
 import type { CalendarSeed } from "@/lib/dashboard-calendar";
 import type { Store } from "@/lib/store";
+import { transactionKindLabel } from "@/lib/transaction-model";
 
 type Dashboard = ReturnType<Store["getDashboard"]>;
 
@@ -54,7 +55,8 @@ export function DashboardView({ initial, initialCalendar }: { initial: Dashboard
       <article className="stat-card"><div className="stat-top"><span>Total balance</span><span className="stat-icon green-light"><Wallet size={18}/></span></div><strong className={`stat-value ${totalBalanceMinor < 0 ? "negative" : ""}`}>{formatPHP(totalBalanceMinor)}</strong></article>
       <article className="stat-card"><div className="stat-top"><span>Income</span><span className="stat-icon green-light"><ArrowDownRight size={18}/></span></div><strong className="stat-value">{formatPHP(data.incomeMinor)}</strong></article>
       <article className="stat-card"><div className="stat-top"><span>Spending</span><span className="stat-icon coral-light"><ArrowUpRight size={18}/></span></div><strong className="stat-value">{formatPHP(data.spendingMinor)}</strong></article>
-      <article className="stat-card"><div className="stat-top"><span>Net activity</span><span className="stat-icon violet-light"><ArrowLeftRight size={18}/></span></div><strong className={`stat-value ${data.incomeMinor - data.spendingMinor < 0 ? "negative" : ""}`}>{formatPHP(data.incomeMinor - data.spendingMinor)}</strong></article>
+      <article className="stat-card"><div className="stat-top"><span>Repayments received</span><span className="stat-icon green-light"><HandCoins size={18}/></span></div><strong className="stat-value">{formatPHP(data.debtRepaymentMinor)}</strong></article>
+      <article className="stat-card"><div className="stat-top"><span>Net cash flow</span><span className="stat-icon violet-light"><ArrowLeftRight size={18}/></span></div><strong className={`stat-value ${data.netCashFlowMinor < 0 ? "negative" : ""}`}>{formatPHP(data.netCashFlowMinor)}</strong></article>
     </section>
 
     {initialCalendar ? <DashboardCalendar initial={initialCalendar}/> : null}
@@ -88,7 +90,7 @@ export function DashboardView({ initial, initialCalendar }: { initial: Dashboard
 
     <section className="dashboard-bottom-grid">
       <article className="panel"><div className="panel-heading"><div><h2>Recent activity</h2></div><Link href="/transactions" className="quiet-link">All transactions</Link></div>
-        {data.transactions.length ? <div className="activity-list">{data.transactions.slice(0, 5).map((transaction) => <div className="activity-row" key={transaction.id}><div className={`activity-icon ${transaction.kind}`}>{transaction.kind === "transfer" ? <ArrowLeftRight size={16}/> : <CategoryGlyph icon={transaction.categoryIcon} size={16}/>}</div><div className="activity-copy"><strong>{transaction.description || transaction.categoryName || transaction.kind}</strong><span>{transaction.kind === "transfer" ? `${transaction.accountName} → ${transaction.destinationAccountName}` : `${transaction.categoryName} · ${transaction.accountName}`}</span></div><div className="activity-right"><strong className={transaction.kind === "income" ? "positive" : transaction.kind === "expense" ? "negative" : ""}>{transaction.kind === "expense" ? "−" : transaction.kind === "income" ? "+" : ""}{formatPHP(transaction.amountMinor)}</strong><span>{transaction.date}{transaction.time ? ` · ${transaction.time}` : ""}</span></div></div>)}</div> : <div className="empty-inline"><div className="empty-spark">✦</div><div><strong>Your ledger starts here</strong><span>Add income, spending, or a transfer when you’re ready.</span></div></div>}
+        {data.transactions.length ? <div className="activity-list">{data.transactions.slice(0, 5).map((transaction) => <div className="activity-row" key={transaction.id}><div className={`activity-icon ${transaction.kind}`}>{transaction.kind === "transfer" ? <ArrowLeftRight size={16}/> : transaction.kind === "debt_repayment" ? <HandCoins size={16}/> : <CategoryGlyph icon={transaction.categoryIcon} size={16}/>}</div><div className="activity-copy"><strong>{transaction.description || transaction.categoryName || transactionKindLabel(transaction.kind)}</strong><span>{transaction.kind === "transfer" ? `${transaction.accountName} → ${transaction.destinationAccountName}` : `${transaction.categoryName ?? transactionKindLabel(transaction.kind)} · ${transaction.accountName}`}</span></div><div className="activity-right"><strong className={transaction.kind === "income" || transaction.kind === "debt_repayment" ? "positive" : transaction.kind === "expense" ? "negative" : ""}>{transaction.kind === "expense" ? "−" : transaction.kind === "income" || transaction.kind === "debt_repayment" ? "+" : ""}{formatPHP(transaction.amountMinor)}</strong><span>{transaction.date}{transaction.time ? ` · ${transaction.time}` : ""}</span></div></div>)}</div> : <div className="empty-inline"><div className="empty-spark">✦</div><div><strong>Your ledger starts here</strong><span>Add income, spending, or a transfer when you’re ready.</span></div></div>}
       </article>
       <article className="panel goals-panel"><div className="panel-heading"><div><h2>Shared goals</h2></div><Link href="/goals" className="quiet-link">View goals</Link></div>
         {data.goals.length ? <div className="goal-mini-list">{data.goals.slice(0, 3).map((goal) => <div className="goal-mini" key={goal.id}><div className="goal-mini-top"><strong>{goal.name}</strong><span>{formatPHP(goal.raisedMinor)} / {formatPHP(goal.targetMinor)}</span></div><div className="bar-track"><span className="bar-fill bar-goal" style={{ width: `${Math.min(100, goal.raisedMinor / goal.targetMinor * 100)}%` }}/></div><span className="goal-member-count">{goal.members.length} {goal.members.length === 1 ? "member" : "members"} · {goal.status === "completed" ? "Complete" : "Active"}</span></div>)}</div> : <div className="goals-empty"><span className="goal-orb">◎</span><strong>Save toward something together</strong><span>Create a shared goal and invite someone you trust.</span><Link href="/goals" className="quiet-link">Explore shared goals <span aria-hidden="true">→</span></Link></div>}
