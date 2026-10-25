@@ -122,6 +122,7 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
   const [assistantPrompt, setAssistantPrompt] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantSubmitReady, setAssistantSubmitReady] = useState(false);
+  const assistantWidgetRoot = useRef<HTMLDivElement>(null);
   const assistantSubmit = useRef<(() => void) | null>(null);
   const composerField = useRef<HTMLTextAreaElement>(null);
   const launcherButton = useRef<HTMLButtonElement>(null);
@@ -147,6 +148,30 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
     window.addEventListener(ASSISTANT_SETTINGS_UPDATED_EVENT, updateAssistantAvailability);
     return () => window.removeEventListener(ASSISTANT_SETTINGS_UPDATED_EVENT, updateAssistantAvailability);
   }, [handleAssistantAvailability]);
+  useEffect(() => {
+    const visualViewport = window.visualViewport;
+    const widget = assistantWidgetRoot.current;
+    if (!visualViewport || !widget) return;
+    const updateAssistantViewport = () => {
+      const keyboardInset = Math.max(0, window.innerHeight - visualViewport.offsetTop - visualViewport.height);
+      widget.style.setProperty("--assistant-visual-height", `${visualViewport.height}px`);
+      widget.style.setProperty("--assistant-keyboard-inset", `${keyboardInset}px`);
+      widget.toggleAttribute("data-keyboard-open", keyboardInset > 120);
+    };
+
+    updateAssistantViewport();
+    visualViewport.addEventListener("resize", updateAssistantViewport);
+    visualViewport.addEventListener("scroll", updateAssistantViewport);
+    window.addEventListener("resize", updateAssistantViewport);
+    return () => {
+      visualViewport.removeEventListener("resize", updateAssistantViewport);
+      visualViewport.removeEventListener("scroll", updateAssistantViewport);
+      window.removeEventListener("resize", updateAssistantViewport);
+      widget.style.removeProperty("--assistant-visual-height");
+      widget.style.removeProperty("--assistant-keyboard-inset");
+      widget.removeAttribute("data-keyboard-open");
+    };
+  }, []);
   const handleAssistantBusy = useCallback((busy: boolean) => setAssistantBusy(busy), []);
   const handleAssistantSubmitReady = useCallback((submit: (() => void) | null) => {
     assistantSubmit.current = submit;
@@ -257,7 +282,7 @@ export function AppShell({ user, children, assistantEnabled, assistantConfigured
         const selected = isCurrentSection(routes);
         return <Link key={href} href={href} className={selected ? "selected" : ""} aria-label={label} aria-current={active === href ? "page" : selected ? "location" : undefined}><Icon size={19} aria-hidden="true"/><span>{label}</span></Link>;
       })}</nav>
-      <div className={`assistant-widget ${mode}`}>
+      <div ref={assistantWidgetRoot} className={`assistant-widget ${mode}`}>
         <section id="assistant-widget-panel" className={`assistant-widget-panel ${assistantAccess.enabled ? "has-composer" : ""}`} data-open={panelOpen} role="dialog" aria-modal="false" aria-label="Tally assistant" aria-hidden={!panelOpen} inert={!panelOpen} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeAssistant(); } }}>
           <header className="assistant-widget-header">
             <span className="assistant-widget-mark"><Sparkles size={17}/></span>
