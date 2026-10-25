@@ -6,3 +6,12 @@ describe("LAN development access", () => {
     expect(nextConfig.allowedDevOrigins).toContain("192.168.2.28");
   });
 });
+
+describe("dashboard embedding", () => {
+  it("lets only the dashboard origin frame Tally", async () => {
+    const rules = (await nextConfig.headers?.()) ?? [];
+    const headers = new Map(rules.flatMap((rule) => rule.headers.map((header) => [header.key, header.value])));
+    expect(headers.has("X-Frame-Options")).toBe(false);
+    expect(headers.get("Content-Security-Policy")).toBe("frame-ancestors 'self' http://192.168.2.28:10000");
+  });
+});
