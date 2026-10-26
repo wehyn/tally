@@ -97,6 +97,9 @@ describe("owner-scoped ledger", () => {
 
     expect(() => store.deleteTransaction(owner.id, transaction.id)).toThrow("A transaction linked to a debt cannot be deleted. Delete the debt first.");
     expect(store.getTransaction(owner.id, transaction.id)).not.toBeNull();
+    expect(database.pragma("foreign_keys", { simple: true })).toBe(1);
+    expect(() => database.prepare("DELETE FROM transactions WHERE id=?").run(transaction.id)).toThrow(/FOREIGN KEY constraint failed/);
+    expect(store.getTransaction(owner.id, transaction.id)).not.toBeNull();
   });
 
   it("sets the opposite safe-integer boundary without changing transaction history", () => {

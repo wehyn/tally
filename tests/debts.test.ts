@@ -455,6 +455,19 @@ describe("personal debt register", () => {
     expect(store.debtBalanceFromPayments(owner.id, debt)).toBe(1_400);
   });
 
+  it("sums payment deltas exactly beyond JavaScript safe integers", () => {
+    const owner = store.registerUser("debt_exact_payment_sum", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: Number.MAX_SAFE_INTEGER });
+
+    store.recordDebtPayment(owner.id, debt.id, {
+      amountMinor: Number.MAX_SAFE_INTEGER, accountId: account.id, description: "Mina paid me", date: "2026-10-11",
+    });
+    store.updateDebt(owner.id, debt.id, { amountMinor: 1, status: "open" });
+
+    expect(store.debtBalanceFromPayments(owner.id, debt)).toBe(-9_007_199_254_740_990);
+  });
+
   it("does not record payment history when an update leaves the amount unchanged", () => {
     const owner = store.registerUser("debt_note_only_update", "hash");
     const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
@@ -468,14 +481,55 @@ describe("personal debt register", () => {
   it("scopes debt payment and counterparty reads to their owner", () => {
     const alice = store.registerUser("debt_payment_owner_a", "hash");
     const bob = store.registerUser("debt_payment_owner_b", "hash");
-    const debt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
-    store.updateDebt(alice.id, debt.id, { amountMinor: 1_200, note: "A note" });
+    const aliceDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+    const bobDebt = store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Nina", amountMinor: 2_000 });
+    store.updateDebt(alice.id, aliceDebt.id, { amountMinor: 1_200, note: "A note" });
+    database.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
+      VALUES('cross-owner-payment',?,?,?,?,?,?,?,NULL,'2026-10-11')`).run(alice.id, bobDebt.id, "owed_to_you", "adjustment", 700, -700, "cross-owner row");
 
-    expect(store.listDebtPayments(alice.id, debt.id)).toHaveLength(1);
-    expect(store.listDebtPayments(bob.id, debt.id)).toEqual([]);
-    expect(() => store.debtBalanceFromPayments(bob.id, debt)).toThrow("Debt not found.");
-    expect(database.prepare("SELECT id FROM counterparties WHERE user_id=?").all(bob.id)).toEqual([]);
+    expect(store.listDebtPayments(alice.id, aliceDebt.id)).toHaveLength(1);
+    expect(store.listDebtPayments(alice.id, bobDebt.id)).toEqual([]);
+    expect(store.listDebtPayments(bob.id, bobDebt.id)).toEqual([]);
+    expect(store.debtBalanceFromPayments(bob.id, bobDebt)).toBe(2_000);
+    expect(database.prepare("SELECT name FROM counterparties WHERE user_id=?").all(bob.id)).toEqual([{ name: "Nina" }]);
     expect(database.prepare("SELECT id FROM counterparties WHERE user_id=?").all(alice.id)).toHaveLength(1);
+  });
+
+  it("does not create payment history for debt advances", () => {
+    const owner = store.registerUser("debt_advance_no_pay", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 500 });
+    const category = store.listCategories(owner.id).find((item) => item.name === "Other")!;
+    const countPayments = () => (database.prepare("SELECT COUNT(*) AS count FROM debt_payments WHERE user_id=?").get(owner.id) as { count: number }).count;
+    const transactionInput = { kind: "expense" as const, amountMinor: 100, accountId: account.id, categoryId: category.id, description: "Advance", date: "2026-10-11" };
+
+    expect(countPayments()).toBe(0);
+    store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 100 });
+    expect(countPayments()).toBe(0);
+    const advanceDebt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Nina", amountMinor: 100 });
+    store.recordDebtAdvanceTransaction(owner.id, advanceDebt.id, transactionInput);
+    expect(countPayments()).toBe(0);
+    store.recordDebtAdvance(owner.id,
+      { direction: "owed_to_you", counterparty: "Ona", amountMinor: 100 }, transactionInput);
+    expect(countPayments()).toBe(0);
+  });
+
+  it("records a full you_owe repayment as one linked expense payment", () => {
+    const owner = store.registerUser("you_owe_full_repayment_history", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const category = store.listCategories(owner.id).find((item) => item.name === "Other")!;
+    const debt = store.createDebt(owner.id, { direction: "you_owe", counterparty: "Mina", amountMinor: 1_000 });
+
+    const repayment = store.recordDebtRepayment(owner.id, debt.id, {
+      kind: "expense", amountMinor: 1_000, accountId: account.id, categoryId: category.id,
+      description: "Paid Mina", date: "2026-10-11",
+    });
+
+    expect(repayment.debt.status).toBe("settled");
+    expect(store.listDebtPayments(owner.id, debt.id)).toMatchObject([
+      { kind: "payment", amountMinor: 1_000, deltaMinor: -1_000 },
+    ]);
+    expect(store.listDebtPayments(owner.id, debt.id)).toHaveLength(1);
+    expect(repayment.transaction).toMatchObject({ kind: "expense", debtId: debt.id });
   });
 
   it("rolls back a repayment payment row when a later ledger validation fails", () => {

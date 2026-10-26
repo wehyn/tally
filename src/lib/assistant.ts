@@ -398,7 +398,6 @@ function handleAssistantBillAction(
   const answer = `${effectiveAction === "create_bill" ? "Saved" : "Updated"} ${bill.name}: ${formatPHP(bill.amountMinor)} ${bill.frequency} using ${bill.accountName} and ${bill.categoryName}. ${dateSummary}.${postingWarning ? ` ${postingWarning}` : ""}`;
   return { answer, bill, ...(postingWarning ? { postingWarning } : {}), needsFollowup: false };
 }
-export { normalizeCounterparty } from "@/lib/counterparty";
 function containsCounterparty(text: string, counterparty: string): boolean {
   const normalizedCounterparty = normalizeCounterparty(counterparty);
   return normalizedCounterparty.length > 0 && ` ${normalizeCounterparty(text)} `.includes(` ${normalizedCounterparty} `);

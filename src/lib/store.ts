@@ -494,19 +494,21 @@ export function createStore(db: Database.Database) {
   function listDebtPayments(userId: string, debtId: string): DebtPayment[] {
     return (db.prepare(`SELECT p.id,p.debt_id,p.direction,p.kind,p.amount_minor,p.delta_minor,p.reason,p.transaction_id,p.created_at
       FROM debt_payments p JOIN debts d ON d.id=p.debt_id AND d.user_id=p.user_id
-      WHERE p.user_id=? AND p.debt_id=? ORDER BY p.created_at,p.id`).all(userId, debtId) as Record<string, unknown>[]).map((row) => ({
+      WHERE p.user_id=? AND p.debt_id=? ORDER BY p.created_at,p.rowid`).all(userId, debtId) as Record<string, unknown>[]).map((row) => ({
       id: String(row.id), debtId: String(row.debt_id), direction: row.direction as DebtDirection,
       kind: row.kind as DebtPayment["kind"], amountMinor: safeMinorNumber(row.amount_minor, "Debt payment amount"),
       deltaMinor: safeMinorNumber(row.delta_minor, "Debt payment delta"), reason: row.reason ? String(row.reason) : null,
       transactionId: row.transaction_id ? String(row.transaction_id) : null, createdAt: String(row.created_at),
     }));
   }
+  // Settled debts retain their last outstanding principal, so only open debt balances are meaningful.
   function debtBalanceFromPayments(userId: string, debt: Debt): number {
-    const row = db.prepare(`SELECT d.principal_minor,COALESCE(SUM(p.delta_minor),0) AS delta_minor
+    const rows = db.prepare(`SELECT d.principal_minor,p.delta_minor
       FROM debts d LEFT JOIN debt_payments p ON p.debt_id=d.id AND p.user_id=d.user_id AND p.user_id=?
-      WHERE d.id=? AND d.user_id=? GROUP BY d.id`).get(userId, debt.id, userId) as { principal_minor: number; delta_minor: number } | undefined;
-    if (!row) throw new Error("Debt not found.");
-    return safeMinorNumber(BigInt(row.principal_minor) + BigInt(row.delta_minor), "Derived debt balance");
+      WHERE d.id=? AND d.user_id=?`).safeIntegers().all(userId, debt.id, userId) as { principal_minor: bigint; delta_minor: bigint | null }[];
+    if (!rows.length) throw new Error("Debt not found.");
+    const delta = rows.reduce((sum, row) => sum + (row.delta_minor ?? 0n), 0n);
+    return safeMinorNumber(rows[0].principal_minor + delta, "Derived debt balance");
   }
   function createDebt(userId: string, input: DebtInput): Debt {
     const value = validateDebtInput(input);
