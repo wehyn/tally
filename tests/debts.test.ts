@@ -97,6 +97,19 @@ describe("personal debt register", () => {
     expect(database.prepare("SELECT id,user_id,name,name_normalized FROM counterparties ORDER BY id").all()).toEqual(counterpartiesAfterFirstMigration);
   });
 
+  it("does not backfill legacy debts with punctuation-only names", () => {
+    const owner = store.registerUser("debt_empty_legacy_counterparty", "hash");
+    database.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at)
+      VALUES('legacy-empty-name',?,'owed_to_you','!!!',100,'',NULL,'open','2026-10-01','2026-10-01')`).run(owner.id);
+    database.exec(`CREATE TRIGGER reject_empty_counterparty_insert BEFORE INSERT ON counterparties
+      WHEN NEW.name_normalized='' BEGIN SELECT RAISE(ABORT,'empty counterparty insert'); END`);
+
+    store.migrate();
+
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id='legacy-empty-name'").get()).toEqual({ counterparty_id: null });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM counterparties WHERE user_id=?").get(owner.id)).toEqual({ count: 0 });
+  });
+
   it("keeps punctuation-only debt names without creating counterparties", () => {
     const owner = store.registerUser("debt_empty_counterparty", "hash");
 
@@ -128,6 +141,16 @@ describe("personal debt register", () => {
     expect(currentId).toBe(previousId);
   });
 
+  it("clears the counterparty when renamed to punctuation only", () => {
+    const owner = store.registerUser("debt_punctuation_rename", "hash");
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
+
+    store.updateDebt(owner.id, debt.id, { counterparty: "!!!" });
+
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(debt.id)).toEqual({ counterparty_id: null });
+    expect(database.prepare("SELECT name_normalized FROM counterparties WHERE user_id=?").all(owner.id)).toEqual([]);
+  });
+
   it("shares normalized counterparties and preserves rows used by another debt", () => {
     const owner = store.registerUser("debt_shared_counterparty", "hash");
     const first = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
@@ -145,17 +168,61 @@ describe("personal debt register", () => {
     expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(second.id)).toEqual({ counterparty_id: idsBeforeRename[1].counterparty_id });
   });
 
-  it("does not change another owner's counterparty during rename", () => {
+  it("isolates same-name counterparties during another owner's rename and delete", () => {
     const alice = store.registerUser("debt_rename_owner_a", "hash");
     const bob = store.registerUser("debt_rename_owner_b", "hash");
     const aliceDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
-    const bobDebt = store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 200 });
-    const bobCounterparty = database.prepare("SELECT id,name FROM counterparties WHERE user_id=?").get(bob.id);
+    store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 200 });
+    const aliceMom = database.prepare("SELECT id FROM counterparties WHERE user_id=? AND name_normalized='mom'").get(alice.id);
+    const bobBefore = store.listDebts(bob.id);
+    const bobCounterparty = database.prepare("SELECT id,name,name_normalized FROM counterparties WHERE user_id=?").get(bob.id);
+    expect(database.prepare("SELECT name_normalized FROM counterparties WHERE user_id=?").get(alice.id)).toEqual({ name_normalized: "mom" });
+    expect(bobCounterparty).toMatchObject({ name_normalized: "mom" });
+    expect((aliceMom as { id: string }).id).not.toBe((bobCounterparty as { id: string }).id);
 
     store.updateDebt(alice.id, aliceDebt.id, { counterparty: "Dad" });
 
-    expect(database.prepare("SELECT id,name FROM counterparties WHERE user_id=?").get(bob.id)).toEqual(bobCounterparty);
-    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(bobDebt.id)).toEqual({ counterparty_id: (bobCounterparty as { id: string }).id });
+    expect(database.prepare("SELECT id FROM counterparties WHERE user_id=? AND name_normalized='mom'").get(alice.id)).toBeUndefined();
+    expect(database.prepare("SELECT id,name,name_normalized FROM counterparties WHERE user_id=?").get(bob.id)).toEqual(bobCounterparty);
+    expect(store.listDebts(bob.id)).toEqual(bobBefore);
+
+    const aliceMomDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 300 });
+    store.deleteDebt(alice.id, aliceMomDebt.id);
+
+    expect(database.prepare("SELECT id,name,name_normalized FROM counterparties WHERE user_id=?").get(bob.id)).toEqual(bobCounterparty);
+    expect(store.listDebts(bob.id)).toEqual(bobBefore);
+  });
+
+  it("cleans up counterparties after deleting unique debts and keeps shared rows", () => {
+    const owner = store.registerUser("debt_delete_counterparty_cleanup", "hash");
+    const unique = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Unique", amountMinor: 100 });
+    const first = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 200 });
+    const second = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "mom", amountMinor: 300 });
+    const sharedId = (database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(second.id) as { counterparty_id: string }).counterparty_id;
+
+    store.deleteDebt(owner.id, unique.id);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM counterparties WHERE user_id=? AND name_normalized='unique'").get(owner.id)).toEqual({ count: 0 });
+
+    store.deleteDebt(owner.id, first.id);
+    expect(database.prepare("SELECT id FROM counterparties WHERE id=?").get(sharedId)).toEqual({ id: sharedId });
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(second.id)).toEqual({ counterparty_id: sharedId });
+  });
+
+  it("preserves counterparties referenced by another owner's debt during migration and rename", () => {
+    const alice = store.registerUser("debt_cross_owner_reference_a", "hash");
+    const bob = store.registerUser("debt_cross_owner_reference_b", "hash");
+    const aliceDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
+    const bobDebt = store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Nina", amountMinor: 200 });
+    const aliceCounterpartyId = (database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(aliceDebt.id) as { counterparty_id: string }).counterparty_id;
+    database.prepare("UPDATE debts SET counterparty_id=? WHERE id=?").run(aliceCounterpartyId, bobDebt.id);
+
+    expect(() => store.migrate()).not.toThrow();
+    expect(database.prepare("SELECT id FROM counterparties WHERE id=?").get(aliceCounterpartyId)).toEqual({ id: aliceCounterpartyId });
+
+    store.updateDebt(alice.id, aliceDebt.id, { counterparty: "Dad" });
+
+    expect(database.prepare("SELECT id FROM counterparties WHERE id=?").get(aliceCounterpartyId)).toEqual({ id: aliceCounterpartyId });
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(bobDebt.id)).toEqual({ counterparty_id: aliceCounterpartyId });
   });
 
   it("creates debts in either direction with optional due dates and notes", () => {

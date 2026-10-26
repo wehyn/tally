@@ -196,7 +196,7 @@ export function createStore(db: Database.Database) {
         if (!normalizeCounterparty(debt.counterparty)) clearEmptyCounterparty.run(debt.id);
       }
       db.prepare(`DELETE FROM counterparties WHERE NOT EXISTS (
-        SELECT 1 FROM debts WHERE debts.user_id=counterparties.user_id AND debts.counterparty_id=counterparties.id
+        SELECT 1 FROM debts WHERE debts.counterparty_id=counterparties.id
       )`).run();
     }).immediate();
     const userColumns = db.pragma("table_info(users)") as { name: string }[];
@@ -598,8 +598,8 @@ export function createStore(db: Database.Database) {
       WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, counterpartyId, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
     if (row.counterparty_id) {
       db.prepare(`DELETE FROM counterparties WHERE id=? AND user_id=? AND NOT EXISTS (
-        SELECT 1 FROM debts WHERE user_id=? AND counterparty_id=?
-      )`).run(row.counterparty_id, userId, userId, row.counterparty_id);
+        SELECT 1 FROM debts WHERE counterparty_id=?
+      )`).run(row.counterparty_id, userId, row.counterparty_id);
     }
     if (addAdjustment && value.amountMinor !== current.amountMinor) {
       db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
@@ -612,8 +612,16 @@ export function createStore(db: Database.Database) {
     return db.transaction(() => updateDebtInternal(userId, debtId, input, true)).immediate();
   }
   function deleteDebt(userId: string, debtId: string): void {
-    const result = db.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(debtId, userId);
-    if (!result.changes) throw new Error("Debt not found.");
+    db.transaction(() => {
+      const row = db.prepare("SELECT counterparty_id FROM debts WHERE id=? AND user_id=?").get(debtId, userId) as { counterparty_id: string | null } | undefined;
+      if (!row) throw new Error("Debt not found.");
+      db.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(debtId, userId);
+      if (row.counterparty_id) {
+        db.prepare(`DELETE FROM counterparties WHERE id=? AND user_id=? AND NOT EXISTS (
+          SELECT 1 FROM debts WHERE counterparty_id=?
+        )`).run(row.counterparty_id, userId, row.counterparty_id);
+      }
+    }).immediate();
   }
 
   function listCategories(userId: string): Category[] {
