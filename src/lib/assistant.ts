@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeCounterparty } from "@/lib/counterparty";
 import { HttpError } from "@/lib/api";
 import { getStore } from "@/lib/db";
 import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } from "@/lib/dates";
@@ -396,9 +397,6 @@ function handleAssistantBillAction(
   const dateSummary = `${effectiveAction === "create_bill" ? "First due" : "Next due"} ${formatAssistantDate(savedDueDate)}${bill.endDate ? ` · ends ${formatAssistantDate(bill.endDate)}` : ""}`;
   const answer = `${effectiveAction === "create_bill" ? "Saved" : "Updated"} ${bill.name}: ${formatPHP(bill.amountMinor)} ${bill.frequency} using ${bill.accountName} and ${bill.categoryName}. ${dateSummary}.${postingWarning ? ` ${postingWarning}` : ""}`;
   return { answer, bill, ...(postingWarning ? { postingWarning } : {}), needsFollowup: false };
-}
-function normalizeCounterparty(value: string): string {
-  return value.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}-]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 function containsCounterparty(text: string, counterparty: string): boolean {
   const normalizedCounterparty = normalizeCounterparty(counterparty);

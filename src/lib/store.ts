@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { normalizeCounterparty } from "./counterparty";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
@@ -33,6 +34,7 @@ export type DebtActivity = {
   categoryName: string | null; accountName: string; description: string;
 };
 export type Debt = { id: string; direction: DebtDirection; counterparty: string; amountMinor: number; note: string; dueDate: string | null; status: DebtStatus; createdAt: string; updatedAt: string; activity: DebtActivity[] };
+export type DebtPayment = { id: string; debtId: string; direction: DebtDirection; kind: "payment" | "adjustment"; amountMinor: number; deltaMinor: number; reason: string | null; transactionId: string | null; createdAt: string };
 export type BillInput = {
   name: string; amountMinor: number; frequency: BillFrequency; nextDueDate: string; accountId: string; categoryId: string;
   endDate?: string | null;
@@ -83,15 +85,31 @@ export function createStore(db: Database.Database) {
         name TEXT NOT NULL COLLATE NOCASE, type TEXT NOT NULL CHECK(type IN ('income','expense')), icon TEXT NOT NULL DEFAULT 'tag',
         UNIQUE(user_id, type, name)
       );
+      CREATE TABLE IF NOT EXISTS counterparties (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, name_normalized TEXT NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE(user_id,name_normalized)
+      );
       CREATE TABLE IF NOT EXISTS debts (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         direction TEXT NOT NULL CHECK(direction IN ('owed_to_you','you_owe')),
-        counterparty TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+        counterparty TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0), principal_minor INTEGER,
+        counterparty_id TEXT REFERENCES counterparties(id),
         note TEXT NOT NULL DEFAULT '', due_date TEXT,
         status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','settled')),
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS debts_owner_status_due ON debts(user_id,status,due_date,created_at DESC);
+      CREATE TABLE IF NOT EXISTS debt_payments (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
+        direction TEXT NOT NULL CHECK(direction IN ('owed_to_you','you_owe')),
+        kind TEXT NOT NULL CHECK(kind IN ('payment','adjustment')),
+        amount_minor INTEGER NOT NULL CHECK(kind!='payment' OR amount_minor>0),
+        delta_minor INTEGER NOT NULL, reason TEXT, transaction_id TEXT REFERENCES transactions(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS debt_payments_owner_debt ON debt_payments(user_id,debt_id,created_at,id);
       CREATE TABLE IF NOT EXISTS transactions (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         kind TEXT NOT NULL CHECK(kind IN ('income','expense','transfer','debt_repayment')), amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
@@ -155,6 +173,32 @@ export function createStore(db: Database.Database) {
       );
       CREATE INDEX IF NOT EXISTS contributions_goal ON goal_contributions(goal_id, date DESC);
     `);
+    const debtColumns = db.pragma("table_info(debts)") as { name: string }[];
+    if (!debtColumns.some((column) => column.name === "principal_minor")) db.exec("ALTER TABLE debts ADD COLUMN principal_minor INTEGER");
+    if (!debtColumns.some((column) => column.name === "counterparty_id")) db.exec("ALTER TABLE debts ADD COLUMN counterparty_id TEXT REFERENCES counterparties(id)");
+    db.transaction(() => {
+      // Settled debts retain their last outstanding amount, so their principal backfill is lossy.
+      db.prepare("UPDATE debts SET principal_minor=amount_minor WHERE principal_minor IS NULL").run();
+      const debts = db.prepare("SELECT id,user_id,counterparty FROM debts WHERE counterparty_id IS NULL").all() as { id: string; user_id: string; counterparty: string }[];
+      const insertCounterparty = db.prepare(`INSERT OR IGNORE INTO counterparties(id,user_id,name,name_normalized,created_at) VALUES(?,?,?,?,?)`);
+      const findCounterparty = db.prepare("SELECT id FROM counterparties WHERE user_id=? AND name_normalized=?");
+      const linkDebt = db.prepare("UPDATE debts SET counterparty_id=? WHERE id=? AND counterparty_id IS NULL");
+      for (const debt of debts) {
+        const normalized = normalizeCounterparty(debt.counterparty);
+        if (!normalized) continue;
+        insertCounterparty.run(randomUUID(), debt.user_id, debt.counterparty, normalized, stamp());
+        const counterparty = findCounterparty.get(debt.user_id, normalized) as { id: string };
+        linkDebt.run(counterparty.id, debt.id);
+      }
+      const linkedDebts = db.prepare("SELECT id,counterparty FROM debts WHERE counterparty_id IS NOT NULL").all() as { id: string; counterparty: string }[];
+      const clearEmptyCounterparty = db.prepare("UPDATE debts SET counterparty_id=NULL WHERE id=? AND counterparty_id IS NOT NULL");
+      for (const debt of linkedDebts) {
+        if (!normalizeCounterparty(debt.counterparty)) clearEmptyCounterparty.run(debt.id);
+      }
+      db.prepare(`DELETE FROM counterparties WHERE NOT EXISTS (
+        SELECT 1 FROM debts WHERE debts.counterparty_id=counterparties.id
+      )`).run();
+    }).immediate();
     const userColumns = db.pragma("table_info(users)") as { name: string }[];
     if (!userColumns.some((column) => column.name === "shortcut_credential_hash")) {
       db.exec("ALTER TABLE users ADD COLUMN shortcut_credential_hash TEXT");
@@ -456,13 +500,43 @@ export function createStore(db: Database.Database) {
     }
     return debts.map((debt) => ({ ...debt, activity: activityByDebt.get(debt.id) ?? [] }));
   }
+  function listDebtPayments(userId: string, debtId: string): DebtPayment[] {
+    return (db.prepare(`SELECT p.id,p.debt_id,p.direction,p.kind,p.amount_minor,p.delta_minor,p.reason,p.transaction_id,p.created_at
+      FROM debt_payments p JOIN debts d ON d.id=p.debt_id AND d.user_id=p.user_id
+      WHERE p.user_id=? AND p.debt_id=? ORDER BY p.created_at,p.rowid`).all(userId, debtId) as Record<string, unknown>[]).map((row) => ({
+      id: String(row.id), debtId: String(row.debt_id), direction: row.direction as DebtDirection,
+      kind: row.kind as DebtPayment["kind"], amountMinor: safeMinorNumber(row.amount_minor, "Debt payment amount"),
+      deltaMinor: safeMinorNumber(row.delta_minor, "Debt payment delta"), reason: row.reason ? String(row.reason) : null,
+      transactionId: row.transaction_id ? String(row.transaction_id) : null, createdAt: String(row.created_at),
+    }));
+  }
+  // Settled debts retain their last outstanding principal, so only open debt balances are meaningful.
+  function debtBalanceFromPayments(userId: string, debt: Debt): number {
+    const rows = db.prepare(`SELECT d.principal_minor,p.delta_minor
+      FROM debts d LEFT JOIN debt_payments p ON p.debt_id=d.id AND p.user_id=d.user_id AND p.user_id=?
+      WHERE d.id=? AND d.user_id=?`).safeIntegers().all(userId, debt.id, userId) as { principal_minor: bigint; delta_minor: bigint | null }[];
+    if (!rows.length) throw new Error("Debt not found.");
+    const delta = rows.reduce((sum, row) => sum + (row.delta_minor ?? 0n), 0n);
+    return safeMinorNumber(rows[0].principal_minor + delta, "Derived debt balance");
+  }
   function createDebt(userId: string, input: DebtInput): Debt {
     const value = validateDebtInput(input);
     const id = randomUUID();
     const now = stamp();
-    db.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,'open',?,?)`).run(id, userId, value.direction, value.counterparty, value.amountMinor, value.note, value.dueDate, now, now);
+    db.transaction(() => {
+      const counterpartyId = ensureCounterparty(userId, value.counterparty);
+      db.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,principal_minor,counterparty_id,note,due_date,status,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,'open',?,?)`).run(id, userId, value.direction, value.counterparty, value.amountMinor, value.amountMinor, counterpartyId, value.note, value.dueDate, now, now);
+    }).immediate();
     return listDebts(userId).find((debt) => debt.id === id)!;
+  }
+  function ensureCounterparty(userId: string, name: string): string | null {
+    const normalized = normalizeCounterparty(name);
+    if (!normalized) return null;
+    db.prepare("INSERT OR IGNORE INTO counterparties(id,user_id,name,name_normalized,created_at) VALUES(?,?,?,?,?)")
+      .run(randomUUID(), userId, name, normalized, stamp());
+    const row = db.prepare("SELECT id FROM counterparties WHERE user_id=? AND name_normalized=?").get(userId, normalized) as { id: string };
+    return row.id;
   }
   function recordDebtAdvance(userId: string, input: DebtInput, transactionInput: TransactionInput): { debt: Debt; transaction: Transaction } {
     return db.transaction(() => {
@@ -501,8 +575,8 @@ export function createStore(db: Database.Database) {
       return { debt: listDebts(userId).find((item) => item.id === debtId)!, transaction: getTransaction(userId, created.id)! };
     }).immediate();
   }
-  function updateDebt(userId: string, debtId: string, input: DebtUpdate): Debt {
-    const row = db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
+  function updateDebtInternal(userId: string, debtId: string, input: DebtUpdate, addAdjustment: boolean): Debt {
+    const row = db.prepare(`SELECT id,direction,counterparty,counterparty_id,amount_minor,note,due_date,status,created_at,updated_at
       FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
     if (!row) throw new Error("Debt not found.");
     const current = debtFromRow(row);
@@ -519,13 +593,35 @@ export function createStore(db: Database.Database) {
       throw new Error("A debt with linked activity cannot change direction.");
     }
     const updatedAt = stamp();
-    db.prepare(`UPDATE debts SET direction=?,counterparty=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
-      WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
+    const counterpartyId = ensureCounterparty(userId, value.counterparty);
+    db.prepare(`UPDATE debts SET direction=?,counterparty=?,counterparty_id=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
+      WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, counterpartyId, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
+    if (row.counterparty_id) {
+      db.prepare(`DELETE FROM counterparties WHERE id=? AND user_id=? AND NOT EXISTS (
+        SELECT 1 FROM debts WHERE counterparty_id=?
+      )`).run(row.counterparty_id, userId, row.counterparty_id);
+    }
+    if (addAdjustment && value.amountMinor !== current.amountMinor) {
+      db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
+        VALUES(?,?,?,?,'adjustment',?,?,?,NULL,?)`).run(randomUUID(), userId, debtId, value.direction,
+        Math.abs(value.amountMinor - current.amountMinor), value.amountMinor - current.amountMinor, "manual amount edit", stamp());
+    }
     return listDebts(userId).find((debt) => debt.id === debtId)!;
   }
+  function updateDebt(userId: string, debtId: string, input: DebtUpdate): Debt {
+    return db.transaction(() => updateDebtInternal(userId, debtId, input, true)).immediate();
+  }
   function deleteDebt(userId: string, debtId: string): void {
-    const result = db.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(debtId, userId);
-    if (!result.changes) throw new Error("Debt not found.");
+    db.transaction(() => {
+      const row = db.prepare("SELECT counterparty_id FROM debts WHERE id=? AND user_id=?").get(debtId, userId) as { counterparty_id: string | null } | undefined;
+      if (!row) throw new Error("Debt not found.");
+      db.prepare("DELETE FROM debts WHERE id=? AND user_id=?").run(debtId, userId);
+      if (row.counterparty_id) {
+        db.prepare(`DELETE FROM counterparties WHERE id=? AND user_id=? AND NOT EXISTS (
+          SELECT 1 FROM debts WHERE counterparty_id=?
+        )`).run(row.counterparty_id, userId, row.counterparty_id);
+      }
+    }).immediate();
   }
 
   function listCategories(userId: string): Category[] {
@@ -734,8 +830,11 @@ export function createStore(db: Database.Database) {
       if (paymentInput.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
       const remaining = debt.amountMinor - paymentInput.amountMinor;
       // Settled records retain their last positive balance; status is authoritative.
-      const updated = updateDebt(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" });
+      const updated = updateDebtInternal(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" }, false);
       const transaction = insertTransaction(userId, paymentInput, { source: "assistant", undoUntil: null, debtId });
+      db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,transaction_id,created_at)
+        VALUES(?,?,?,?,'payment',?,?,?,?)`).run(randomUUID(), userId, debtId, debt.direction, paymentInput.amountMinor, -paymentInput.amountMinor, transaction.id, stamp());
+      assertLedgerTotalsSafe(userId);
       return { debt: listDebts(userId).find((item) => item.id === updated.id)!, transaction };
     }).immediate();
   }
@@ -751,11 +850,14 @@ export function createStore(db: Database.Database) {
       assertTransactionInput(userId, paymentInput);
       if (paymentInput.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
       const remaining = debt.amountMinor - paymentInput.amountMinor;
-      const updated = updateDebt(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" });
+      const updated = updateDebtInternal(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" }, false);
       const created = createTransaction(userId, paymentInput);
       const linked = db.prepare("UPDATE transactions SET debt_id=? WHERE id=? AND user_id=?").run(debtId, created.id, userId);
       if (!linked.changes) throw new Error("Debt repayment transaction could not be linked.");
       db.prepare("UPDATE transactions SET undo_until=NULL WHERE id=? AND user_id=?").run(created.id, userId);
+      db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,transaction_id,created_at)
+        VALUES(?,?,?,?,'payment',?,?,?,?)`).run(randomUUID(), userId, debtId, debt.direction, paymentInput.amountMinor, -paymentInput.amountMinor, created.id, stamp());
+      assertLedgerTotalsSafe(userId);
       return { debt: listDebts(userId).find((item) => item.id === updated.id)!, transaction: getTransaction(userId, created.id)! };
     }).immediate();
   }
@@ -1101,7 +1203,7 @@ export function createStore(db: Database.Database) {
     migrate, registerUser, getUserByUsername, getUserById, listUsers, setUserEnabled, setResetCredential, consumeResetCredential,
     setShortcutCredentialHash, findEnabledUserByShortcutCredentialHash, hasShortcutCredential,
     listAccounts, createAccount, setDefaultAccount, updateAccount, deleteAccount, listCategories, createCategory, updateCategory, renameCategory,
-    listDebts, createDebt, updateDebt, deleteDebt, recordDebtAdvance, recordDebtAdvanceTransaction, recordDebtPayment, recordDebtRepayment,
+    listDebts, listDebtPayments, debtBalanceFromPayments, createDebt, updateDebt, deleteDebt, recordDebtAdvance, recordDebtAdvanceTransaction, recordDebtPayment, recordDebtRepayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
     setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,
