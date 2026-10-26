@@ -208,16 +208,35 @@ describe("personal debt register", () => {
     expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(second.id)).toEqual({ counterparty_id: sharedId });
   });
 
+  it("keeps a counterparty referenced by another owner when deleting a debt", () => {
+    const alice = store.registerUser("debt_delete_cross_owner_a", "hash");
+    const bob = store.registerUser("debt_delete_cross_owner_b", "hash");
+    const aliceDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
+    const bobDebt = store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Nina", amountMinor: 200 });
+    const counterpartyId = "cross-owner-delete-counterparty";
+    database.prepare("INSERT INTO counterparties(id,user_id,name,name_normalized,created_at) VALUES(?,?,?,?,?)")
+      .run(counterpartyId, alice.id, "Shared", "shared", "2026-10-01");
+    database.prepare("UPDATE debts SET counterparty_id=? WHERE id IN (?,?)").run(counterpartyId, aliceDebt.id, bobDebt.id);
+
+    expect(() => store.deleteDebt(alice.id, aliceDebt.id)).not.toThrow();
+    expect(database.prepare("SELECT id FROM counterparties WHERE id=?").get(counterpartyId)).toEqual({ id: counterpartyId });
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(bobDebt.id)).toEqual({ counterparty_id: counterpartyId });
+  });
+
   it("preserves counterparties referenced by another owner's debt during migration and rename", () => {
     const alice = store.registerUser("debt_cross_owner_reference_a", "hash");
     const bob = store.registerUser("debt_cross_owner_reference_b", "hash");
     const aliceDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
     const bobDebt = store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Nina", amountMinor: 200 });
-    const aliceCounterpartyId = (database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(aliceDebt.id) as { counterparty_id: string }).counterparty_id;
+    const aliceCounterpartyId = "cross-owner-migration-counterparty";
+    database.prepare("INSERT INTO counterparties(id,user_id,name,name_normalized,created_at) VALUES(?,?,?,?,?)")
+      .run(aliceCounterpartyId, alice.id, "Shared", "shared", "2026-10-01");
+    database.prepare("UPDATE debts SET counterparty_id=NULL WHERE id=?").run(aliceDebt.id);
     database.prepare("UPDATE debts SET counterparty_id=? WHERE id=?").run(aliceCounterpartyId, bobDebt.id);
 
     expect(() => store.migrate()).not.toThrow();
     expect(database.prepare("SELECT id FROM counterparties WHERE id=?").get(aliceCounterpartyId)).toEqual({ id: aliceCounterpartyId });
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(bobDebt.id)).toEqual({ counterparty_id: aliceCounterpartyId });
 
     store.updateDebt(alice.id, aliceDebt.id, { counterparty: "Dad" });
 
