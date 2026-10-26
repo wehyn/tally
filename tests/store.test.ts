@@ -87,6 +87,18 @@ describe("owner-scoped ledger", () => {
     expect(store.listAccounts(owner.id)[0].balanceMinor).toBe(2_500);
   });
 
+  it("rejects deleting a transaction referenced by debt payment history", () => {
+    const owner = store.registerUser("debt_payment_delete_guard", "hash");
+    const account = store.createAccount(owner.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 2_000 });
+    const { transaction } = store.recordDebtPayment(owner.id, debt.id, {
+      amountMinor: 500, accountId: account.id, description: "Mina paid me", date: "2026-10-11",
+    });
+
+    expect(() => store.deleteTransaction(owner.id, transaction.id)).toThrow("Linked debt repayments cannot be deleted; delete the debt first.");
+    expect(store.getTransaction(owner.id, transaction.id)).not.toBeNull();
+  });
+
   it("sets the opposite safe-integer boundary without changing transaction history", () => {
     const user = store.registerUser("account_balance_boundary", "hash");
     const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: Number.MAX_SAFE_INTEGER - 1 });

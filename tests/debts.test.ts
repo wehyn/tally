@@ -12,6 +12,40 @@ beforeEach(() => {
 afterEach(() => database.close());
 
 describe("personal debt register", () => {
+  it("migrates existing debts to principal and normalized counterparties idempotently", () => {
+    const owner = store.registerUser("debt_foundation_migration", "hash");
+    database.exec("PRAGMA foreign_keys=OFF");
+    database.exec(`DROP TABLE debt_payments; DROP TABLE counterparties;
+      CREATE TABLE debts_old (
+        id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        direction TEXT NOT NULL CHECK(direction IN ('owed_to_you','you_owe')),counterparty TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL CHECK(amount_minor>0),note TEXT NOT NULL DEFAULT '',due_date TEXT,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','settled')),created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+      );
+      INSERT INTO debts_old SELECT id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at FROM debts;
+      DROP TABLE debts; ALTER TABLE debts_old RENAME TO debts;`);
+    database.pragma("foreign_keys=ON");
+    database.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,'',NULL,'open','2026-10-01','2026-10-01')`).run("legacy-one", owner.id, "owed_to_you", "AÑa-Lu", 800);
+    database.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,'',NULL,'settled','2026-10-02','2026-10-02')`).run("legacy-two", owner.id, "you_owe", "Aña-lu", 500);
+    database.prepare(`INSERT INTO debts(id,user_id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,'',NULL,'open','2026-10-03','2026-10-03')`).run("legacy-three", owner.id, "you_owe", "Ana Lu", 300);
+
+    store = createStore(database);
+    store.migrate();
+    expect(database.prepare("SELECT id,principal_minor,counterparty_id FROM debts ORDER BY id").all()).toMatchObject([
+      { id: "legacy-one", principal_minor: 800 }, { id: "legacy-three", principal_minor: 300 }, { id: "legacy-two", principal_minor: 500 },
+    ]);
+    const links = database.prepare("SELECT id,counterparty_id FROM debts ORDER BY id").all() as { id: string; counterparty_id: string }[];
+    expect(links[0].counterparty_id).toBe(links[2].counterparty_id);
+    expect(links[1].counterparty_id).not.toBe(links[0].counterparty_id);
+    const counterpartyCount = database.prepare("SELECT COUNT(*) AS count FROM counterparties").get() as { count: number };
+    store.migrate();
+    expect(database.prepare("SELECT COUNT(*) AS count FROM counterparties").get()).toEqual(counterpartyCount);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM debt_payments").get()).toEqual({ count: 0 });
+  });
+
   it("creates debts in either direction with optional due dates and notes", () => {
     const alice = store.registerUser("debt_owner", "hash-a");
     const bob = store.registerUser("debt_other", "hash-b");
@@ -153,6 +187,8 @@ describe("personal debt register", () => {
 
     expect(partial.transaction).toMatchObject({ kind: "debt_repayment", categoryId: undefined, categoryName: null, undoUntil: null });
     expect(partial.debt).toMatchObject({ amountMinor: 6_000, status: "open" });
+    expect(store.listDebtPayments(owner.id, debt.id).find((item) => item.transactionId === partial.transaction.id))
+      .toMatchObject({ kind: "payment", amountMinor: 4_000, deltaMinor: -4_000, transactionId: partial.transaction.id });
     expect(partialDashboard).toMatchObject({ incomeMinor: 0, spendingMinor: 0, debtRepaymentMinor: 4_000, netCashFlowMinor: 4_000 });
     expect(partialDashboard.accounts).toMatchObject([{ balanceMinor: 24_000 }]);
 
@@ -183,6 +219,8 @@ describe("personal debt register", () => {
 
     expect(partial.debt).toMatchObject({ amountMinor: 6_000, status: "open" });
     expect(partial.transaction).toMatchObject({ kind: "expense", amountMinor: 4_000, undoUntil: null });
+    expect(store.listDebtPayments(owner.id, debt.id).find((item) => item.transactionId === partial.transaction.id))
+      .toMatchObject({ kind: "payment", amountMinor: 4_000, deltaMinor: -4_000, transactionId: partial.transaction.id });
     expect(settled.debt).toMatchObject({ amountMinor: 6_000, status: "settled" });
     expect(settled.transaction).toMatchObject({ kind: "expense", amountMinor: 6_000, undoUntil: null });
     expect(store.listAccounts(owner.id)[0].balanceMinor).toBe(10_000);
@@ -371,5 +409,50 @@ describe("personal debt register", () => {
 
     expect(payment.debt).toMatchObject({ id: debt.id, amountMinor: 10000, status: "settled" });
     expect(payment.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 10000, categoryId: undefined, undoUntil: null });
+    expect(store.listDebtPayments(owner.id, debt.id)).toMatchObject([{ kind: "payment", amountMinor: 10000, deltaMinor: -10000, transactionId: payment.transaction.id }]);
+    expect(store.debtBalanceFromPayments(debt)).toBe(0);
+  });
+
+  it("records amount edits as adjustments without a cash transaction", () => {
+    const owner = store.registerUser("debt_adjustment_owner", "hash");
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+
+    const updated = store.updateDebt(owner.id, debt.id, { amountMinor: 1_400 });
+
+    expect(updated.amountMinor).toBe(1_400);
+    expect(store.listDebtPayments(owner.id, debt.id)).toMatchObject([{ kind: "adjustment", amountMinor: 400, deltaMinor: 400, reason: "manual amount edit", transactionId: null }]);
+    expect(store.listTransactions(owner.id)).toEqual([]);
+    expect(store.debtBalanceFromPayments(debt)).toBe(1_400);
+  });
+
+  it("rolls back a repayment payment row when a later ledger validation fails", () => {
+    const owner = store.registerUser("debt_payment_late_failure", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: Number.MAX_SAFE_INTEGER - 1 });
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1 });
+    database.prepare(`CREATE TRIGGER fail_payment_validation AFTER INSERT ON debt_payments BEGIN
+      UPDATE financial_accounts SET balance_adjustment_minor_exact='1' WHERE id='${account.id}';
+    END`).run();
+
+    expect(() => store.recordDebtPayment(owner.id, debt.id, {
+      amountMinor: 1, accountId: account.id, description: "Mina paid me", date: "2026-10-11",
+    })).toThrow(/supported exact PHP minor-unit range/i);
+    expect(store.listDebtPayments(owner.id, debt.id)).toEqual([]);
+    expect(store.listTransactions(owner.id)).toEqual([]);
+    expect(store.listDebts(owner.id)).toMatchObject([{ id: debt.id, amountMinor: 1, status: "open" }]);
+    expect(store.listAccounts(owner.id)[0].balanceMinor).toBe(Number.MAX_SAFE_INTEGER - 1);
+  });
+
+  it("cascades payment rows when deleting a debt and preserves its linked transaction", () => {
+    const owner = store.registerUser("delete_payment_debt_owner", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+    const payment = store.recordDebtPayment(owner.id, debt.id, {
+      amountMinor: 250, accountId: account.id, description: "Mina paid me", date: "2026-10-11",
+    });
+
+    store.deleteDebt(owner.id, debt.id);
+
+    expect(store.listDebtPayments(owner.id, debt.id)).toEqual([]);
+    expect(store.getTransaction(owner.id, payment.transaction.id)).toMatchObject({ id: payment.transaction.id, debtId: undefined });
   });
 });
