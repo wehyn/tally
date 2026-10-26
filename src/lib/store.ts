@@ -185,10 +185,19 @@ export function createStore(db: Database.Database) {
       const linkDebt = db.prepare("UPDATE debts SET counterparty_id=? WHERE id=? AND counterparty_id IS NULL");
       for (const debt of debts) {
         const normalized = normalizeCounterparty(debt.counterparty);
+        if (!normalized) continue;
         insertCounterparty.run(randomUUID(), debt.user_id, debt.counterparty, normalized, stamp());
         const counterparty = findCounterparty.get(debt.user_id, normalized) as { id: string };
         linkDebt.run(counterparty.id, debt.id);
       }
+      const linkedDebts = db.prepare("SELECT id,counterparty FROM debts WHERE counterparty_id IS NOT NULL").all() as { id: string; counterparty: string }[];
+      const clearEmptyCounterparty = db.prepare("UPDATE debts SET counterparty_id=NULL WHERE id=? AND counterparty_id IS NOT NULL");
+      for (const debt of linkedDebts) {
+        if (!normalizeCounterparty(debt.counterparty)) clearEmptyCounterparty.run(debt.id);
+      }
+      db.prepare(`DELETE FROM counterparties WHERE NOT EXISTS (
+        SELECT 1 FROM debts WHERE debts.user_id=counterparties.user_id AND debts.counterparty_id=counterparties.id
+      )`).run();
     }).immediate();
     const userColumns = db.pragma("table_info(users)") as { name: string }[];
     if (!userColumns.some((column) => column.name === "shortcut_credential_hash")) {
@@ -521,8 +530,9 @@ export function createStore(db: Database.Database) {
     }).immediate();
     return listDebts(userId).find((debt) => debt.id === id)!;
   }
-  function ensureCounterparty(userId: string, name: string): string {
+  function ensureCounterparty(userId: string, name: string): string | null {
     const normalized = normalizeCounterparty(name);
+    if (!normalized) return null;
     db.prepare("INSERT OR IGNORE INTO counterparties(id,user_id,name,name_normalized,created_at) VALUES(?,?,?,?,?)")
       .run(randomUUID(), userId, name, normalized, stamp());
     const row = db.prepare("SELECT id FROM counterparties WHERE user_id=? AND name_normalized=?").get(userId, normalized) as { id: string };
@@ -566,7 +576,7 @@ export function createStore(db: Database.Database) {
     }).immediate();
   }
   function updateDebtInternal(userId: string, debtId: string, input: DebtUpdate, addAdjustment: boolean): Debt {
-    const row = db.prepare(`SELECT id,direction,counterparty,amount_minor,note,due_date,status,created_at,updated_at
+    const row = db.prepare(`SELECT id,direction,counterparty,counterparty_id,amount_minor,note,due_date,status,created_at,updated_at
       FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
     if (!row) throw new Error("Debt not found.");
     const current = debtFromRow(row);
@@ -586,6 +596,11 @@ export function createStore(db: Database.Database) {
     const counterpartyId = ensureCounterparty(userId, value.counterparty);
     db.prepare(`UPDATE debts SET direction=?,counterparty=?,counterparty_id=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
       WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, counterpartyId, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
+    if (row.counterparty_id) {
+      db.prepare(`DELETE FROM counterparties WHERE id=? AND user_id=? AND NOT EXISTS (
+        SELECT 1 FROM debts WHERE user_id=? AND counterparty_id=?
+      )`).run(row.counterparty_id, userId, userId, row.counterparty_id);
+    }
     if (addAdjustment && value.amountMinor !== current.amountMinor) {
       db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
         VALUES(?,?,?,?,'adjustment',?,?,?,NULL,?)`).run(randomUUID(), userId, debtId, value.direction,

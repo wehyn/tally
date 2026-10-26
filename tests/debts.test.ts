@@ -76,6 +76,88 @@ describe("personal debt register", () => {
     expect(database.prepare("SELECT COUNT(*) AS count FROM debt_payments").get()).toEqual({ count: 0 });
   });
 
+  it("cleans legacy orphan and empty-name counterparties idempotently", () => {
+    const owner = store.registerUser("debt_counterparty_cleanup", "hash");
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "!!!", amountMinor: 100 });
+    database.prepare(`INSERT INTO counterparties(id,user_id,name,name_normalized,created_at)
+      VALUES('legacy-empty-link',?,?,?,'2026-10-01')`).run(owner.id, "!!!", "");
+    database.prepare(`INSERT INTO counterparties(id,user_id,name,name_normalized,created_at)
+      VALUES('legacy-orphan',?,?,?,'2026-10-01')`).run(owner.id, "Orphan", "orphan");
+    database.prepare("UPDATE debts SET counterparty_id='legacy-empty-link' WHERE id=?").run(debt.id);
+
+    store.migrate();
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(debt.id)).toEqual({ counterparty_id: null });
+    expect(database.prepare("SELECT id FROM counterparties WHERE id IN ('legacy-empty-link','legacy-orphan')").all()).toEqual([]);
+    const debtsAfterFirstMigration = database.prepare("SELECT id,counterparty,counterparty_id FROM debts ORDER BY id").all();
+    const counterpartiesAfterFirstMigration = database.prepare("SELECT id,user_id,name,name_normalized FROM counterparties ORDER BY id").all();
+
+    store.migrate();
+
+    expect(database.prepare("SELECT id,counterparty,counterparty_id FROM debts ORDER BY id").all()).toEqual(debtsAfterFirstMigration);
+    expect(database.prepare("SELECT id,user_id,name,name_normalized FROM counterparties ORDER BY id").all()).toEqual(counterpartiesAfterFirstMigration);
+  });
+
+  it("keeps punctuation-only debt names without creating counterparties", () => {
+    const owner = store.registerUser("debt_empty_counterparty", "hash");
+
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "!!!", amountMinor: 100 });
+
+    expect(store.listDebts(owner.id)).toContainEqual(debt);
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(debt.id)).toEqual({ counterparty_id: null });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM counterparties WHERE user_id=?").get(owner.id)).toEqual({ count: 0 });
+  });
+
+  it("removes the old counterparty on rename and keeps normalized-name matches", () => {
+    const owner = store.registerUser("debt_counterparty_rename", "hash");
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
+
+    store.updateDebt(owner.id, debt.id, { counterparty: "Dad" });
+
+    expect(store.listDebts(owner.id)).toMatchObject([{ id: debt.id, counterparty: "Dad" }]);
+    expect(database.prepare("SELECT name_normalized FROM counterparties WHERE user_id=? ORDER BY name_normalized").all(owner.id))
+      .toEqual([{ name_normalized: "dad" }]);
+
+    const sameNameDebt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 200 });
+    const previousId = (database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(sameNameDebt.id) as { counterparty_id: string }).counterparty_id;
+    store.updateDebt(owner.id, sameNameDebt.id, { counterparty: " mom " });
+
+    const currentId = (database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(sameNameDebt.id) as { counterparty_id: string }).counterparty_id;
+    expect(store.listDebts(owner.id)).toContainEqual(expect.objectContaining({ id: sameNameDebt.id, counterparty: "mom" }));
+    expect(database.prepare("SELECT name_normalized FROM counterparties WHERE user_id=? ORDER BY name_normalized").all(owner.id))
+      .toEqual([{ name_normalized: "dad" }, { name_normalized: "mom" }]);
+    expect(currentId).toBe(previousId);
+  });
+
+  it("shares normalized counterparties and preserves rows used by another debt", () => {
+    const owner = store.registerUser("debt_shared_counterparty", "hash");
+    const first = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
+    const second = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "mom", amountMinor: 200 });
+    const idsBeforeRename = database.prepare("SELECT counterparty_id FROM debts WHERE id IN (?,?) ORDER BY id")
+      .all(first.id, second.id) as { counterparty_id: string }[];
+
+    expect(idsBeforeRename[0].counterparty_id).toBe(idsBeforeRename[1].counterparty_id);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM counterparties WHERE user_id=?").get(owner.id)).toEqual({ count: 1 });
+
+    store.updateDebt(owner.id, first.id, { counterparty: "Dad" });
+
+    expect(database.prepare("SELECT name_normalized FROM counterparties WHERE user_id=? ORDER BY name_normalized").all(owner.id))
+      .toEqual([{ name_normalized: "dad" }, { name_normalized: "mom" }]);
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(second.id)).toEqual({ counterparty_id: idsBeforeRename[1].counterparty_id });
+  });
+
+  it("does not change another owner's counterparty during rename", () => {
+    const alice = store.registerUser("debt_rename_owner_a", "hash");
+    const bob = store.registerUser("debt_rename_owner_b", "hash");
+    const aliceDebt = store.createDebt(alice.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 100 });
+    const bobDebt = store.createDebt(bob.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 200 });
+    const bobCounterparty = database.prepare("SELECT id,name FROM counterparties WHERE user_id=?").get(bob.id);
+
+    store.updateDebt(alice.id, aliceDebt.id, { counterparty: "Dad" });
+
+    expect(database.prepare("SELECT id,name FROM counterparties WHERE user_id=?").get(bob.id)).toEqual(bobCounterparty);
+    expect(database.prepare("SELECT counterparty_id FROM debts WHERE id=?").get(bobDebt.id)).toEqual({ counterparty_id: (bobCounterparty as { id: string }).id });
+  });
+
   it("creates debts in either direction with optional due dates and notes", () => {
     const alice = store.registerUser("debt_owner", "hash-a");
     const bob = store.registerUser("debt_other", "hash-b");
