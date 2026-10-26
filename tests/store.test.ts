@@ -95,7 +95,7 @@ describe("owner-scoped ledger", () => {
       amountMinor: 500, accountId: account.id, description: "Mina paid me", date: "2026-10-11",
     });
 
-    expect(() => store.deleteTransaction(owner.id, transaction.id)).toThrow("Linked debt repayments cannot be deleted; delete the debt first.");
+    expect(() => store.deleteTransaction(owner.id, transaction.id)).toThrow("A transaction linked to a debt cannot be deleted. Delete the debt first.");
     expect(store.getTransaction(owner.id, transaction.id)).not.toBeNull();
   });
 

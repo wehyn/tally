@@ -501,9 +501,10 @@ export function createStore(db: Database.Database) {
       transactionId: row.transaction_id ? String(row.transaction_id) : null, createdAt: String(row.created_at),
     }));
   }
-  function debtBalanceFromPayments(debt: Debt): number {
+  function debtBalanceFromPayments(userId: string, debt: Debt): number {
     const row = db.prepare(`SELECT d.principal_minor,COALESCE(SUM(p.delta_minor),0) AS delta_minor
-      FROM debts d LEFT JOIN debt_payments p ON p.debt_id=d.id AND p.user_id=d.user_id WHERE d.id=? GROUP BY d.id`).get(debt.id) as { principal_minor: number; delta_minor: number } | undefined;
+      FROM debts d LEFT JOIN debt_payments p ON p.debt_id=d.id AND p.user_id=d.user_id AND p.user_id=?
+      WHERE d.id=? AND d.user_id=? GROUP BY d.id`).get(userId, debt.id, userId) as { principal_minor: number; delta_minor: number } | undefined;
     if (!row) throw new Error("Debt not found.");
     return safeMinorNumber(BigInt(row.principal_minor) + BigInt(row.delta_minor), "Derived debt balance");
   }
@@ -892,9 +893,6 @@ export function createStore(db: Database.Database) {
     db.transaction(() => {
       const row = db.prepare("SELECT source,undo_until,debt_id FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { source: string; undo_until: string | null; debt_id: string | null } | undefined;
       if (!row) throw new Error("Transaction not found.");
-      if (db.prepare("SELECT 1 FROM debt_payments WHERE transaction_id=? AND user_id=? LIMIT 1").get(id, userId)) {
-        throw new Error("Linked debt repayments cannot be deleted; delete the debt first.");
-      }
       if (row.debt_id) throw new Error("A transaction linked to a debt cannot be deleted. Delete the debt first.");
       if (undoOnly && (row.source !== "assistant" || !row.undo_until || Date.now() > Date.parse(row.undo_until))) throw new Error("The 10-second Undo period has expired.");
       db.prepare("DELETE FROM transactions WHERE id=? AND user_id=?").run(id, userId);
