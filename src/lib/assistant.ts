@@ -786,7 +786,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
         && item.direction === statedDebtIntent.direction
         && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)
-        && (!recordedDebtId || item.id === recordedDebtId));
+        && item.id === recordedDebtId);
       call = matchingDebts.length === 1
         ? { name: "log_debt", args: { ...providerCall.args, direction: statedDebtIntent.direction, counterparty: matchingDebts[0].counterparty, amount: providerCall.args.amount ?? String(matchingDebts[0].amountMinor / 100), recordTransaction: debtTransactionRequested } }
         : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
@@ -836,7 +836,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else {
         const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
           && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)
-          && (!recordedDebtId || item.id === recordedDebtId)) : [];
+          && item.id === recordedDebtId) : [];
         const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
         if (!amountMinor) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
         else if (isExistingDebtFollowup && existingDebts.length !== 1) {
