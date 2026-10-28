@@ -473,9 +473,6 @@ function explicitNewDebtIntent(message: string): { direction: "owed_to_you" | "y
   if (lent) return { direction: "owed_to_you", counterparty: cleanName(lent[1]) };
   return undefined;
 }
-function newestDebt(debts: Debt[]): Debt[] {
-  return debts.length > 1 ? [debts.reduce((latest, debt) => debt.createdAt > latest.createdAt ? debt : latest)] : debts;
-}
 function latestExplicitNewDebtIntent(messages: string[]): { direction: "owed_to_you" | "you_owe"; counterparty: string } | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     const intent = explicitNewDebtIntent(messages[index]);
@@ -660,7 +657,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     if (conversationId) {
       if (!store.getConversation(user.id, conversationId)) throw new HttpError(404, "Conversation not found.");
     } else conversationId = store.createConversation(user.id, input.prompt.slice(0, 80));
-    const history = minimalFollowUpContext(store.getConversation(user.id, conversationId)?.messages ?? []);
+    const conversationMessages = store.getConversation(user.id, conversationId)?.messages ?? [];
+    const history = minimalFollowUpContext(conversationMessages);
+    const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
     const promptCreatedAt = new Date().toISOString();
     const userMessages = [
       ...history.filter((message) => message.role === "user").map((message) => ({ content: message.content, createdAt: message.createdAt })),
@@ -784,9 +783,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
         : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
     } else if (debtTransactionQuestion && (debtTransactionRequested || debtTransactionOptOut) && statedDebtIntent) {
-      const matchingDebts = newestDebt(store.listDebts(user.id).filter((item) => item.status === "open"
+      const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
         && item.direction === statedDebtIntent.direction
-        && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)));
+        && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)
+        && (!recordedDebtId || item.id === recordedDebtId));
       call = matchingDebts.length === 1
         ? { name: "log_debt", args: { ...providerCall.args, direction: statedDebtIntent.direction, counterparty: matchingDebts[0].counterparty, amount: providerCall.args.amount ?? String(matchingDebts[0].amountMinor / 100), recordTransaction: debtTransactionRequested } }
         : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
@@ -834,8 +834,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         needsFollowup = true;
       }
       else {
-        const existingDebts = isExistingDebtFollowup ? newestDebt(store.listDebts(user.id).filter((item) => item.status === "open"
-          && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty))) : [];
+        const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
+          && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)
+          && (!recordedDebtId || item.id === recordedDebtId)) : [];
         const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
         if (!amountMinor) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
         else if (isExistingDebtFollowup && existingDebts.length !== 1) {
@@ -1068,6 +1069,6 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
 
     if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; needsFollowup = false; }
     else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; needsFollowup = false; }
-    store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, needsFollowup);
+    store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, needsFollowup, debt?.id);
     return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
 }
