@@ -1217,6 +1217,23 @@ describe("assistant debt capture", () => {
     expect(store.listTransactions(user.id)).toHaveLength(1);
   });
 
+  it("asks which debt when the conversation's debt was deleted", async () => {
+    const other = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 22_300 });
+    const debtCall = { direction: "owed_to_you", counterparty: "Mom", amount: "223" };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerTool("log_debt", debtCall))
+      .mockResolvedValueOnce(providerTool("log_debt", { ...debtCall, recordTransaction: true })));
+
+    const first = await (await POST(assistantRequest("mom owes me 223 for moveit transpo"))).json();
+    store.deleteDebt(user.id, first.debt.id);
+    const second = await (await POST(assistantRequest("add it to transactions", first.conversationId))).json();
+
+    expect(second).toMatchObject({ transaction: null, debt: null, undoUntil: null });
+    expect(second.answer).toContain("I couldn't find that open debt. Which debt do you mean?");
+    expect(store.listDebts(user.id)).toEqual([other]);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
   it("keeps debts the user owes as debt-only records", async () => {
     vi.stubGlobal("fetch", vi.fn());
 
