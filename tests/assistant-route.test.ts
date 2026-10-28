@@ -1197,6 +1197,24 @@ describe("assistant debt capture", () => {
     },
   );
 
+  it("adds the debt just recorded to Transactions when an older open debt for the same person exists", async () => {
+    vi.setSystemTime(new Date("2026-10-08T08:00:00.000Z"));
+    const older = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Mom", amountMinor: 22_300 });
+    vi.setSystemTime(new Date("2026-10-09T08:00:00.000Z"));
+    const debtCall = { direction: "owed_to_you", counterparty: "Mom", amount: "223" };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(providerTool("log_debt", debtCall))
+      .mockResolvedValueOnce(providerTool("log_debt", { ...debtCall, recordTransaction: true })));
+
+    const first = await (await POST(assistantRequest("mom owes me 223 for moveit transpo"))).json();
+    const second = await (await POST(assistantRequest("add it to transactions", first.conversationId))).json();
+
+    expect(second.answer).toContain("Added to Debts and Transactions");
+    expect(second.debt.id).toBe(first.debt.id);
+    expect(second.debt.id).not.toBe(older.id);
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+  });
+
   it("keeps debts the user owes as debt-only records", async () => {
     vi.stubGlobal("fetch", vi.fn());
 

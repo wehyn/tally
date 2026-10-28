@@ -473,6 +473,9 @@ function explicitNewDebtIntent(message: string): { direction: "owed_to_you" | "y
   if (lent) return { direction: "owed_to_you", counterparty: cleanName(lent[1]) };
   return undefined;
 }
+function newestDebt(debts: Debt[]): Debt[] {
+  return debts.length > 1 ? [debts.reduce((latest, debt) => debt.createdAt > latest.createdAt ? debt : latest)] : debts;
+}
 function latestExplicitNewDebtIntent(messages: string[]): { direction: "owed_to_you" | "you_owe"; counterparty: string } | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     const intent = explicitNewDebtIntent(messages[index]);
@@ -781,9 +784,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
         : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
     } else if (debtTransactionQuestion && (debtTransactionRequested || debtTransactionOptOut) && statedDebtIntent) {
-      const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
+      const matchingDebts = newestDebt(store.listDebts(user.id).filter((item) => item.status === "open"
         && item.direction === statedDebtIntent.direction
-        && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty));
+        && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)));
       call = matchingDebts.length === 1
         ? { name: "log_debt", args: { ...providerCall.args, direction: statedDebtIntent.direction, counterparty: matchingDebts[0].counterparty, amount: providerCall.args.amount ?? String(matchingDebts[0].amountMinor / 100), recordTransaction: debtTransactionRequested } }
         : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
@@ -831,8 +834,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         needsFollowup = true;
       }
       else {
-        const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
-          && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)) : [];
+        const existingDebts = isExistingDebtFollowup ? newestDebt(store.listDebts(user.id).filter((item) => item.status === "open"
+          && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty))) : [];
         const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
         if (!amountMinor) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
         else if (isExistingDebtFollowup && existingDebts.length !== 1) {
