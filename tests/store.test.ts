@@ -366,8 +366,28 @@ describe("owner-scoped ledger", () => {
   it("persists whether an assistant reply is awaiting a user follow-up", () => {
     const user = store.registerUser("followup_user", "hash");
     const conversationId = store.createConversation(user.id, "Lunch");
-    store.addMessage(user.id, conversationId, "assistant", "What amount for lunch?", undefined, true);
-    expect(store.getConversation(user.id, conversationId)?.messages[0]).toMatchObject({ needsFollowup: true, content: "What amount for lunch?" });
+    store.addMessage(user.id, conversationId, "assistant", "What amount for lunch?", undefined, "clarification");
+    expect(store.getConversation(user.id, conversationId)?.messages[0]).toMatchObject({ followup: "clarification", content: "What amount for lunch?" });
+  });
+
+  it("stores the specific follow-up kind a reply is waiting on, and null when nothing is awaited", () => {
+    const user = store.registerUser("followup_kind_user", "hash");
+    const conversationId = store.createConversation(user.id, "Bill");
+    store.addMessage(user.id, conversationId, "assistant", "What exact day should the bill end?", undefined, "bill_end_date");
+    store.addMessage(user.id, conversationId, "assistant", "Saved the bill.");
+    const messages = store.getConversation(user.id, conversationId)?.messages ?? [];
+    expect(messages.map((message) => message.followup)).toEqual(["bill_end_date", null]);
+  });
+
+  it("reads a pre-change awaiting reply with no stored kind as a clarification after migrating", () => {
+    const user = store.registerUser("followup_legacy_user", "hash");
+    const conversationId = store.createConversation(user.id, "Legacy");
+    store.addMessage(user.id, conversationId, "assistant", "What amount was it?", undefined, "clarification");
+    database.exec("ALTER TABLE assistant_messages DROP COLUMN followup_kind");
+    createStore(database).migrate();
+    const columns = database.pragma("table_info(assistant_messages)") as { name: string }[];
+    expect(columns.some((column) => column.name === "followup_kind")).toBe(true);
+    expect(store.getConversation(user.id, conversationId)?.messages[0]).toMatchObject({ followup: "clarification" });
   });
 
   it("does not permit a transaction to use another user's financial account", () => {

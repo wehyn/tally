@@ -6,6 +6,7 @@ import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } fro
 import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
+import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -175,7 +176,7 @@ function parseBillDateToken(token: string, today: string): BillDateHint {
   if (!isDateOnly(date)) return { mentioned: true, invalid: true };
   return { mentioned: true, date };
 }
-function billDateHint(messages: string[], kind: "start" | "end", followup: string, today: string): BillDateHint {
+function billDateHint(messages: string[], kind: "start" | "end", followup: FollowupKind | null, today: string): BillDateHint {
   const context = kind === "start"
     ? `(?:started|starts?|starting|began|begins?|beginning|first\\s+due(?:\\s+date)?|due(?:\\s+date)?)`
     : `(?:ends?|ending|end(?:\\s+date)?|through|until|expires?)`;
@@ -184,10 +185,10 @@ function billDateHint(messages: string[], kind: "start" | "end", followup: strin
     const pattern = new RegExp(`\\b${context}\\s+(?:(?:is|on|in|date)\\s+)?(${billDateToken})`, "gi");
     for (const match of message.matchAll(pattern)) hint = parseBillDateToken(match[1], today);
   }
-  const asksForStart = /first due date|start date/i.test(followup);
-  const asksForEnd = /exact end date|end date|exact day/i.test(followup);
-  const asksForBothDates = asksForStart && asksForEnd;
-  const followupPrompt = asksForBothDates || (kind === "start" ? asksForStart : asksForEnd);
+  const asksForBothDates = followup === "bill_dates" || followup === "bill_several";
+  const asksForStart = followup === "bill_start_date" || asksForBothDates;
+  const asksForEnd = followup === "bill_end_date" || asksForBothDates;
+  const followupPrompt = kind === "start" ? asksForStart : asksForEnd;
   if (followupPrompt && messages.length) {
     const latest = messages.at(-1)!.trim();
     const currentHasContext = new RegExp(`\\b${context}\\s+(?:(?:is|on|in|date)\\s+)?(${billDateToken})`, "i").test(latest);
@@ -206,7 +207,7 @@ function billDateHint(messages: string[], kind: "start" | "end", followup: strin
   }
   return hint;
 }
-function billAmountHint(messages: string[], followup: string): { mentioned: boolean; amountMinor?: number; invalid?: boolean; ambiguous?: boolean } {
+function billAmountHint(messages: string[], followup: FollowupKind | null): { mentioned: boolean; amountMinor?: number; invalid?: boolean; ambiguous?: boolean } {
   const amountToken = "(\\d[\\d,]*(?:\\.\\d+)?)";
   for (let index = messages.length - 1; index >= 0; index--) {
     const text = messages[index];
@@ -218,7 +219,7 @@ function billAmountHint(messages: string[], followup: string): { mentioned: bool
     try { return { mentioned: true, amountMinor: parsePHPToMinor(raw) }; }
     catch { return { mentioned: true, invalid: true }; }
   }
-  if (/what amount|how much|amount/i.test(followup) && messages.length) {
+  if ((followup === "bill_amount" || followup === "bill_several" || followup === "bill_amount_account") && messages.length) {
     const reply = messages.at(-1)!;
     const bare = bareAmountFromPrompt(reply);
     if (bare !== undefined) return { mentioned: true, amountMinor: bare };
@@ -259,13 +260,25 @@ function isBillChoice(text: string, choice: "add" | "update"): boolean {
   return choice === "add" ? /\badd another\b/i.test(text) : /\bupdate (?:the )?(?:existing|current|existing one|one|bill)\b|\bupdate it\b/i.test(text);
 }
 function billScheduleDate(bill: Bill): string { return bill.nextDueDate; }
-type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?: string; needsFollowup: boolean };
+type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?: string; followup: FollowupKind | null };
+// When several details are missing at once, the reply is read for the most specific one that is still needed.
+function missingBillFollowup(missing: string[]): FollowupKind {
+  const bothDatesMissing = missing.includes("the first due date") && missing.includes("an exact end date");
+  if (missing.includes("an amount") && bothDatesMissing) return "bill_several";
+  if (missing.includes("an amount") && missing.some((item) => item.includes("account"))) return "bill_amount_account";
+  if (bothDatesMissing) return "bill_dates";
+  if (missing.includes("an amount")) return "bill_amount";
+  if (missing.includes("the first due date")) return "bill_start_date";
+  if (missing.includes("an exact end date")) return "bill_end_date";
+  if (missing.some((item) => item.includes("account"))) return "bill_account";
+  return "bill_details";
+}
 function handleAssistantBillAction(
   store: ReturnType<typeof getStore>, userId: string, action: "create_bill" | "update_bill", args: Record<string, unknown>,
-  userMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: string,
+  userMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null,
 ): AssistantBillResult {
   const today = todayInManila();
-  const duplicateFollowup = /add another|update the existing|which schedule/i.test(followup);
+  const duplicateFollowup = followup === "bill_duplicate" || followup === "bill_schedule";
   const lastUserMessage = userMessages.at(-1) ?? "";
   const explicitUpdate = /\b(?:update|edit|change|remove|clear|delete)\b.{0,60}\bbill\b/i.test(lastUserMessage);
   const detailMessages = (action === "update_bill" || explicitUpdate) && !duplicateFollowup ? [lastUserMessage] : userMessages;
@@ -277,10 +290,10 @@ function handleAssistantBillAction(
   const frequency = frequencyHint.frequency;
   const firstDueDate = startHint.date;
   const endDate = endHint.date;
-  const nameFollowup = /what (?:full )?name should i use for this bill|what should i name this bill/i.test(followup);
+  const nameFollowup = followup === "bill_name";
   const name = billNameFromMessages(userMessages) || (nameFollowup ? lastUserMessage.trim() : "");
-  if (!name) return { answer: "What full name should I use for this bill?", bill: null, needsFollowup: true };
-  if (name.length > 100) return { answer: "Please shorten the bill name to 100 characters or fewer.", bill: null, needsFollowup: true };
+  if (!name) return { answer: "What full name should I use for this bill?", bill: null, followup: "bill_name" };
+  if (name.length > 100) return { answer: "Please shorten the bill name to 100 characters or fewer.", bill: null, followup: "bill_name" };
 
   const normalizedName = normalizeWords(name);
   const matching = store.listBills(userId).filter((bill) => !bill.archivedAt && normalizeWords(bill.name) === normalizedName);
@@ -295,13 +308,13 @@ function handleAssistantBillAction(
   const removeEndDate = effectiveAction === "update_bill" && /\b(?:remove|clear|delete|unset)\b.{0,30}\b(?:end|ending) date\b|\b(?:end|ending) date\b.{0,30}\b(?:remove|clear|delete|unset)\b|\bmake (?:it|this bill) open[- ]ended\b|\b(?:no|without) end date\b/i.test(lastUserMessage);
   if (effectiveAction === "create_bill" && matching.length && !addChoice) {
     const options = matching.length > 1 ? ` Current schedules: ${matching.map((bill) => `${bill.nextDueDate} (${formatPHP(bill.amountMinor)} · ${bill.accountName})`).join("; ")}.` : "";
-    return { answer: `An active bill named “${name}” already exists. Would you like to add another or update the existing bill?${options}`, bill: null, needsFollowup: true };
+    return { answer: `An active bill named “${name}” already exists. Would you like to add another or update the existing bill?${options}`, bill: null, followup: "bill_duplicate" };
   }
   if (effectiveAction === "update_bill") {
-    if (!matching.length) return { answer: `I couldn't find an active bill named “${name}” to update.`, bill: null, needsFollowup: true };
+    if (!matching.length) return { answer: `I couldn't find an active bill named “${name}” to update.`, bill: null, followup: "bill_details" };
     if (matching.length === 1) selected = matching[0];
     else {
-      const selectionPending = /which schedule/i.test(followup);
+      const selectionPending = followup === "bill_schedule";
       const choice = /^\s*(\d+)\s*[.!]?\s*$/.exec(lastUserMessage)?.[1];
       const choiceIndex = choice ? Number(choice) - 1 : -1;
       selected = selectionPending && choiceIndex >= 0 && choiceIndex < matching.length ? matching[choiceIndex] : undefined;
@@ -309,25 +322,25 @@ function handleAssistantBillAction(
         const dateMatches = matching.filter((bill) => lastUserMessage.includes(billScheduleDate(bill)));
         if (dateMatches.length === 1) selected = dateMatches[0];
       }
-      if (!selected) return { answer: `Which schedule should I update? Reply with its number: ${matching.map((bill, index) => `${index + 1}) ${bill.nextDueDate} (${formatPHP(bill.amountMinor)} · ${bill.accountName})`).join("; ")}.`, bill: null, needsFollowup: true };
+      if (!selected) return { answer: `Which schedule should I update? Reply with its number: ${matching.map((bill, index) => `${index + 1}) ${bill.nextDueDate} (${formatPHP(bill.amountMinor)} · ${bill.accountName})`).join("; ")}.`, bill: null, followup: "bill_schedule" };
     }
   }
 
-  if (amountHint.invalid) return { answer: "Please provide a valid positive PHP amount with up to two decimal places.", bill: null, needsFollowup: true };
-  if (amountHint.ambiguous) return { answer: "I found more than one PHP amount. Which amount is for this bill?", bill: null, needsFollowup: true };
-  if (frequencyHint.ambiguous) return { answer: "Which bill cadence should I use: weekly, monthly, or yearly?", bill: null, needsFollowup: true };
-  if (startHint.invalid || startHint.monthOnly) return { answer: "What valid first due date should I use? Please give an exact day.", bill: null, needsFollowup: true };
-  if (firstDueDate && firstDueDate < today) return { answer: "The first due date must be today or later. What date should I use?", bill: null, needsFollowup: true };
+  if (amountHint.invalid) return { answer: "Please provide a valid positive PHP amount with up to two decimal places.", bill: null, followup: "bill_amount" };
+  if (amountHint.ambiguous) return { answer: "I found more than one PHP amount. Which amount is for this bill?", bill: null, followup: "bill_amount" };
+  if (frequencyHint.ambiguous) return { answer: "Which bill cadence should I use: weekly, monthly, or yearly?", bill: null, followup: "bill_details" };
+  if (startHint.invalid || startHint.monthOnly) return { answer: "What valid first due date should I use? Please give an exact day.", bill: null, followup: "bill_start_date" };
+  if (firstDueDate && firstDueDate < today) return { answer: "The first due date must be today or later. What date should I use?", bill: null, followup: "bill_start_date" };
   if (endHint.monthOnly) {
     const month = endHint.month ? new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(2000, endHint.month - 1, 1))) : "that month";
-    return { answer: `What exact day in ${month} should the bill end?`, bill: null, needsFollowup: true };
+    return { answer: `What exact day in ${month} should the bill end?`, bill: null, followup: "bill_end_date" };
   }
-  if (endHint.invalid) return { answer: "What valid exact end date should I use?", bill: null, needsFollowup: true };
+  if (endHint.invalid) return { answer: "What valid exact end date should I use?", bill: null, followup: "bill_end_date" };
   if (effectiveAction === "create_bill" && firstDueDate && endDate && endDate < firstDueDate) {
-    return { answer: "The end date must be on or after the first due date. What exact end date should I use?", bill: null, needsFollowup: true };
+    return { answer: "The end date must be on or after the first due date. What exact end date should I use?", bill: null, followup: "bill_end_date" };
   }
 
-  const accountCorrection = /\baccount\b/i.test(followup)
+  const accountCorrection = followup === "bill_account" || followup === "bill_amount_account"
     ? accounts.find((candidate) => ` ${normalizeWords(lastUserMessage)} `.includes(` ${normalizeWords(candidate.name)} `))
       ?? (/^default(?: account)?$/i.test(lastUserMessage.trim()) ? accounts.find((candidate) => candidate.isDefault) : undefined)
     : undefined;
@@ -351,17 +364,17 @@ function handleAssistantBillAction(
   if (!accounts.length && effectiveAction === "create_bill") missing.push("a financial account");
   else if (!account && (effectiveAction === "create_bill" || accountHint.mentioned)) missing.push(accountHint.invalidName ? `a valid account (I couldn't find “${accountHint.invalidName}”)` : "a default account");
   if (!category && (effectiveAction === "create_bill" || categoryHint.mentioned)) missing.push(categoryHint.mentioned ? "a valid expense category" : "an expense category I can infer");
-  if (effectiveAction === "create_bill" && missing.length) return { answer: `Please provide ${missing.join(", ")}.`, bill: null, needsFollowup: true };
+  if (effectiveAction === "create_bill" && missing.length) return { answer: `Please provide ${missing.join(", ")}.`, bill: null, followup: missingBillFollowup(missing) };
   if (effectiveAction === "update_bill" && (!amountHint.mentioned && !frequencyHint.mentioned && !startHint.mentioned && !endHint.mentioned && !removeEndDate && !accountHint.mentioned && !categoryHint.mentioned)) {
-    return { answer: "What should I change on this bill?", bill: null, needsFollowup: true };
+    return { answer: "What should I change on this bill?", bill: null, followup: "bill_details" };
   }
-  if (!account && accountHint.mentioned) return { answer: `I couldn't find the account “${accountHint.invalidName ?? ""}”. Choose one of your accounts: ${accounts.map((item) => item.name).join(", ")}.`, bill: null, needsFollowup: true };
-  if (!account && effectiveAction === "create_bill") return { answer: !accounts.length ? "Create a financial account first, then I can save this bill." : "Set a default financial account in Accounts before saving this bill.", bill: null, needsFollowup: true };
-  if (!category && categoryHint.mentioned) return { answer: "Which expense category should I use? Choose one from your categories.", bill: null, needsFollowup: true };
-  if (!category && effectiveAction === "create_bill") return { answer: "Which expense category should I use? Choose one from your expense categories.", bill: null, needsFollowup: true };
+  if (!account && accountHint.mentioned) return { answer: `I couldn't find the account “${accountHint.invalidName ?? ""}”. Choose one of your accounts: ${accounts.map((item) => item.name).join(", ")}.`, bill: null, followup: "bill_account" };
+  if (!account && effectiveAction === "create_bill") return { answer: !accounts.length ? "Create a financial account first, then I can save this bill." : "Set a default financial account in Accounts before saving this bill.", bill: null, followup: "bill_account" };
+  if (!category && categoryHint.mentioned) return { answer: "Which expense category should I use? Choose one from your categories.", bill: null, followup: "bill_details" };
+  if (!category && effectiveAction === "create_bill") return { answer: "Which expense category should I use? Choose one from your expense categories.", bill: null, followup: "bill_details" };
   if (effectiveAction === "create_bill" && (amountMinor === undefined || !frequency || !firstDueDate || !endDate)) {
     const missingDetails = [amountMinor === undefined ? "amount" : "", !frequency ? "cadence" : "", !firstDueDate ? "first due date" : "", !endDate ? "exact end date" : ""].filter(Boolean);
-    return { answer: `Please provide the ${missingDetails.join(", ")}.`, bill: null, needsFollowup: true };
+    return { answer: `Please provide the ${missingDetails.join(", ")}.`, bill: null, followup: amountMinor === undefined ? "bill_amount" : !firstDueDate ? "bill_start_date" : !endDate ? "bill_end_date" : "bill_details" };
   }
 
   const createInput: BillInput = {
@@ -380,7 +393,7 @@ function handleAssistantBillAction(
     bill = effectiveAction === "create_bill" ? store.createBill(userId, createInput) : store.updateBill(userId, selected!.id, updateInput, selected!.nextDueDate);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The bill could not be saved.";
-    return { answer: `${message} Please check the schedule details and try again.`, bill: null, needsFollowup: true };
+    return { answer: `${message} Please check the schedule details and try again.`, bill: null, followup: "bill_details" };
   }
 
   const savedDueDate = bill.nextDueDate;
@@ -396,7 +409,7 @@ function handleAssistantBillAction(
   }
   const dateSummary = `${effectiveAction === "create_bill" ? "First due" : "Next due"} ${formatAssistantDate(savedDueDate)}${bill.endDate ? ` · ends ${formatAssistantDate(bill.endDate)}` : ""}`;
   const answer = `${effectiveAction === "create_bill" ? "Saved" : "Updated"} ${bill.name}: ${formatPHP(bill.amountMinor)} ${bill.frequency} using ${bill.accountName} and ${bill.categoryName}. ${dateSummary}.${postingWarning ? ` ${postingWarning}` : ""}`;
-  return { answer, bill, ...(postingWarning ? { postingWarning } : {}), needsFollowup: false };
+  return { answer, bill, ...(postingWarning ? { postingWarning } : {}), followup: null };
 }
 function containsCounterparty(text: string, counterparty: string): boolean {
   const normalizedCounterparty = normalizeCounterparty(counterparty);
@@ -685,17 +698,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const openYouOwe = openYouOweDebts.map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
     const providerCall = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou, openYouOwe });
     if (!providerCall) throw new Error("Assistant provider returned no action.");
-    const lastHistoryMessage = history.at(-1);
-    const lastAssistantFollowup = lastHistoryMessage?.role === "assistant" ? lastHistoryMessage.content : "";
-    const ordinaryIncomeQuestionPattern = /\b(?:should i record|please answer yes)\b.*\bordinary income\b/i;
-    let ordinaryIncomeQuestionIndex = -1;
-    for (let index = history.length - 1; index >= 0; index--) {
-      if (history[index].role === "assistant" && ordinaryIncomeQuestionPattern.test(history[index].content)) {
-        ordinaryIncomeQuestionIndex = index;
-        break;
-      }
-    }
-    const ordinaryIncomeQuestionPending = ordinaryIncomeQuestionPattern.test(lastAssistantFollowup);
+    const lastFollowup: FollowupKind | null = history.at(-1)?.followup ?? null;
+    const ordinaryIncomeQuestionIndex = history.map((message) => message.role === "assistant" ? message.followup : null).lastIndexOf("ordinary_income");
+    const ordinaryIncomeQuestionPending = lastFollowup === "ordinary_income";
     const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? history.slice(ordinaryIncomeQuestionIndex + 1) : [];
     const ordinaryIncomeConfirmedInHistory = afterOrdinaryIncomeQuestion.some((message) => message.role === "user"
       && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content))
@@ -705,7 +710,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const ordinaryIncomeAccepted = ordinaryIncomeConfirmedInHistory || (ordinaryIncomeQuestionPending
       && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt));
     const ordinaryIncomeDeclined = ordinaryIncomeFlow && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
-    const debtTransactionQuestion = /\bsay ["“]add it to transactions["”]/i.test(lastAssistantFollowup);
+    const debtTransactionQuestion = lastFollowup === "debt_transaction";
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(userMessageText) || debtQuestionNo;
@@ -714,9 +719,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const currentDebtIntent = explicitNewDebtIntent(input.prompt);
     const uncertainNewDebt = userMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
     const repaymentContextText = ordinaryIncomeFlow ? input.prompt : userMessageText.join(" ");
-    const payerSelection = /\b(?:who paid|which person|which person's|which debt)\b/i.test(lastAssistantFollowup);
+    const payerSelection = lastFollowup === "repayment_payer";
     const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
-    const repaymentFollowup = /\b(?:what amount|how much|who paid|which person|which debt)\b/i.test(lastAssistantFollowup);
+    const repaymentFollowup = lastFollowup === "repayment_payer" || lastFollowup === "repayment_amount";
     const uncertainRepayment = !repaymentReportQuestion && (userMessageText.some((message) => isUnconfirmedIncomingDebtPayment(message) || isUnconfirmedOutgoingDebtPayment(message))
       || repaymentFollowup && isUncertainStatement(input.prompt));
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
@@ -730,15 +735,17 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ? repaymentDebts.filter((debt) => normalizeCounterparty(debt.counterparty) === repaymentNames[0])
       : [];
     const repaymentDebt = repaymentCandidates[0];
-    const accountOrDateClarificationPending = /(?:couldn't find the account|set a default financial account|create a financial account first|what date should i use)/i.test(lastAssistantFollowup);
+    const accountOrDateClarificationPending = lastFollowup === "account_or_date";
     const latestRepaymentPrompt = [...history].reverse().find((message) => message.role === "user"
       && (hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
-    const currentAmountFollowup = /\b(?:what amount|how much)\b/i.test(lastAssistantFollowup);
+    const currentAmountFollowup = lastFollowup === "repayment_amount";
     const statedRepaymentAmount = repaymentAmountFromPrompt(input.prompt)
       ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
     let call = providerCall;
+    // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
+    let clarificationKind: FollowupKind | null = null;
     if (repaymentReportQuestion) {
       call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
     } else if (ordinaryIncomeFlow) {
@@ -751,26 +758,29 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       } else if (ordinaryIncomeDeclined) {
         call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
       } else if (!ordinaryIncomeAccepted) {
-        call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } };
+        call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } }; clarificationKind = "ordinary_income";
       }
     } else if (uncertainRepayment && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
       call = { name: "ask_clarification", args: { question: "Was this a completed payment toward an existing debt? Please confirm before I record it." } };
     } else if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
       const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeCounterparty(providerCall.args.counterparty) : "";
       if (repaymentNames.length > 1) {
-        call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } };
+        call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } }; clarificationKind = "repayment_payer";
       } else if (!statedRepaymentAmount) {
-        call = { name: "ask_clarification", args: { question: "What amount should I use for the repayment?" } };
+        call = { name: "ask_clarification", args: { question: "What amount should I use for the repayment?" } }; clarificationKind = "repayment_amount";
       } else if (parseProviderAmount(providerCall.args.amount) !== statedRepaymentAmount) {
-        call = { name: "ask_clarification", args: { question: `I understood ${formatPHP(statedRepaymentAmount)}. Please re-enter the repayment amount if that is correct.` } };
+        call = { name: "ask_clarification", args: { question: `I understood ${formatPHP(statedRepaymentAmount)}. Please re-enter the repayment amount if that is correct.` } }; clarificationKind = "repayment_amount";
       } else if (!repaymentDebt && incomingRepaymentIntent) {
-        call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } };
+        call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } }; clarificationKind = "ordinary_income";
       } else if (!repaymentDebt && outgoingRepaymentIntent) {
-        call = openYouOweDebts.length && !hasOutgoingPayeeOrPurpose(repaymentMatchText)
-          ? { name: "ask_clarification", args: { question: "Who did you repay? I found open debts you owe and need the person before applying this payment." } }
-          : { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
+        if (openYouOweDebts.length && !hasOutgoingPayeeOrPurpose(repaymentMatchText)) {
+          call = { name: "ask_clarification", args: { question: "Who did you repay? I found open debts you owe and need the person before applying this payment." } };
+          clarificationKind = "repayment_payer";
+        } else {
+          call = { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
+        }
       } else if (repaymentDebt && providerCounterparty && providerCounterparty !== normalizeCounterparty(repaymentDebt.counterparty)) {
-        call = { name: "ask_clarification", args: { question: `I couldn't confirm which person ${incomingRepaymentIntent ? "paid you" : "you paid"}. Which person's open debt should I update?` } };
+        call = { name: "ask_clarification", args: { question: `I couldn't confirm which person ${incomingRepaymentIntent ? "paid you" : "you paid"}. Which person's open debt should I update?` } }; clarificationKind = "repayment_payer";
       } else if (repaymentDebt && incomingRepaymentIntent) {
         call = { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
       } else if (repaymentDebt && outgoingRepaymentIntent) {
@@ -792,22 +802,26 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
     }
 
-    const billFollowupPending = history.some((message) => message.role === "user" && isBillTrackingIntent(message.content))
-      && /^(?:please provide|what should i name this bill|what exact day|what valid first due|what valid exact end|the first due date|the end date must|an active bill|which schedule|what should i change|i couldn't find an active bill|which expense category|i couldn't find the account|set a default financial account)/i.test(lastAssistantFollowup);
+    const billFollowupPending = history.some((message) => message.role === "user" && isBillTrackingIntent(message.content)) && isBillFollowup(lastFollowup);
     const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && providerCall.name !== "finance_question");
     if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
-    let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let needsFollowup = false;
+    let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
     if (call.name === "create_bill" || call.name === "update_bill") {
-      const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, accounts, categories, lastAssistantFollowup);
-      answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; needsFollowup = result.needsFollowup;
+      const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, accounts, categories, lastFollowup);
+      answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup;
     }
-    else if (call.name === "ask_clarification") { answer = safeClarification(call.args.question); needsFollowup = true; }
+    else if (call.name === "ask_clarification") {
+      // A repayment with no amount yet expects the amount next, whatever wording the model used.
+      const expectedRepaymentAmount: FollowupKind | null = repaymentIntent && !statedRepaymentAmount ? "repayment_amount" : null;
+      answer = safeClarification(call.args.question);
+      followup = clarificationKind ?? expectedRepaymentAmount ?? "clarification";
+    }
     else if (call.name === "finance_question") {
       const defaultRange = monthToDateRange();
       const start = typeof call.args.start === "string" && isDateOnly(call.args.start) ? call.args.start : defaultRange.start;
       const end = typeof call.args.end === "string" && isDateOnly(call.args.end) ? call.args.end : todayInManila();
-      if (start > end) { answer = "Which date range would you like me to check? Please use a start and end date."; needsFollowup = true; }
+      if (start > end) { answer = "Which date range would you like me to check? Please use a start and end date."; followup = "clarification"; }
       else {
         const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
         const facts = store.getFinanceFacts(user.id, start, end, category);
@@ -821,30 +835,30 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
       const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
       const isExistingDebtFollowup = debtTransactionQuestion && !currentDebtIntent;
-      if (!counterparty) { answer = "Who is this debt with?"; needsFollowup = true; }
-      else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; needsFollowup = true; }
-      else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; needsFollowup = true; }
-      else if (!direction) { answer = "Is this money owed to you, or do you owe the other person?"; needsFollowup = true; }
-      else if (!amount && !isExistingDebtFollowup) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
-      else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; needsFollowup = true; }
-      else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; needsFollowup = true; }
-      else if (uncertainNewDebt) { answer = "I'm not sure whether this is a confirmed debt. Do you want me to record it?"; needsFollowup = true; }
+      if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
+      else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
+      else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }
+      else if (!direction) { answer = "Is this money owed to you, or do you owe the other person?"; followup = "clarification"; }
+      else if (!amount && !isExistingDebtFollowup) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
+      else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; followup = "clarification"; }
+      else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; followup = "clarification"; }
+      else if (uncertainNewDebt) { answer = "I'm not sure whether this is a confirmed debt. Do you want me to record it?"; followup = "clarification"; }
       else if (statedDebtIntent && (statedDebtIntent.direction !== direction || normalizeCounterparty(statedDebtIntent.counterparty) !== normalizeCounterparty(counterparty))) {
         answer = "The proposed debt does not match the person or direction in your request. Which debt should I record?";
-        needsFollowup = true;
+        followup = "clarification";
       }
       else {
         const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
           && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)
           && item.id === recordedDebtId) : [];
         const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
-        if (!amountMinor) { answer = "What amount should I use for this debt?"; needsFollowup = true; }
+        if (!amountMinor) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
         else if (isExistingDebtFollowup && existingDebts.length !== 1) {
           answer = existingDebts.length ? "Which open debt should I add the transaction to?" : "I couldn't find that open debt. Which debt do you mean?";
-          needsFollowup = true;
+          followup = "clarification";
         } else if (isExistingDebtFollowup && amount && amountMinor !== existingDebts[0].amountMinor) {
           answer = "That amount doesn't match the open debt in this conversation. Which debt should I use?";
-          needsFollowup = true;
+          followup = "clarification";
         } else if (isExistingDebtFollowup && debtTransactionOptOut) {
           debt = existingDebts[0];
           answer = `Okay, ${debt.counterparty}'s debt stays in Debts only.`;
@@ -855,7 +869,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts only.`;
           if (!debtTransactionOptOut) {
             answer += ' If you want to record the money movement too, say "add it to Transactions" and tell me what it was for.';
-            needsFollowup = true;
+            followup = "debt_transaction";
           }
         } else {
           const userContext = userMessageText.join(" ");
@@ -886,16 +900,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           const details = transactionDescription || note;
           const description = `${direction === "owed_to_you" ? "Owed by" : "Borrowed from"} ${counterparty}${details ? ` for ${details}` : ""}`;
 
-          if (!accounts.length) { answer = "Create a financial account first; then I can record this money movement."; needsFollowup = true; }
+          if (!accounts.length) { answer = "Create a financial account first; then I can record this money movement."; followup = "account_or_date"; }
           else if (!account) {
             const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
             answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this money movement.";
-            needsFollowup = true;
+            followup = "account_or_date";
           }
-          else if (!date) { answer = "What date should I use? Please give it as YYYY-MM-DD."; needsFollowup = true; }
-          else if (!category && categoryHint.mentioned) { answer = `Which ${kind} category should I use? Choose one from your categories.`; needsFollowup = true; }
-          else if (!category) { answer = `Create a ${kind} category before recording this money movement.`; needsFollowup = true; }
-          else if (description.length > 180) { answer = "Please shorten the transaction description to 180 characters or fewer."; needsFollowup = true; }
+          else if (!date) { answer = "What date should I use? Please give it as YYYY-MM-DD."; followup = "account_or_date"; }
+          else if (!category && categoryHint.mentioned) { answer = `Which ${kind} category should I use? Choose one from your categories.`; followup = "clarification"; }
+          else if (!category) { answer = `Create a ${kind} category before recording this money movement.`; followup = "clarification"; }
+          else if (description.length > 180) { answer = "Please shorten the transaction description to 180 characters or fewer."; followup = "clarification"; }
           else {
             const transactionInput = { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant" as const };
             const saved = isExistingDebtFollowup
@@ -909,8 +923,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     } else if (call.name === "record_debt_payment") {
       const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
       const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
-      if (!counterparty || counterparty.length > 80) { answer = "Who paid you?"; needsFollowup = true; }
-      else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); needsFollowup = true; }
+      if (!counterparty || counterparty.length > 80) { answer = "Who paid you?"; followup = "repayment_payer"; }
+      else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); followup = "repayment_amount"; }
       else {
         const normalizedCounterparty = normalizeCounterparty(counterparty);
         const matchingDebt = repaymentDebt && normalizeCounterparty(repaymentDebt.counterparty) === normalizedCounterparty
@@ -919,11 +933,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const amountMinor = parsePHPToMinor(amount);
         if (!matchingDebt) {
           answer = `I couldn't find an open debt owed to you by ${counterparty}. Should I record ${formatPHP(amountMinor)} as ordinary income instead?`;
-          needsFollowup = true;
+          followup = "ordinary_income";
         } else if (amountMinor > matchingDebt.amountMinor) {
           answer = `That payment is more than the ${formatPHP(matchingDebt.amountMinor)} still owed by ${matchingDebt.counterparty}. How should I handle it?`;
-          needsFollowup = true;
-        } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; needsFollowup = true; }
+          followup = "clarification";
+        } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
         else {
           const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
           const accountHint = accountHintFromMessages(userMessageText, accounts);
@@ -942,9 +956,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           if (!account) {
             const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
             answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment.";
-            needsFollowup = true;
+            followup = "account_or_date";
           }
-          else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
+          else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
           else {
             const description = typeof call.args.description === "string" && call.args.description.trim()
               ? call.args.description.trim().slice(0, 180)
@@ -961,12 +975,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     } else if (call.name === "record_debt_repayment") {
       const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
       const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
-      if (!outgoingRepaymentIntent) { answer = "Tell me who you paid and how much before I update a debt."; needsFollowup = true; }
-      else if (!counterparty || counterparty.length > 80) { answer = "Who did you pay?"; needsFollowup = true; }
-      else if (!amount) { answer = safeClarification("What amount did you pay?"); needsFollowup = true; }
+      if (!outgoingRepaymentIntent) { answer = "Tell me who you paid and how much before I update a debt."; followup = "repayment_payer"; }
+      else if (!counterparty || counterparty.length > 80) { answer = "Who did you pay?"; followup = "repayment_payer"; }
+      else if (!amount) { answer = safeClarification("What amount did you pay?"); followup = "repayment_amount"; }
       else if (!repaymentDebt || normalizeCounterparty(repaymentDebt.counterparty) !== normalizeCounterparty(counterparty)) {
         answer = `I couldn't find an open debt you owe to ${counterparty}. I can record this as an ordinary expense.`;
-        needsFollowup = true;
+        followup = "clarification";
       } else {
         const amountMinor = parsePHPToMinor(amount);
         const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
@@ -986,16 +1000,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, "expense");
         const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, "expense") : undefined;
         const category = categoryHint.mentioned ? categoryHint.category : requestedCategory ?? fallbackCategory("expense", categories);
-        if (amountMinor > repaymentDebt.amountMinor) { answer = `That payment is more than the ${formatPHP(repaymentDebt.amountMinor)} you still owe ${repaymentDebt.counterparty}. How should I handle it?`; needsFollowup = true; }
-        else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; needsFollowup = true; }
+        if (amountMinor > repaymentDebt.amountMinor) { answer = `That payment is more than the ${formatPHP(repaymentDebt.amountMinor)} you still owe ${repaymentDebt.counterparty}. How should I handle it?`; followup = "clarification"; }
+        else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
         else if (!account) {
           const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
           answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment.";
-          needsFollowup = true;
+          followup = "account_or_date";
         }
-        else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
-        else if (!category && (categoryHint.mentioned || typeof call.args.category === "string")) { answer = "Which expense category should I use? Choose one from your categories."; needsFollowup = true; }
-        else if (!category) { answer = "Create an expense category before recording this repayment."; needsFollowup = true; }
+        else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
+        else if (!category && (categoryHint.mentioned || typeof call.args.category === "string")) { answer = "Which expense category should I use? Choose one from your categories."; followup = "clarification"; }
+        else if (!category) { answer = "Create an expense category before recording this repayment."; followup = "clarification"; }
         else {
           const description = typeof call.args.description === "string" && call.args.description.trim()
             ? call.args.description.trim().slice(0, 180)
@@ -1012,8 +1026,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const kindHint = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;
       const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
       const description = typeof call.args.description === "string" ? call.args.description.trim().replace(/\p{L}/u, (letter) => letter.toUpperCase()).slice(0, 180) : "";
-      if (!amount) { answer = safeClarification("What amount should I use?"); needsFollowup = true; }
-      else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; needsFollowup = true; }
+      if (!amount) { answer = safeClarification("What amount should I use?"); followup = "clarification"; }
+      else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; followup = "account_or_date"; }
       else {
         const userContext = userMessageText.join(" ");
         const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
@@ -1050,13 +1064,13 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         if (!account) {
           const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
           answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording a transaction.";
-          needsFollowup = true;
+          followup = "account_or_date";
         }
-        else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; needsFollowup = true; }
+        else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
         else if (!resolvedCategory || !kind) {
           const ambiguousCategory = typeof call.args.category === "string" ? `“${call.args.category.trim()}”` : "That category name";
           answer = categoryAmbiguous ? `${ambiguousCategory} appears under both income and expense. Which category type did you mean?` : "Which category should I use?";
-          needsFollowup = true;
+          followup = "clarification";
         }
         else {
           const amountMinor = parsePHPToMinor(amount);
@@ -1067,8 +1081,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       }
     } else answer = "I couldn't complete that request. Please rephrase it.";
 
-    if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; needsFollowup = false; }
-    else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; needsFollowup = false; }
-    store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, needsFollowup, debt?.id);
+    if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
+    else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; followup = null; }
+    store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, followup, debt?.id);
     return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
 }
