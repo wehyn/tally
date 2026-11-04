@@ -34,10 +34,10 @@ describe("assistant data minimization", () => {
     expect(minimalFollowUpContext([
       ...messages,
       { role: "user" as const, content: "Lunch" },
-      { role: "assistant" as const, content: "What amount for lunch?", needsFollowup: true },
+      { role: "assistant" as const, content: "What amount for lunch?", followup: "clarification" as const },
     ])).toEqual([
-      { role: "user", content: "Lunch" },
-      { role: "assistant", content: "What amount for lunch?" },
+      { role: "user", content: "Lunch", followup: null },
+      { role: "assistant", content: "What amount for lunch?", followup: "clarification" },
     ]);
   });
 
@@ -59,9 +59,9 @@ describe("assistant data minimization", () => {
 
     const pendingMessages = [
       { role: "user" as const, content: "transportation 500" },
-      { role: "assistant" as const, content: "Was this an expense or income?", needsFollowup: true },
+      { role: "assistant" as const, content: "Was this an expense or income?", followup: "clarification" as const },
       { role: "user" as const, content: "expense" },
-      { role: "assistant" as const, content: "What date should I use?", needsFollowup: true },
+      { role: "assistant" as const, content: "What date should I use?", followup: "clarification" as const },
     ];
     await askProvider({ prompt: "today", history: minimalFollowUpContext(pendingMessages) });
 
@@ -157,7 +157,7 @@ describe("assistant data minimization", () => {
         { role: "user", content: "Old private prompt" },
         { role: "assistant", content: "Old private answer" },
         { role: "user", content: "Lunch" },
-        { role: "assistant", content: "What amount?", needsFollowup: true },
+        { role: "assistant", content: "What amount?", followup: "clarification" as const },
       ]),
     });
 

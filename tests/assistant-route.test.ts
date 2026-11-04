@@ -1731,7 +1731,7 @@ describe("assistant debt capture", () => {
       body: JSON.stringify({ prompt: "Mom owes me 27" }),
     }));
     const firstResult = await firstResponse.json();
-    expect(store.getConversation(user.id, firstResult.conversationId)?.messages.at(-1)?.needsFollowup).toBe(true);
+    expect(store.getConversation(user.id, firstResult.conversationId)?.messages.at(-1)?.followup).toBe("debt_transaction");
 
     const followupResponse = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",

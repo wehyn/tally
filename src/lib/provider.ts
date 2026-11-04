@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP } from "@/lib/money";
+import type { FollowupKind } from "@/lib/assistant-followup";
 
 const sensitive = (value: string) => value.replace(/[\r\n\t]/g, " ").trim();
 export type ProviderConfig = { baseUrl: string; endpoint: string; model: string; apiKey: string; disclosure: string };
@@ -182,18 +183,19 @@ const clarificationTool = {
   },
 } as const;
 export type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
-export type AssistantContextMessage = { role: "user" | "assistant"; content: string; createdAt?: string; needsFollowup?: boolean };
-export function minimalFollowUpContext(messages: AssistantContextMessage[]): { role: "user" | "assistant"; content: string; createdAt?: string }[] {
+export type AssistantContextMessage = { role: "user" | "assistant"; content: string; createdAt?: string; followup?: FollowupKind | null };
+// Returns the open follow-up run: the messages since the last reply that did not ask for anything.
+export function minimalFollowUpContext(messages: AssistantContextMessage[]): (AssistantContextMessage & { role: "user" | "assistant"; content: string })[] {
   const last = messages.at(-1);
-  if (last?.role !== "assistant" || !last.needsFollowup) return [];
+  if (last?.role !== "assistant" || !last.followup) return [];
   let lastCompletedReply = -1;
   for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index].role === "assistant" && !messages[index].needsFollowup) {
+    if (messages[index].role === "assistant" && !messages[index].followup) {
       lastCompletedReply = index;
       break;
     }
   }
-  return messages.slice(lastCompletedReply + 1).slice(-12).map(({ role, content, createdAt }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}) }));
+  return messages.slice(lastCompletedReply + 1).slice(-12).map(({ role, content, createdAt, followup }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null }));
 }
 
 async function readProviderJson(response: Response, maxBytes: number): Promise<unknown> {
