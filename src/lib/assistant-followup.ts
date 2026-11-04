@@ -9,6 +9,7 @@ export const FOLLOWUP_KINDS = [
   "account_or_date", // a missing or invalid account, or a missing date, for a money movement
   "bill_name",
   "bill_amount",
+  "bill_amount_account", // the amount and the account are both needed, so one reply may supply them together
   "bill_start_date",
   "bill_end_date",
   "bill_dates", // the first due date and the exact end date are both needed; one bare date is not enough

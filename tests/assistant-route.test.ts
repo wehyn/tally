@@ -681,6 +681,22 @@ describe("assistant recurring bill capture", () => {
     expect(store.listBills(user.id)).toHaveLength(1);
   });
 
+  it("uses an amount and an account supplied together in one clarification reply", async () => {
+    const wallet = store.listAccounts(user.id)[0];
+    const utilities = store.listCategories(user.id).find((item) => item.name === "Utilities")!;
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31", account: "Nope", category: "Utilities",
+    })));
+
+    const first = await POST(assistantRequest("I have an Internet bill monthly starting tomorrow through December 31 using my Nope account, category Utilities."));
+    const { conversationId } = await first.json();
+    const second = await POST(assistantRequest("Wallet, 500", conversationId));
+    const result = await second.json();
+
+    expect(result.bill).toMatchObject({ name: "Internet", amountMinor: 50000, accountId: wallet.id, categoryId: utilities.id });
+    expect(store.listBills(user.id)).toHaveLength(1);
+  });
+
   it("reports a retry warning when a due-today expense cannot be posted", async () => {
     vi.spyOn(store, "processDueBills").mockImplementation(() => { throw new Error("temporary posting failure"); });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {

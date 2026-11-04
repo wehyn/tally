@@ -219,7 +219,7 @@ function billAmountHint(messages: string[], followup: FollowupKind | null): { me
     try { return { mentioned: true, amountMinor: parsePHPToMinor(raw) }; }
     catch { return { mentioned: true, invalid: true }; }
   }
-  if ((followup === "bill_amount" || followup === "bill_several") && messages.length) {
+  if ((followup === "bill_amount" || followup === "bill_several" || followup === "bill_amount_account") && messages.length) {
     const reply = messages.at(-1)!;
     const bare = bareAmountFromPrompt(reply);
     if (bare !== undefined) return { mentioned: true, amountMinor: bare };
@@ -265,6 +265,7 @@ type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?:
 function missingBillFollowup(missing: string[]): FollowupKind {
   const bothDatesMissing = missing.includes("the first due date") && missing.includes("an exact end date");
   if (missing.includes("an amount") && bothDatesMissing) return "bill_several";
+  if (missing.includes("an amount") && missing.some((item) => item.includes("account"))) return "bill_amount_account";
   if (bothDatesMissing) return "bill_dates";
   if (missing.includes("an amount")) return "bill_amount";
   if (missing.includes("the first due date")) return "bill_start_date";
@@ -339,7 +340,7 @@ function handleAssistantBillAction(
     return { answer: "The end date must be on or after the first due date. What exact end date should I use?", bill: null, followup: "bill_end_date" };
   }
 
-  const accountCorrection = followup === "bill_account"
+  const accountCorrection = followup === "bill_account" || followup === "bill_amount_account"
     ? accounts.find((candidate) => ` ${normalizeWords(lastUserMessage)} `.includes(` ${normalizeWords(candidate.name)} `))
       ?? (/^default(?: account)?$/i.test(lastUserMessage.trim()) ? accounts.find((candidate) => candidate.isDefault) : undefined)
     : undefined;
