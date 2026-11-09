@@ -49,6 +49,8 @@ These were rule breaks. Do not weaken the rules to make them pass.
 2. **`ResetEndsOldShortcuts`** is fixed. A password reset now clears `shortcut_credential_hash` in the same transaction as the new password.
 3. **`ResetNotRevivedByEnable`** is fixed. Disabling now drops a live reset code (`nextAccountState`, `disable`), so re-enabling cannot revive it.
 
+4. **Login that outlives a reset** is fixed in a later review fix. The model's `Login` is one atomic step, so it could not show this race. The login route checks the password against a row it read earlier, and `setSession` used to reread `session_version` after that async check. A reset that committed in between gave the old-password login a token for the new version. `setSession` now takes the version from the caller's verified row, and `code-guards.sh` checks that it stays a parameter. Replayed by `tests/login-session.test.ts`.
+
 Also true of the code, not a rule violation and not changed: if the only admin deletes their account while every other user is disabled, no admin remains (the handoff rule only applies to *enabled* users), and the next person to register becomes admin (`roleForRegistration`). This is an open product call. The two-person flow chart shows it.
 
 Also true of the code, not a rule violation and not changed: disabling does not end a browser session or a Shortcut credential. Both are refused while the user is disabled, and both work again after re-enabling. Whether a disable should revoke them is an open product call.

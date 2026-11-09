@@ -18,7 +18,7 @@ States: **absent**, **active** (`enabled=1`), **disabled** (`enabled=0`). Role i
 States: **none**, **live** (15 minutes), **expired**. Issue: admin, enabled user only, replaces any earlier credential (`api/admin/users/[id]/reset/route.ts`, `store.ts:367`). Consume: enabled user, matching hash, not expired. One `immediate` transaction sets the new password hash, clears the credential, bumps the account's session version and clears the Shortcut credential (`store.ts:375`, `api/auth/reset/route.ts`). Disabling clears the credential, so enabling again cannot revive it (`store.ts:357`).
 
 ### 3. Browser session (JWT cookie `tally_session`, 7 days)
-States: **none**, **live**, **stale**. Created by login and register (enabled users only for login). The token carries the user's `sessionVersion` (`setSession`, `auth.ts:15`). Every request re-reads the user row: valid only if the row exists, is enabled, and the token's version equals the row's (`currentUser`, `auth.ts:35`). A password reset bumps the row's version, so every earlier token is stale. Role comes from the row, not the token. A token with no version claim, such as one from before this change, is refused, so those users sign in once more after the deploy.
+States: **none**, **live**, **stale**. Created by login and register (enabled users only for login). The token carries the user's `sessionVersion`, taken from the row the caller verified (the login route passes the row it compared the password against, registration passes the new row's version), never reread inside `setSession` (`auth.ts:16`). A reset that commits while login is awaiting the password check therefore leaves that login with the old version, and the next request refuses it. Every request re-reads the user row: valid only if the row exists, is enabled, and the token's version equals the row's (`currentUser`, `auth.ts:35`). A password reset bumps the row's version, so every earlier token is stale. Role comes from the row, not the token. A token with no version claim, such as one from before this change, is refused, so those users sign in once more after the deploy.
 
 ### 4. Shortcut credential (`shortcut_credential_hash`)
 States: **none**, **live**. Create/rotate and revoke by the signed-in user (`api/settings/shortcut-credential/route.ts`, `store.ts:387`). Lookup only matches enabled users (`store.ts:391`). A password reset clears it.
@@ -127,11 +127,13 @@ Reading it: the first person to register is admin; deleting an admin with anothe
 
 ## Findings
 
-All three were rules the code broke. They are fixed in `ea526d7`, and the model now holds each rule.
+The first three were rules the code broke. They are fixed in `ea526d7`, and the model now holds each rule.
 
 1. **Reset ends old sessions** is fixed (`ResetEndsOldSessions`). Path: Alice registers → signs in → admin issues a reset code → she uses it. Her old session is now refused, because its version no longer matches (`auth.ts:35`).
 2. **Reset revokes the Shortcut credential** is fixed (`ResetEndsOldShortcuts`). Path: Alice registers → creates a Shortcut credential → admin issues a code → she uses it. The credential is cleared in the same transaction as the new password.
 3. **Disable then enable does not revive a reset code** is fixed (`ResetNotRevivedByEnable`). Path: Alice and Bob register → admin issues Bob a code → admin disables Bob → admin re-enables Bob. Disabling now clears the code, so the old code is refused.
+
+4. **Login that outlives a reset** is fixed. `Login` is one atomic step in the model, so the model could not show it, and a repo test replays it (`tests/login-session.test.ts`). The login route checks the password against a row it read earlier, and `setSession` used to reread the session version after that async check. A reset that committed in between gave the old-password login a token for the new version, so it survived the reset. The version now comes from the verified row.
 
 Rules that hold: `TypeOK`, `AtMostOneAdmin`, `AdminIsEnabled`, `AdminWhileEnabledUsers`, `AccessNeedsEnabledUser`, `ResetSingleUse`, `DeletedLeavesNothing`, `ResetEndsOldSessions`, `ResetEndsOldShortcuts`, `ResetNotRevivedByEnable`, no deadlock.
 

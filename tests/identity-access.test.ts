@@ -25,7 +25,7 @@ const future = () => new Date(Date.now() + 15 * 60_000).toISOString();
 
 function signedInCookie(userId: string) {
   mocks.cookieJar.clear();
-  return setSession({ id: userId, role: "user" }).then(() => mocks.cookieJar.get("tally_session")!);
+  return setSession({ id: userId, role: "user", sessionVersion: store.getUserById(userId)!.sessionVersion }).then(() => mocks.cookieJar.get("tally_session")!);
 }
 
 beforeEach(() => {

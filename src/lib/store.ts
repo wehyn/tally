@@ -307,7 +307,7 @@ export function createStore(db: Database.Database) {
     if (!messageColumns.some((column) => column.name === "followup_kind")) db.exec("ALTER TABLE assistant_messages ADD COLUMN followup_kind TEXT");
   }
 
-  function registerUser(username: string, passwordHash: string): PublicUser {
+  function registerUser(username: string, passwordHash: string): PublicUser & { sessionVersion: number } {
     const normalized = username.trim();
     if (!/^[A-Za-z0-9_]{3,32}$/.test(normalized)) throw new Error("Username must be 3–32 letters, numbers, or underscores.");
     if (!passwordHash) throw new Error("A password hash is required.");
@@ -322,7 +322,7 @@ export function createStore(db: Database.Database) {
       for (const type of ["income", "expense"] as const) {
         for (const name of STARTER_CATEGORIES[type]) insert.run(randomUUID(), user.id, name, type, defaultCategoryIcon(type, name));
       }
-      return { id: user.id, username: user.username, role, enabled: true, assistantOptIn: false, createdAt: user.createdAt };
+      return { id: user.id, username: user.username, role, enabled: true, assistantOptIn: false, createdAt: user.createdAt, sessionVersion: 0 };
     }).immediate();
   }
 

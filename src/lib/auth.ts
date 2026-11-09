@@ -12,10 +12,10 @@ function secretKey() {
   return new TextEncoder().encode(secret);
 }
 
-export async function setSession(user: Pick<PublicUser, "id" | "role">) {
-  const sessionVersion = getStore().getUserById(user.id)?.sessionVersion;
-  if (sessionVersion === undefined) throw new Error("User not found.");
-  const token = await new SignJWT({ role: user.role, sessionVersion }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(`${TTL_SECONDS}s`).sign(secretKey());
+// The version must come from the same row the caller verified, never a later read: a reset that
+// commits in between would otherwise hand an old-password sign-in a token for the new version.
+export async function setSession(user: Pick<PublicUser, "id" | "role"> & { sessionVersion: number }) {
+  const token = await new SignJWT({ role: user.role, sessionVersion: user.sessionVersion }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(`${TTL_SECONDS}s`).sign(secretKey());
   const jar = await cookies();
   jar.set(COOKIE_NAME, token, { httpOnly: true, secure: secureCookie(), sameSite: "lax", path: "/", maxAge: TTL_SECONDS });
 }
