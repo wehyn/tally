@@ -1,27 +1,27 @@
 # Identity and access: state machines
 
-Verified by `.claude/skills/verify-identity-access` (TLA+, synced at commit c006c65). Line numbers are for that commit.
+Verified by `.claude/skills/verify-identity-access` (TLA+). The model matches the code at commit `ea526d7`, which moved the account rules into `src/lib/machines/identity.ts`. Line numbers are for that commit.
 
 ## Inventory
 
 ### 1. User account (`users` row)
-States: **absent**, **active** (`enabled=1`), **disabled** (`enabled=0`). Role is a second field: `admin` or `user`.
+States: **absent**, **active** (`enabled=1`), **disabled** (`enabled=0`). Role is a second field: `admin` or `user`. The transitions are decided by `nextAccountState` and `deleteRefusal` in `src/lib/machines/identity.ts`; the store persists the result.
 
 | Move | From → to | Guard | Code |
 |---|---|---|---|
-| register | absent → active | username 3–32 `[A-Za-z0-9_]`, unique (NOCASE); role = admin iff no admin row exists, inside one `immediate` transaction | `store.ts:303` |
-| disable | active → disabled | caller is admin and not the target | `store.ts:334`, `api/admin/users/route.ts` |
-| enable | disabled → active | caller is admin | same |
-| delete | active → absent | correct password; an admin must name another *enabled* user when one exists, who becomes admin; with no other enabled user the admin may delete and no admin remains | `store.ts:1188`, `api/account/route.ts` |
+| register | absent → active | username 3–32 `[A-Za-z0-9_]`, unique (NOCASE); role = admin iff no admin row exists (`roleForRegistration`), inside one `immediate` transaction | `store.ts:307` |
+| disable | active → disabled | caller is admin and not the target; drops any outstanding reset code | `store.ts:357`, `api/admin/users/route.ts` |
+| enable | disabled → active | caller is admin | `store.ts:357`, `api/admin/users/route.ts` |
+| delete | active → absent | correct password; an admin must name another *enabled* user when one exists, who becomes admin (`deleteRefusal`); with no other enabled user the admin may delete and no admin remains | `store.ts:1224`, `api/account/route.ts` |
 
 ### 2. Reset credential (`reset_token_hash`, `reset_expires_at`)
-States: **none**, **live** (15 minutes), **expired**. Issue: admin, enabled user only, replaces any earlier credential (`api/admin/users/[id]/reset/route.ts`, `store.ts:339`). Consume: enabled user, matching hash, not expired; clears the credential and sets the new password hash (`store.ts:343`, `api/auth/reset/route.ts`). Disabling does not clear it.
+States: **none**, **live** (15 minutes), **expired**. Issue: admin, enabled user only, replaces any earlier credential (`api/admin/users/[id]/reset/route.ts`, `store.ts:367`). Consume: enabled user, matching hash, not expired. One `immediate` transaction sets the new password hash, clears the credential, bumps the account's session version and clears the Shortcut credential (`store.ts:375`, `api/auth/reset/route.ts`). Disabling clears the credential, so enabling again cannot revive it (`store.ts:357`).
 
 ### 3. Browser session (JWT cookie `tally_session`, 7 days)
-States: **none**, **live**. Created by login and register (enabled users only for login). Every request re-reads the user row: valid only if the row exists and is enabled (`auth.ts:27-30`). Role comes from the row, not the token. Not tied to the password.
+States: **none**, **live**, **stale**. Created by login and register (enabled users only for login). The token carries the user's `sessionVersion` (`setSession`, `auth.ts:15`). Every request re-reads the user row: valid only if the row exists, is enabled, and the token's version equals the row's (`currentUser`, `auth.ts:35`). A password reset bumps the row's version, so every earlier token is stale. Role comes from the row, not the token. A token with no version claim, such as one from before this change, is refused, so those users sign in once more after the deploy.
 
 ### 4. Shortcut credential (`shortcut_credential_hash`)
-States: **none**, **live**. Create/rotate and revoke by the signed-in user (`api/settings/shortcut-credential/route.ts`, `store.ts:351`). Lookup only matches enabled users (`store.ts:355`). Not touched by password reset.
+States: **none**, **live**. Create/rotate and revoke by the signed-in user (`api/settings/shortcut-credential/route.ts`, `store.ts:387`). Lookup only matches enabled users (`store.ts:391`). A password reset clears it.
 
 ## Flow 1: sign up, sign in, admin reset (one person)
 
@@ -40,8 +40,8 @@ stateDiagram-v2
   s2: Signed in
   s3: Signed out, reset code waiting
   s4: Signed in, reset code waiting
-  s5: Signed in with the old password
-  s6: Signed in with the old password, reset code waiting
+  s5: Old browser session refused
+  s6: Old browser session refused, reset code waiting
   [*] --> s0
   s0 --> s1: you register (the first user is the admin)
   s1 --> s2: you sign in
@@ -70,7 +70,7 @@ stateDiagram-v2
 
 Hidden from the chart: requests made with a live session, Shortcut credential use and creation, and account deletion (every state has these). "15 minutes pass or you use the code" on one arrow means the two end in the same chart state; they differ in what the user's password becomes.
 
-Reading it: the **"Signed in with the old password"** states are the finding `ResetEndsOldSessions`. After the reset the old session is still accepted.
+Reading it: the **"Old browser session refused"** state shows the fix for `ResetEndsOldSessions`. After the reset the old browser session is refused, and the user has to sign in again.
 
 ## Flow 2: admin role, disabling, deleting with handoff (two people)
 
@@ -127,15 +127,17 @@ Reading it: the first person to register is admin; deleting an admin with anothe
 
 ## Findings
 
-All three break rules in the model. The model matches the code; the code breaks them. No product code was changed.
+All three were rules the code broke. They are fixed in `ea526d7`, and the model now holds each rule.
 
-1. **Reset does not end old sessions** (`ResetEndsOldSessions`). Path: Alice registers → signs in → admin issues a reset code → she uses it. Her old session still works for up to 7 days.
-2. **Reset does not revoke the Shortcut credential** (`ResetEndsOldShortcuts`). Path: Alice registers → creates a Shortcut credential → admin issues a code → she uses it. The credential still works.
-3. **Disable then enable revives an unused reset code** (`ResetNotRevivedByEnable`). Path: Alice and Bob register → admin issues Bob a code → admin disables Bob → admin re-enables Bob. The code is live again until it expires.
+1. **Reset ends old sessions** is fixed (`ResetEndsOldSessions`). Path: Alice registers → signs in → admin issues a reset code → she uses it. Her old session is now refused, because its version no longer matches (`auth.ts:35`).
+2. **Reset revokes the Shortcut credential** is fixed (`ResetEndsOldShortcuts`). Path: Alice registers → creates a Shortcut credential → admin issues a code → she uses it. The credential is cleared in the same transaction as the new password.
+3. **Disable then enable does not revive a reset code** is fixed (`ResetNotRevivedByEnable`). Path: Alice and Bob register → admin issues Bob a code → admin disables Bob → admin re-enables Bob. Disabling now clears the code, so the old code is refused.
 
-Rules that hold: `AtMostOneAdmin`, `AdminIsEnabled`, `AdminWhileEnabledUsers`, `AccessNeedsEnabledUser`, `ResetSingleUse`, `DeletedLeavesNothing`, no deadlock.
+Rules that hold: `TypeOK`, `AtMostOneAdmin`, `AdminIsEnabled`, `AdminWhileEnabledUsers`, `AccessNeedsEnabledUser`, `ResetSingleUse`, `DeletedLeavesNothing`, `ResetEndsOldSessions`, `ResetEndsOldShortcuts`, `ResetNotRevivedByEnable`, no deadlock.
 
-Observation (not a broken rule): with every other user disabled, the sole admin can delete their account without a handoff, and the next registrant is then admin.
+Observation (not a broken rule, unchanged): with every other user disabled, the sole admin can delete their account without a handoff, and the next registrant is then admin. This is an open product call.
+
+Observation (not a broken rule, not changed): disabling does not end a browser session or a Shortcut credential. Both stop working while the user is disabled, and they work again as soon as the user is re-enabled, because the session version and the Shortcut hash are untouched. Whether a disable should also revoke them is an open product call. The model does not cover it.
 
 ## Not modeled
 
