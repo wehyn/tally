@@ -411,6 +411,34 @@ describe("owner-scoped ledger", () => {
     expect(() => store.addContribution(alice.id, goalId, { amountMinor: 100, date: "2026-10-09" })).not.toThrow();
   });
 
+  it("reopens a completed goal when a contribution is reduced or deleted, and keeps archived goals archived", () => {
+    const alice = store.registerUser("goal_status_owner", "hash");
+    const goalId = store.createGoal(alice.id, { name: "Bike", targetMinor: 10000 });
+    const first = store.addContribution(alice.id, goalId, { amountMinor: 10000, date: "2026-10-09" });
+    expect(store.listGoals(alice.id)[0].status).toBe("completed");
+    store.updateContribution(alice.id, first, { amountMinor: 4000 });
+    expect(store.listGoals(alice.id)[0].status).toBe("active");
+    store.updateContribution(alice.id, first, { amountMinor: 10000 });
+    expect(store.listGoals(alice.id)[0].status).toBe("completed");
+    store.deleteContribution(alice.id, first);
+    expect(store.listGoals(alice.id)[0].status).toBe("active");
+  });
+
+  it("rejects duplicate invitations but lets a member who left or was removed be re-invited", () => {
+    const alice = store.registerUser("goal_invite_owner", "hash-a");
+    const bob = store.registerUser("goal_invite_guest", "hash-b");
+    const goalId = store.createGoal(alice.id, { name: "Cabin", targetMinor: 50_000 });
+    store.inviteToGoal(alice.id, goalId, bob.username);
+    expect(() => store.inviteToGoal(alice.id, goalId, bob.username)).toThrow(/already a member or has a pending/i);
+    store.respondInvitation(bob.id, (store.listInvitations(bob.id)[0] as { id: string }).id, true);
+    expect(() => store.inviteToGoal(alice.id, goalId, bob.username)).toThrow(/already a member or has a pending/i);
+    store.changeMembership(alice.id, goalId, bob.id, "remove");
+    expect(() => store.changeMembership(alice.id, goalId, bob.id, "remove")).toThrow(/member not found/i);
+    expect(() => store.inviteToGoal(alice.id, goalId, bob.username)).not.toThrow();
+    store.respondInvitation(bob.id, (store.listInvitations(bob.id)[0] as { id: string }).id, false);
+    expect(() => store.inviteToGoal(alice.id, goalId, bob.username)).not.toThrow();
+  });
+
   it("prevents former goal members from mutating preserved contributions", () => {
     const alice = store.registerUser("goal_manager", "hash-a");
     const bob = store.registerUser("goal_member", "hash-b");

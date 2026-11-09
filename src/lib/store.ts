@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { debtAfterPayment, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
@@ -838,9 +839,8 @@ export function createStore(db: Database.Database) {
       const paymentInput: DebtRepaymentTransactionInput = { ...input, kind: "debt_repayment", time: input.time ?? timeInManila() };
       assertTransactionInput(userId, paymentInput);
       if (paymentInput.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
-      const remaining = debt.amountMinor - paymentInput.amountMinor;
       // Settled records retain their last positive balance; status is authoritative.
-      const updated = updateDebtInternal(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" }, false);
+      const updated = updateDebtInternal(userId, debtId, debtAfterPayment(debt.amountMinor, paymentInput.amountMinor), false);
       const transaction = insertTransaction(userId, paymentInput, { source: "assistant", undoUntil: null, debtId });
       db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,transaction_id,created_at)
         VALUES(?,?,?,?,'payment',?,?,?,?)`).run(randomUUID(), userId, debtId, debt.direction, paymentInput.amountMinor, -paymentInput.amountMinor, transaction.id, stamp());
@@ -859,8 +859,7 @@ export function createStore(db: Database.Database) {
       const paymentInput = { ...input, kind: "expense" as const, source: "assistant" as const };
       assertTransactionInput(userId, paymentInput);
       if (paymentInput.amountMinor > debt.amountMinor) throw new Error("Payment cannot exceed the outstanding debt amount.");
-      const remaining = debt.amountMinor - paymentInput.amountMinor;
-      const updated = updateDebtInternal(userId, debtId, { amountMinor: remaining > 0 ? remaining : debt.amountMinor, status: remaining > 0 ? "open" : "settled" }, false);
+      const updated = updateDebtInternal(userId, debtId, debtAfterPayment(debt.amountMinor, paymentInput.amountMinor), false);
       const created = createTransaction(userId, paymentInput);
       const linked = db.prepare("UPDATE transactions SET debt_id=? WHERE id=? AND user_id=?").run(debtId, created.id, userId);
       if (!linked.changes) throw new Error("Debt repayment transaction could not be linked.");
@@ -1094,13 +1093,14 @@ export function createStore(db: Database.Database) {
     if (!invitee || !invitee.enabled) throw new Error("No enabled user has that username.");
     if (invitee.id === managerId) throw new Error("You are already the goal manager.");
     const existing = db.prepare("SELECT status FROM goal_members WHERE goal_id=? AND user_id=?").get(goalId, invitee.id) as { status: string } | undefined;
-    if (existing?.status === "accepted" || existing?.status === "invited") throw new Error("That user is already a member or has a pending invitation.");
+    if (nextMembershipStatus((existing?.status as MembershipStatus | undefined) ?? null, "invite") === null) throw new Error("That user is already a member or has a pending invitation.");
     if (existing) db.prepare("UPDATE goal_members SET username_snapshot=?,status='invited',invited_at=?,accepted_at=NULL WHERE goal_id=? AND user_id=?").run(invitee.username, stamp(), goalId, invitee.id);
     else db.prepare("INSERT INTO goal_members(id,goal_id,user_id,username_snapshot,status,invited_at) VALUES(?,?,?,?, 'invited',?)").run(randomUUID(), goalId, invitee.id, invitee.username, stamp());
   }
   function respondInvitation(userId: string, membershipId: string, accept: boolean): void {
+    const next = nextMembershipStatus("invited", accept ? "accept" : "decline")!;
     const result = db.prepare("UPDATE goal_members SET status=?,accepted_at=? WHERE id=? AND user_id=? AND status='invited'")
-      .run(accept ? "accepted" : "left", accept ? stamp() : null, membershipId, userId);
+      .run(next, accept ? stamp() : null, membershipId, userId);
     if (!result.changes) throw new Error("Invitation not found or already answered.");
   }
   function listInvitations(userId: string) {
@@ -1121,7 +1121,7 @@ export function createStore(db: Database.Database) {
     if (!updates.length) return;
     const target = input.targetMinor ?? Number(goal.target_minor);
     const raised = safeGoalTotal(goalId);
-    updates.push("status=?"); args.push(raised >= target ? "completed" : "active");
+    updates.push("status=?"); args.push(nextGoalStatus(goal.status as GoalStatus, raised, target));
     db.prepare(`UPDATE goals SET ${updates.join(",")} WHERE id=?`).run(...args, goalId);
   }
   function succession(goalId: string, outgoingUserId: string): void {
@@ -1134,10 +1134,11 @@ export function createStore(db: Database.Database) {
     const goal = requireGoalMember(actorId, goalId);
     if (action === "remove" && goal.manager_id !== actorId) throw new Error("Only the goal manager can remove a member.");
     if (action === "leave" && actorId !== targetUserId) throw new Error("You can only leave your own membership.");
-    const target = db.prepare("SELECT id FROM goal_members WHERE goal_id=? AND user_id=? AND status='accepted'").get(goalId, targetUserId);
-    if (!target) throw new Error("Member not found.");
+    const target = db.prepare("SELECT status FROM goal_members WHERE goal_id=? AND user_id=?").get(goalId, targetUserId) as { status: MembershipStatus } | undefined;
+    const nextStatus = target ? nextMembershipStatus(target.status, action) : null;
+    if (!nextStatus) throw new Error("Member not found.");
     if (goal.manager_id === targetUserId) succession(goalId, targetUserId);
-    db.prepare("UPDATE goal_members SET status=? WHERE goal_id=? AND user_id=?").run(action === "leave" ? "left" : "removed", goalId, targetUserId);
+    db.prepare("UPDATE goal_members SET status=? WHERE goal_id=? AND user_id=?").run(nextStatus, goalId, targetUserId);
   }
   function addContribution(userId: string, goalId: string, input: { amountMinor: number; note?: string; date: string }): string {
     const goal = requireGoalMember(userId, goalId);
@@ -1149,8 +1150,8 @@ export function createStore(db: Database.Database) {
     db.transaction(() => {
       db.prepare("INSERT INTO goal_contributions(id,goal_id,user_id,member_name,amount_minor,note,date,created_at) VALUES(?,?,?,?,?,?,?,?)")
         .run(id, goalId, userId, username, input.amountMinor, input.note?.trim() ?? "", input.date, now);
-      const total = safeGoalTotal(goalId);
-      if (total >= Number(goal.target_minor)) db.prepare("UPDATE goals SET status='completed' WHERE id=?").run(goalId);
+      const status = nextGoalStatus(goal.status as GoalStatus, safeGoalTotal(goalId), Number(goal.target_minor));
+      if (status !== goal.status) db.prepare("UPDATE goals SET status=? WHERE id=?").run(status, goalId);
     }).immediate();
     return id;
   }
@@ -1169,8 +1170,8 @@ export function createStore(db: Database.Database) {
       if (input.note !== undefined) { fields.push("note=?"); params.push(input.note); }
       if (input.date !== undefined) { fields.push("date=?"); params.push(input.date); }
       if (fields.length) db.prepare(`UPDATE goal_contributions SET ${fields.join(",")} WHERE id=? AND user_id=?`).run(...params, contributionId, userId);
-      const raised = safeGoalTotal(goalId);
-      db.prepare("UPDATE goals SET status=? WHERE id=? AND status!='archived'").run(raised >= Number(row.target_minor) ? "completed" : "active", goalId);
+      const goalNow = db.prepare("SELECT status FROM goals WHERE id=?").get(goalId) as { status: GoalStatus };
+      db.prepare("UPDATE goals SET status=? WHERE id=?").run(nextGoalStatus(goalNow.status, safeGoalTotal(goalId), Number(row.target_minor)), goalId);
     }).immediate();
   }
   function deleteContribution(userId: string, contributionId: string): void {
@@ -1180,8 +1181,8 @@ export function createStore(db: Database.Database) {
       if (!row) throw new Error("Your contribution was not found.");
       requireGoalMember(userId, row.goal_id);
       db.prepare("DELETE FROM goal_contributions WHERE id=? AND user_id=?").run(contributionId, userId);
-      const raised = safeGoalTotal(row.goal_id);
-      db.prepare("UPDATE goals SET status=? WHERE id=? AND status!='archived'").run(raised >= row.target_minor ? "completed" : "active", row.goal_id);
+      const goalNow = db.prepare("SELECT status FROM goals WHERE id=?").get(row.goal_id) as { status: GoalStatus };
+      db.prepare("UPDATE goals SET status=? WHERE id=?").run(nextGoalStatus(goalNow.status, safeGoalTotal(row.goal_id), row.target_minor), row.goal_id);
     }).immediate();
   }
   function deleteAccountOwner(userId: string, adminHandoffTo?: string): void {
