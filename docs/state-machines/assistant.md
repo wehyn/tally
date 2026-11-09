@@ -31,11 +31,12 @@ Stored on the assistant message as `followup_kind` (`store.ts`, 17 kinds in `ass
 | Pending | New prompt | Outcome |
 |---|---|---|
 | ordinary_income | "yes" or "no" | answers the question (`:710`, `:752-757`, `:1085`) |
-| repayment_amount | an amount-only reply: "500", "P500", "PHP 500", "500 po", "it was 500", "1,000.50" | answers it, saves the repayment (`:742-743`, `:784-785`) |
+| repayment_amount | an amount-only reply: "500", "P500", "PHP 500", "500 po", "it was 500", "1,000.50", or an amount with a detail: "500 cash", "500 to Wallet", "500 sa GCash", "500 yesterday", "5k", "500 daw", "500 bucks" | answers it, saves the repayment; a named account is the repayment's account (`:742-743`, `:784-785`) |
+| repayment_amount, repayment_payer, ordinary_income | a hedged or negated reply: "maybe 500", "I think 500", "not 500", "500?" | answers it, so the uncertainty guard asks first and writes nothing |
 | repayment_amount, repayment_payer | payment wording, uncertain or negated | answers it through the existing branches; uncertain wording writes nothing and clears the question (`:725`, `:763`, `:1084`) |
 | repayment_payer | a name with an open debt | answers it (the payer is matched to the debt) |
-| repayment_amount, repayment_payer, ordinary_income | a complete prompt that carries its own number and its own subject word ("Coffee 120"), naming no open debt | **replaces** the question: the question is dropped, the prompt runs with no prior context, as in a new chat (`25e864f`, `64efa45`) |
-| repayment_amount, repayment_payer, ordinary_income | no number (for example "Coffee"), or a number with nothing else but a peso marker or filler ("P500", "it was 500") | answers it, as before |
+| repayment_amount, repayment_payer, ordinary_income | a complete prompt that carries its own number and its own subject word ("Coffee 120"), naming no open debt and hedging nothing | **replaces** the question: the question is dropped, the prompt runs with no prior context, as in a new chat (`25e864f`, `64efa45`) |
+| repayment_amount, repayment_payer, ordinary_income | no number (for example "Coffee"), or a number whose only other words are a peso marker, filler, a date, an account the user owns or a hedge ("P500", "it was 500", "500 cash") | answers it, as before |
 | none | payment with no matching open debt | asks ordinary_income (`:773-774`) |
 | none | payer known, amount missing | asks repayment_amount (`:769-770`) |
 
@@ -210,7 +211,7 @@ stateDiagram-v2
 
 ## Findings (all fixed)
 
-Each finding was replayed against the real code before its fix. The conformance replays in `model/conformance.test.ts` (describe block "regressions") now pin the fixed behavior, and `findings.cfg` (`Legacy = TRUE`) still fails on all four invariants, so the checks can fail.
+Each finding was replayed against the real code before its fix. The conformance replays in `model/conformance.test.ts` (describe block "regressions") now pin the fixed behavior, and `findings.cfg` (`Legacy = TRUE`) still fails on its four invariants, as `doubt.cfg` (`Doubt = TRUE`) does on `AnswerNotReplaced`, so the checks can fail.
 
 1. **`NoDuplicateIntentWrite`: one request saved twice. Fixed in `c6f5d5b`.** The write and the reply committed separately. A chat deleted during the model call left a transaction with no conversation, and a resend saved a second one. The turn now commits its write and reply in one transaction, so a deleted chat saves nothing and the retry saves once.
 2. **`WriteNeedsConsent`: save after consent withdrawn. Fixed in `d05bb50`, and again for the local debt-list answer.** Access was checked only before the model call. It is now checked again at commit, before any write. The recheck first lived inside the model branch only, so a local debt-list answer ("List my debts") stored its turn even when consent was withdrawn while the request body streamed. It now sits in `commitTurn` itself, so every stored turn has it.
@@ -218,6 +219,8 @@ Each finding was replayed against the real code before its fix. The conformance 
 4. **`PlainPromptNotTrapped`: a pending question swallows an unrelated prompt. Fixed in `25e864f` (repayment amount, ordinary income) and `64efa45` (repayment payer).** "Coffee 120" after "What amount should I use for the repayment?" used to get the same question, because the repayment context joined every message since the last finished reply. A complete prompt that has its own number and a subject word and names no open debt now replaces the question. An amount-only reply still resolves it, in any common peso form: `pendingOutcome` first treated only "500", "₱500", "500 php" and "500 pesos" as bare, so "P500", "PHP 500", "500 po" and "it was 500" wiped the context and could turn "Ana paid me" into an ordinary-income question (fixed after review; replayed by `PlainPromptNotTrapped (amount forms)`). A wrong "answer" only re-asks, a wrong "replace" drops the user's context, so doubtful wording resolves to "answer".
 
    The replacement used to last only for its own turn. "Ana paid me" asked for an amount, "Coffee 120 from Missing" replaced it and asked for an account, and then "Wallet" reloaded the abandoned messages and resurrected the repayment question instead of saving the coffee. The replacing user message is now stored with `assistant_messages.context_start = 1` and `minimalFollowUpContext` starts the run there (fixed after review; replayed by `PlainPromptNotTrapped (stays replaced)`).
+
+   The first replacement rule replaced on any word beyond amount filler, which broke the "doubt answers" rule in two ways. A hedged or negated reply ("maybe 500", "perhaps 500", "I think 500", "probably 500", "not 500") lost the pending context, so the uncertainty guard never ran and the provider's `log_transaction` saved a 500 expense or income while Ana's debt stayed. An amount with a detail ("500 cash", "500 to Wallet", "500 sa GCash", "500 yesterday", "5k", "500 daw", "500 bucks") was replaced too, so the provider's `record_debt_payment` found no open debt and Tally offered 500 as ordinary income (fixed after review; replayed by `AnswerNotReplaced (hedged)` and `AnswerNotReplaced (detail)`, and `doubt.cfg` with `Doubt = TRUE` fails on `AnswerNotReplaced`). A prompt now replaces a question only when, once amounts, dates, the user's own account names, answer filler and hedges are removed, it still carries a subject word, and it hedges or negates nothing. A detailed amount reply to a pending repayment amount records the repayment, against the account it names when it names one.
 
 ## Left out of the model
 

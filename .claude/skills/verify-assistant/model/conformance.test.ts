@@ -163,6 +163,30 @@ describe("regressions: the findings stay fixed", () => {
     expect(txCount()).toBe(1);
   });
 
+  it("AnswerNotReplaced (hedged): a hedged or negated amount reply keeps the pending question, so the guard asks first and writes nothing", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    for (const reply of ["maybe 500", "I think 500", "not 500"]) {
+      provider(tool("record_debt_payment", { counterparty: "Ana" }));
+      const { conversationId } = await (await ask("Ana paid me")).json();
+      const bodies = provider(tool("log_transaction", { amount: "500", kind: "expense", category: "Other" }));
+      const second = await (await ask(reply, conversationId)).json();
+      expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
+      expect(second.transaction).toBeNull();
+    }
+    expect(txCount()).toBe(0);
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
+  });
+
+  it("AnswerNotReplaced (detail): an amount with a detail answers the pending amount question and records the repayment", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    const second = await (await ask("500 cash", conversationId)).json();
+    expect(second.answer).toContain("repayment from Ana");
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
+    expect(txCount()).toBe(1);
+  });
+
   it("PlainPromptNotTrapped (stays replaced): the abandoned question is not reloaded by a later turn of the new request", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     const coffee = (account: string) => tool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account });

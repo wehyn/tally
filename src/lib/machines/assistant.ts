@@ -26,14 +26,16 @@ export function canWrite(consent: ConsentState): boolean {
 // it, or leaves it to the existing answer handling. "replace" means the prompt is a complete request
 // of its own, so the question is dropped and the prompt is handled as if it began a new chat.
 // A wrong "answer" only re-asks the question and writes nothing, while a wrong "replace" throws the
-// user's context away, so every doubt resolves to "answer".
+// user's context away, and with it the guards that read that context, so every doubt resolves to
+// "answer": a prompt replaces the question only on a positive signal and with no hedge or negation.
 export type PendingOutcome = "none" | "answer" | "replace";
 
 export type PromptFacts = {
   yesOrNo: boolean; // starts with yes or no
   paymentWording: boolean; // incoming or outgoing debt repayment wording
   hasNumber: boolean; // carries a number
-  ownSubject: boolean; // has a word beyond the amount, its peso marker and answer filler ("Coffee 120", not "P500" or "it was 500")
+  ownSubject: boolean; // has a word no amount, date, owned account, answer filler or hedge explains ("Coffee 120", not "P500", "500 cash" or "500 to Wallet")
+  hedged: boolean; // hedges or negates ("maybe 500", "not 500", "500?"), so it is not a complete request
   namesOpenDebt: boolean; // names a person with an open debt, which answers a payer question
 };
 
@@ -42,6 +44,6 @@ const REPLACEABLE_QUESTIONS: ReadonlySet<FollowupKind> = new Set<FollowupKind>([
 export function pendingOutcome(pending: FollowupKind | null, prompt: PromptFacts): PendingOutcome {
   if (pending === null) return "none";
   if (!REPLACEABLE_QUESTIONS.has(pending)) return "answer";
-  if (prompt.yesOrNo || prompt.paymentWording || prompt.namesOpenDebt) return "answer";
+  if (prompt.yesOrNo || prompt.paymentWording || prompt.namesOpenDebt || prompt.hedged) return "answer";
   return prompt.hasNumber && prompt.ownSubject ? "replace" : "answer";
 }

@@ -27,7 +27,7 @@ describe("assistant undo window", () => {
   });
 });
 
-const prompt = (facts: Partial<PromptFacts>): PromptFacts => ({ yesOrNo: false, paymentWording: false, hasNumber: false, ownSubject: false, namesOpenDebt: false, ...facts });
+const prompt = (facts: Partial<PromptFacts>): PromptFacts => ({ yesOrNo: false, paymentWording: false, hasNumber: false, ownSubject: false, hedged: false, namesOpenDebt: false, ...facts });
 
 describe("pending follow-up outcome", () => {
   it("does nothing when no question is pending", () => {
@@ -42,6 +42,12 @@ describe("pending follow-up outcome", () => {
     expect(pendingOutcome("repayment_amount", prompt({ hasNumber: true, ownSubject: true }))).toBe("replace");
     expect(pendingOutcome("repayment_payer", prompt({ hasNumber: true, ownSubject: true }))).toBe("replace");
     expect(pendingOutcome("ordinary_income", prompt({ hasNumber: true, ownSubject: true }))).toBe("replace");
+  });
+
+  it("answers a hedged or negated reply even when it carries its own subject", () => {
+    for (const pending of ["repayment_amount", "repayment_payer", "ordinary_income"] as const) {
+      expect(pendingOutcome(pending, prompt({ hasNumber: true, ownSubject: true, hedged: true }))).toBe("answer");
+    }
   });
 
   it("answers a pending payer question when the reply names a person with an open debt", () => {
@@ -86,5 +92,42 @@ describe("pending follow-up outcome for real prompt wording", () => {
       expect(outcomeFor(pending, "Ana paid me 500")).toBe("answer");
     }
     expect(outcomeFor("repayment_payer", "Ana 500", ["Ana"])).toBe("answer");
+  });
+});
+
+describe("pending follow-up outcome for amount replies with a detail or a doubt", () => {
+  const accounts = [{ name: "Wallet" }, { name: "GCash" }, { name: "BDO Savings" }];
+  const pendingQuestions = ["repayment_amount", "repayment_payer", "ordinary_income"] as const;
+  const outcomeFor = (pending: (typeof pendingQuestions)[number], reply: string, openCounterparties: string[] = []) =>
+    pendingOutcome(pending, promptFacts(reply, openCounterparties, accounts));
+
+  const stillAnswers = [
+    "maybe 500", "perhaps 500", "I think 500", "probably 500", "not 500", "no 500", "500?", "500 or 600", "I guess 500", "500 I think", "it might be 500", "hindi 500", "siguro 500", "500ish",
+    "500 cash", "500 to Wallet", "500 sa GCash", "500 from BDO Savings", "500 into my Wallet", "500 yesterday", "yesterday 500", "500 today", "500 on 2026-10-08", "500 last friday", "500 at 3pm",
+    "5k", "5K", "1.5k", "2m", "5 thousand", "500 daw", "500 raw", "500 bucks", "500 piso", "500 pesos lang po", "500 now", "500 and 200",
+  ];
+  for (const reply of stillAnswers) {
+    it(`keeps the pending question for "${reply}"`, () => {
+      for (const pending of pendingQuestions) expect(outcomeFor(pending, reply)).toBe("answer");
+    });
+  }
+
+  const replacements = ["Coffee 120", "Coffee 120 to Wallet", "Coffee 120 sa GCash", "Coffee 120 yesterday", "lunch 250 on may 5", "Taxi P85 cash", "Grab 1,200.50", "Lunch 5k", "Jollibee 250 daw", "Coffee 120 from Missing"];
+  for (const request of replacements) {
+    it(`replaces every pending question with "${request}"`, () => {
+      for (const pending of pendingQuestions) expect(outcomeFor(pending, request)).toBe("replace");
+    });
+  }
+
+  it("keeps the pending question for a hedged or negated complete request", () => {
+    for (const pending of pendingQuestions) {
+      expect(outcomeFor(pending, "maybe coffee 120")).toBe("answer");
+      expect(outcomeFor(pending, "Coffee 120?")).toBe("answer");
+      expect(outcomeFor(pending, "not coffee 120")).toBe("answer");
+    }
+  });
+
+  it("does not count an account the user does not own as a detail", () => {
+    expect(pendingOutcome("repayment_amount", promptFacts("500 to Savings", [], accounts))).toBe("replace");
   });
 });

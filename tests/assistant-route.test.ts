@@ -2192,6 +2192,55 @@ describe("assistant turn commit", () => {
     });
   }
 
+  for (const reply of ["maybe 500", "perhaps 500", "I think 500", "probably 500", "not 500"]) {
+    it(`asks first and writes nothing when "${reply}" hedges the pending repayment amount`, async () => {
+      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+      const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+
+      const second = vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "expense", description: "Payment", category: "Other" }));
+      vi.stubGlobal("fetch", second);
+      const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
+
+      const sent = JSON.parse(String((second.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
+      expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
+      expect(result.answer).toContain("I didn't record anything");
+      expect(result.transaction).toBeNull();
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+      expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    });
+  }
+
+  const detailReplies: { reply: string; amountMinor: number; account?: string; date?: string }[] = [
+    { reply: "500 cash", amountMinor: 50_000 },
+    { reply: "500 to Wallet", amountMinor: 50_000, account: "Wallet" },
+    { reply: "500 sa GCash", amountMinor: 50_000, account: "GCash" },
+    { reply: "500 yesterday", amountMinor: 50_000, date: "2026-10-08" },
+    { reply: "5k", amountMinor: 500_000 },
+    { reply: "500 daw", amountMinor: 50_000 },
+    { reply: "500 bucks", amountMinor: 50_000 },
+  ];
+  for (const { reply, amountMinor, account, date } of detailReplies) {
+    it(`records the repayment against Ana when "${reply}" answers the pending amount question`, async () => {
+      store.createAccount(user.id, { name: "GCash", type: "cash", openingMinor: 0 });
+      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 1_000_000 });
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+      const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+
+      const second = vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: String(amountMinor / 100) }));
+      vi.stubGlobal("fetch", second);
+      const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
+
+      const sent = JSON.parse(String((second.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
+      expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
+      expect(result.answer).toContain("repayment from Ana");
+      expect(result.answer).not.toContain("ordinary income");
+      expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 1_000_000 - amountMinor, status: "open" });
+      expect(store.listTransactions(user.id)).toHaveLength(1);
+      expect(store.listTransactions(user.id)[0]).toMatchObject({ amountMinor, kind: "debt_repayment", categoryName: null, ...(account ? { accountName: account } : {}), ...(date ? { date } : {}) });
+    });
+  }
+
   it("keeps a replaced repayment question out of every later turn of the new request", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
