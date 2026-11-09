@@ -2262,7 +2262,9 @@ describe("assistant turn commit", () => {
     });
   }
 
-  const notBareAmounts = ["P500", "PHP 500", "500 pesos po", "it was 500", "about 500", "around 500", "roughly 500", "approximately 500", "500 cash", "500 to Wallet", "500 sa GCash", "500 yesterday", "500 last night", "5k", "500 daw", "500 bucks"];
+  const notBareAmounts = ["P500", "PHP 500", "500 pesos po", "it was 500", "about 500", "around 500", "roughly 500", "approximately 500", "500 cash", "500 in cash", "500 to Wallet", "500 sa GCash", "500 to Savings", "500 from Savings to GCash", "500 yesterday", "500 last night", "500 kahapon", "500 kanina",
+    "5k", "5 hundred", "500 daw", "500 bucks", "500 lng", "mga 500", "She paid 500", "paid 500", "received 500", "binayaran nya 500",
+    "500-ish", "500 ata", "500 cguro", "parang 500", "di 500"];
   const providerGuesses: [string, () => Response][] = [
     ["a repayment of 500", () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })],
     ["an expense of 500", () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "expense", category: "Other" })],
@@ -2271,6 +2273,7 @@ describe("assistant turn commit", () => {
     for (const [guess, response] of providerGuesses) {
       it(`asks for the amount again and writes nothing when "${reply}" is not a bare amount and the model guesses ${guess}`, async () => {
         store.createAccount(user.id, { name: "GCash", type: "cash", openingMinor: 0 });
+        store.createAccount(user.id, { name: "Savings", type: "bank", openingMinor: 0 });
         const { debt, conversationId } = await askAnaPaidMe();
 
         const second = vi.fn(async () => response());
@@ -2287,6 +2290,49 @@ describe("assistant turn commit", () => {
       });
     }
   }
+
+  it.each(["She paid 500", "500 to Savings", "5 hundred", "500 ata"])("keeps the pending ordinary income question and writes nothing when %s replies", async (reply) => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
+    const asked = await (await POST(assistantRequest("Zed paid me 500"))).json();
+    expect(asked.answer).toContain("ordinary income");
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "income", category: "Other income" })));
+    const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
+
+    expect(result.answer).toContain("answer yes");
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+  });
+
+  it.each(["She paid 500", "500 to Wallet", "5 hundred"])("keeps the pending payer question and writes nothing when %s replies", async (reply) => {
+    const momDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
+    const asked = await (await POST(assistantRequest("I paid Mom and Dad 100"))).json();
+    expect(asked.answer).toContain("Which person's open debt");
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "expense", category: "Other" })));
+    const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
+
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.listDebts(user.id).find((item) => item.id === momDebt.id)).toMatchObject({ amountMinor: 20_000, status: "open" });
+  });
+
+  it.each([
+    ["Coffee 120", 12_000, "Coffee", "Food"], ["lunch 250", 25_000, "lunch", "Food"], ["Grab 180", 18_000, "Grab", "Transport"], ["bought coffee 120", 12_000, "coffee", "Food"],
+  ])("saves %s as a new expense while the repayment amount question is pending", async (reply, amountMinor, description, category) => {
+    const { debt, conversationId } = await askAnaPaidMe();
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: String(amountMinor / 100), description, kind: "expense", category })));
+    const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(result.answer).not.toContain("repayment");
+    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor, categoryName: category });
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+  });
 
   it("keeps a replaced repayment question out of every later turn of the new request", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });

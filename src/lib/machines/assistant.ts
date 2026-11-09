@@ -23,19 +23,19 @@ export function canWrite(consent: ConsentState): boolean {
 }
 
 // Pending follow-up: what a new prompt does to the question the last reply asked. "answer" resolves
-// it, or leaves it to the existing answer handling. "replace" means the prompt is a complete request
-// of its own, so the question is dropped and the prompt is handled as if it began a new chat.
-// A wrong "answer" only re-asks the question and writes nothing, while a wrong "replace" throws the
-// user's context away, and with it the guards that read that context, so every doubt resolves to
-// "answer": a prompt replaces the question only on a positive signal and with no hedge or negation.
+// it, or leaves it to the existing answer handling, which asks again and writes nothing when the reply
+// is not a usable answer. "replace" means the prompt is a complete request of its own, so the question
+// is dropped and the prompt is handled as if it began a new chat. A wrong "replace" throws the user's
+// context away, and with it the guards that read that context, and writes money to the wrong place;
+// a wrong "answer" only re-asks. So "replace" needs positive evidence and everything else answers.
 export type PendingOutcome = "none" | "answer" | "replace";
 
 export type PromptFacts = {
   yesOrNo: boolean; // starts with yes or no
   paymentWording: boolean; // incoming or outgoing debt repayment wording
   hasNumber: boolean; // carries a number
-  ownSubject: boolean; // has a word no amount, date, owned account, answer filler or hedge explains ("Coffee 120", not "P500", "500 cash" or "500 to Wallet")
-  hedged: boolean; // hedges or negates ("maybe 500", "not 500", "500?"), so it is not a complete request
+  categoryEvidence: boolean; // names one of the user's categories or a word the category keyword map knows ("Coffee 120")
+  hedged: boolean; // hedges or negates ("maybe 500", "not 500", "500?")
   namesOpenDebt: boolean; // names a person with an open debt, which answers a payer question
 };
 
@@ -45,5 +45,5 @@ export function pendingOutcome(pending: FollowupKind | null, prompt: PromptFacts
   if (pending === null) return "none";
   if (!REPLACEABLE_QUESTIONS.has(pending)) return "answer";
   if (prompt.yesOrNo || prompt.paymentWording || prompt.namesOpenDebt || prompt.hedged) return "answer";
-  return prompt.hasNumber && prompt.ownSubject ? "replace" : "answer";
+  return prompt.hasNumber && prompt.categoryEvidence ? "replace" : "answer";
 }

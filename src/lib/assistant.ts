@@ -96,14 +96,11 @@ function answerForDebts(debts: Debt[], prompt: string, accounts: Account[]): str
   const debtTotals = asksTotal ? status === "all" ? allStatusTotals : `\n${totalLabel}: ${formatPHPFromMinorString(amount.toString())}` : "";
   return `${title}\n\n${lines.join("\n") || "None."}${debtTotals}${accountBalances ? `\n\n${accountBalances}` : ""}`;
 }
-function withoutDatesAndTimes(text: string): string {
-  return text.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/gi, " ")
-    .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?\b/gi, " ")
-    .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b/gi, " ");
-}
 function repaymentAmountFromPrompt(prompt: string): number | undefined {
   const amountPattern = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d{1,2})?";
-  const dateFreeText = withoutDatesAndTimes(prompt);
+  const dateFreeText = prompt.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/gi, " ")
+    .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?\b/gi, " ")
+    .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b/gi, " ");
   const incoming = new RegExp(`\\b(?:paid\\s+(?:me(?:\\s+back)?|back)|repaid(?:\\s+me)?|returned)\\s+(?:₱|PHP\\s*)?(${amountPattern})(?:\\s*(?:PHP|pesos?))?(?=$|[\\s,.;!?])`, "gi");
   const incomingMatches = [...dateFreeText.matchAll(incoming)].filter((match) => {
     const subject = dateFreeText.slice(0, match.index).trimEnd().match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*$/u)?.[0];
@@ -115,61 +112,10 @@ function repaymentAmountFromPrompt(prompt: string): number | undefined {
   if (!raw) return undefined;
   try { return parsePHPToMinor(raw) || undefined; } catch { return undefined; }
 }
-// Words that can surround an amount in an answer to "how much?" without being a request of their own.
-const AMOUNT_ANSWER_WORDS: ReadonlySet<string> = new Set([
-  "p", "php", "peso", "pesos", "po", "opo", "lang", "na", "only", "just", "about", "around", "roughly", "approximately", "exactly",
-  "it", "its", "it's", "it’s", "that", "thats", "that's", "that’s", "is", "was", "the", "amount", "total", "please", "pls", "sorry", "thanks",
-]);
 function bareAmountFromPrompt(prompt: string): number | undefined {
   const match = /^\s*(₱\s*)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*(?:php|pesos?)?\s*[.!]?\s*$/i.exec(prompt);
   if (!match) return undefined;
   try { return parsePHPToMinor(`${match[1] ?? ""}${match[2]}${match[3] ? `.${match[3]}` : ""}`); } catch { return undefined; }
-}
-// Words that carry a detail of an amount answer, not a request of their own ("500 cash", "500 daw").
-const AMOUNT_DETAIL_WORDS: ReadonlySet<string> = new Set(["cash", "bucks", "buck", "piso", "daw", "raw", "now", "already", "earlier", "at", "on", "by", "and"]);
-// An amount as people type it: "500", "1,000.50", and k or m shorthand ("5k", "2m", "5 thousand").
-const ANSWER_AMOUNT = "(\\d{1,3}(?:,\\d{3})+|\\d+)(\\.\\d+)?(?:\\s?(k|m|mil|million|thousand|grand)(?![\\p{L}\\p{N}]))?";
-const WEEKDAYS = "(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)";
-function withoutDateWords(text: string): string {
-  return withoutDatesAndTimes(text).replace(new RegExp(`\\b(?:today|yesterday|tomorrow|tonight|(?:last|next|this|on)\\s+${WEEKDAYS}|(?:last|next|this)\\s+(?:week|month|night)|this\\s+(?:morning|afternoon|evening))\\b`, "gi"), " ");
-}
-function accountNamePattern(account: { name: string }, prefix = ""): RegExp | undefined {
-  const name = account.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-  return name ? new RegExp(`(?<![\\p{L}\\p{N}])${prefix}${name}(?![\\p{L}\\p{N}])`, "iu") : undefined;
-}
-function accountsByNameLength<T extends { name: string }>(accounts: readonly T[]): T[] {
-  return [...accounts].sort((a, b) => b.name.length - a.name.length);
-}
-// What is left of a reply once everything that only details an amount is removed: dates, the user's own
-// account names with their preposition, the peso marker and answer filler. Amounts stay.
-function withoutAnswerDetails(prompt: string, accounts: readonly { name: string }[]): string {
-  const cues = "(?:(?:from|to|into|using|via|in|use|with|on|sa|mula|galing)\\s+)?(?:my\\s+)?";
-  const withoutAccounts = accountsByNameLength(accounts).reduce((text, account) => {
-    const pattern = accountNamePattern(account, cues);
-    return pattern ? text.replace(new RegExp(`${pattern.source}(?:\\s+(?:account|card))?`, "giu"), " ") : text;
-  }, withoutDateWords(prompt));
-  return withoutAccounts.replace(/₱/g, " ")
-    .replace(/[\p{L}'’]+/gu, (word) => AMOUNT_ANSWER_WORDS.has(word.toLowerCase()) || AMOUNT_DETAIL_WORDS.has(word.toLowerCase()) ? " " : word);
-}
-// Letters that no amount, date, owned account or answer filler explains: the description of a request, such as "Coffee".
-function carriesOwnSubject(prompt: string, accounts: readonly { name: string }[]): boolean {
-  return /\p{L}/u.test(withoutAnswerDetails(prompt, accounts).replace(new RegExp(ANSWER_AMOUNT, "giu"), " ").replace(/\d[\d,.]*/g, " "));
-}
-// Hedges and negations beyond isUncertainStatement. A reply with one of them is never a complete request.
-const EXTRA_DOUBT = /\b(?:no|nope|nah|nothing|none|nor|or|without|dont|cant|wont|didnt|isnt|wasnt|arent|couldnt|wouldnt|shouldnt|guess|guessing|suppose|assume|believe|reckon|dunno|doubt|presumably|apparently|supposedly|hindi|wala|siguro|baka|yata)\b|\dish\b/i;
-function hedgesOrNegates(prompt: string): boolean {
-  const text = withoutDateWords(prompt);
-  return isUncertainStatement(text) || EXTRA_DOUBT.test(text);
-}
-export function promptFacts(prompt: string, openCounterparties: string[], accounts: readonly { name: string }[] = []): PromptFacts {
-  return {
-    yesOrNo: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that|no|nope|nah)\b/i.test(prompt),
-    paymentWording: hasIncomingDebtRepaymentWording(prompt) || hasOutgoingDebtRepaymentWording(prompt),
-    hasNumber: /\d/.test(prompt),
-    ownSubject: carriesOwnSubject(prompt, accounts),
-    hedged: hedgesOrNegates(prompt),
-    namesOpenDebt: openCounterparties.some((counterparty) => containsCounterparty(prompt, counterparty)),
-  };
 }
 function parseProviderAmount(value: unknown): number | undefined {
   if (typeof value !== "string" && typeof value !== "number") return undefined;
@@ -179,7 +125,7 @@ function safeClarification(value: unknown): string {
   if (typeof value !== "string" || value.trim().length < 3 || value.length > 240) return "What amount or category should I use?";
   return value.trim();
 }
-type AssistantCategory = { id: string; name: string; type: "income" | "expense" };
+export type AssistantCategory = { id: string; name: string; type: "income" | "expense" };
 function normalizeCategoryName(value: string): string {
   return value.toLowerCase().replace(/\btranspor(?:tation|attion)\b/g, "transport").replace(/[^a-z0-9]+/g, " ").trim();
 }
@@ -588,18 +534,38 @@ function findCategoryInText(text: string, categories: AssistantCategory[], prefe
   if (preferredType) return longestMatches.find((category) => category.type === preferredType) ?? null;
   return null;
 }
+const CATEGORY_KEYWORD_RULES: [RegExp, string, AssistantCategory["type"]][] = [
+  [/\b(food|lunch|dinner|breakfast|coffee|restaurant|jollibee|meal|grocer)\b/i, "Food", "expense"],
+  [/\b(shopping|shop|store|retail|online order)\b/i, "Shopping", "expense"],
+  [/\b(transport|transpor(?:tation|attion)|commut(?:e|ing)|transit|bus|train|taxi|grab|jeep|fare|fuel|gasoline)\b/i, "Transport", "expense"],
+  [/\b(rent|mortgage|condo)\b/i, "Housing", "expense"], [/\b(electric|water|internet|utility)\b/i, "Utilities", "expense"],
+  [/\b(doctor|medicine|pharmacy|clinic|hospital)\b/i, "Health", "expense"], [/\b(school|tuition|book|course)\b/i, "Education", "expense"],
+  [/\b(movie|concert|game|stream)\b/i, "Entertainment", "expense"], [/\b(flight|hotel|vacation|travel)\b/i, "Travel", "expense"],
+  [/\b(salary|payroll|payday)\b/i, "Salary", "income"],
+];
 function guessCategory(text: string, categories: AssistantCategory[]): AssistantCategory | undefined {
-  const rules: [RegExp, string, AssistantCategory["type"]][] = [
-    [/\b(food|lunch|dinner|breakfast|coffee|restaurant|jollibee|meal|grocer)\b/i, "Food", "expense"],
-    [/\b(shopping|shop|store|retail|online order)\b/i, "Shopping", "expense"],
-    [/\b(transport|transpor(?:tation|attion)|commut(?:e|ing)|transit|bus|train|taxi|grab|jeep|fare|fuel|gasoline)\b/i, "Transport", "expense"],
-    [/\b(rent|mortgage|condo)\b/i, "Housing", "expense"], [/\b(electric|water|internet|utility)\b/i, "Utilities", "expense"],
-    [/\b(doctor|medicine|pharmacy|clinic|hospital)\b/i, "Health", "expense"], [/\b(school|tuition|book|course)\b/i, "Education", "expense"],
-    [/\b(movie|concert|game|stream)\b/i, "Entertainment", "expense"], [/\b(flight|hotel|vacation|travel)\b/i, "Travel", "expense"],
-    [/\b(salary|payroll|payday)\b/i, "Salary", "income"],
-  ];
-  const rule = rules.find(([pattern]) => pattern.test(text));
+  const rule = CATEGORY_KEYWORD_RULES.find(([pattern]) => pattern.test(text));
   return rule ? categories.find((category) => category.type === rule[2] && normalizeCategoryName(category.name) === normalizeCategoryName(rule[1])) : undefined;
+}
+// Positive evidence that a prompt is a request of its own: it names one of the user's categories or a word the
+// keyword map knows ("Coffee 120"). An account name never counts, nor does the catch-all "Other", a common word.
+function namesCategory(prompt: string, categories: AssistantCategory[], accounts: readonly { name: string }[]): boolean {
+  const text = accounts.reduce((rest, account) => {
+    const name = normalizeWords(account.name);
+    return name ? rest.replace(new RegExp(`(?<![\\p{L}\\p{N}])${name}(?![\\p{L}\\p{N}])`, "gu"), " ") : rest;
+  }, normalizeWords(prompt));
+  const own = categories.filter((category) => normalizeWords(category.name) !== "other");
+  return findCategoryInText(text, own) !== undefined || CATEGORY_KEYWORD_RULES.some(([pattern]) => pattern.test(text));
+}
+export function promptFacts(prompt: string, openCounterparties: string[], categories: AssistantCategory[], accounts: readonly { name: string }[]): PromptFacts {
+  return {
+    yesOrNo: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that|no|nope|nah)\b/i.test(prompt),
+    paymentWording: hasIncomingDebtRepaymentWording(prompt) || hasOutgoingDebtRepaymentWording(prompt),
+    hasNumber: /\d/.test(prompt),
+    categoryEvidence: namesCategory(prompt, categories, accounts),
+    hedged: isUncertainStatement(prompt),
+    namesOpenDebt: openCounterparties.some((counterparty) => containsCounterparty(prompt, counterparty)),
+  };
 }
 function explicitTransactionKind(text: string): AssistantCategory["type"] | undefined {
   const mentionsExpense = /\b(expense|spent|spend|paid|purchase|bought|buy|cost|charged|charge)\b/i.test(text);
@@ -742,7 +708,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const conversationMessages = conversation?.messages ?? [];
     const openRun = minimalFollowUpContext(conversationMessages);
     const openCounterparties = store.listDebts(user.id).filter((debt) => debt.status === "open").map((debt) => debt.counterparty);
-    const replacesPending = pendingOutcome(openRun.at(-1)?.followup ?? null, promptFacts(input.prompt, openCounterparties, accounts)) === "replace";
+    const replacesPending = pendingOutcome(openRun.at(-1)?.followup ?? null, promptFacts(input.prompt, openCounterparties, categories, accounts)) === "replace";
     const history = replacesPending ? [] : openRun;
     const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
     const userMessages = [

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { UNDO_WINDOW_MS, canUndo, pendingOutcome, undoUntilFor, type PromptFacts } from "../src/lib/machines/assistant";
-import { promptFacts } from "../src/lib/assistant";
+import { promptFacts, type AssistantCategory } from "../src/lib/assistant";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
 
@@ -27,107 +27,100 @@ describe("assistant undo window", () => {
   });
 });
 
-const prompt = (facts: Partial<PromptFacts>): PromptFacts => ({ yesOrNo: false, paymentWording: false, hasNumber: false, ownSubject: false, hedged: false, namesOpenDebt: false, ...facts });
+const prompt = (facts: Partial<PromptFacts>): PromptFacts => ({ yesOrNo: false, paymentWording: false, hasNumber: false, categoryEvidence: false, hedged: false, namesOpenDebt: false, ...facts });
+const replaceable = ["repayment_amount", "repayment_payer", "ordinary_income"] as const;
 
 describe("pending follow-up outcome", () => {
   it("does nothing when no question is pending", () => {
-    expect(pendingOutcome(null, prompt({ hasNumber: true }))).toBe("none");
+    expect(pendingOutcome(null, prompt({ hasNumber: true, categoryEvidence: true }))).toBe("none");
   });
 
-  it("answers a pending repayment amount with a bare amount", () => {
-    expect(pendingOutcome("repayment_amount", prompt({ hasNumber: true }))).toBe("answer");
+  it("replaces a pending repayment or income question only for a number with category evidence", () => {
+    for (const pending of replaceable) expect(pendingOutcome(pending, prompt({ hasNumber: true, categoryEvidence: true }))).toBe("replace");
   });
 
-  it("replaces a pending repayment or income question with a complete unrelated request", () => {
-    expect(pendingOutcome("repayment_amount", prompt({ hasNumber: true, ownSubject: true }))).toBe("replace");
-    expect(pendingOutcome("repayment_payer", prompt({ hasNumber: true, ownSubject: true }))).toBe("replace");
-    expect(pendingOutcome("ordinary_income", prompt({ hasNumber: true, ownSubject: true }))).toBe("replace");
-  });
-
-  it("answers a hedged or negated reply even when it carries its own subject", () => {
-    for (const pending of ["repayment_amount", "repayment_payer", "ordinary_income"] as const) {
-      expect(pendingOutcome(pending, prompt({ hasNumber: true, ownSubject: true, hedged: true }))).toBe("answer");
+  it("answers when either the number or the category evidence is missing", () => {
+    for (const pending of replaceable) {
+      expect(pendingOutcome(pending, prompt({ hasNumber: true }))).toBe("answer");
+      expect(pendingOutcome(pending, prompt({ categoryEvidence: true }))).toBe("answer");
+      expect(pendingOutcome(pending, prompt({}))).toBe("answer");
     }
   });
 
-  it("answers a pending payer question when the reply names a person with an open debt", () => {
-    expect(pendingOutcome("repayment_payer", prompt({ hasNumber: true, ownSubject: true, namesOpenDebt: true }))).toBe("answer");
-  });
-
-  it("answers with payment wording, yes or no, or no amount", () => {
-    expect(pendingOutcome("repayment_amount", prompt({ paymentWording: true, hasNumber: true }))).toBe("answer");
-    expect(pendingOutcome("ordinary_income", prompt({ yesOrNo: true, hasNumber: true }))).toBe("answer");
-    expect(pendingOutcome("repayment_amount", prompt({}))).toBe("answer");
+  it("answers even with a number and category evidence when the prompt hedges, negates, names an open debt, says yes or no, or is payment wording", () => {
+    const request = { hasNumber: true, categoryEvidence: true };
+    for (const pending of replaceable) {
+      expect(pendingOutcome(pending, prompt({ ...request, hedged: true }))).toBe("answer");
+      expect(pendingOutcome(pending, prompt({ ...request, namesOpenDebt: true }))).toBe("answer");
+      expect(pendingOutcome(pending, prompt({ ...request, yesOrNo: true }))).toBe("answer");
+      expect(pendingOutcome(pending, prompt({ ...request, paymentWording: true }))).toBe("answer");
+    }
   });
 
   it("keeps answering the other pending questions, which the code resolves from context", () => {
-    expect(pendingOutcome("clarification", prompt({ hasNumber: true }))).toBe("answer");
-    expect(pendingOutcome("account_or_date", prompt({ hasNumber: true }))).toBe("answer");
+    expect(pendingOutcome("clarification", prompt({ hasNumber: true, categoryEvidence: true }))).toBe("answer");
+    expect(pendingOutcome("account_or_date", prompt({ hasNumber: true, categoryEvidence: true }))).toBe("answer");
   });
 });
 
 describe("pending follow-up outcome for real prompt wording", () => {
-  const pendingQuestions = ["repayment_amount", "repayment_payer", "ordinary_income"] as const;
-  const outcomeFor = (pending: (typeof pendingQuestions)[number], prompt: string, openCounterparties: string[] = []) =>
-    pendingOutcome(pending, promptFacts(prompt, openCounterparties));
-
-  const amountAnswers = ["500", "P500", "p500", "P 500", "PHP 500", "Php500", "₱500", "₱ 1,000", "500 pesos", "500 peso", "500 po", "500 pesos po", "it was 500", "It's P500", "about 500", "1,000.50", "P1,000.50", "500.", "just 500"];
-  for (const answer of amountAnswers) {
-    it(`treats "${answer}" as an answer to every pending question`, () => {
-      for (const pending of pendingQuestions) expect(outcomeFor(pending, answer)).toBe("answer");
-    });
-  }
-
-  const ownRequests = ["Coffee 120", "Coffee 120 from Missing", "Jollibee lunch 250", "Taxi P85", "lunch 250 yesterday", "Grab 1,200.50"];
-  for (const request of ownRequests) {
-    it(`replaces every pending question with the complete request "${request}"`, () => {
-      for (const pending of pendingQuestions) expect(outcomeFor(pending, request)).toBe("replace");
-    });
-  }
-
-  it("still answers with wording that is not an amount-only reply", () => {
-    for (const pending of pendingQuestions) {
-      expect(outcomeFor(pending, "Coffee")).toBe("answer");
-      expect(outcomeFor(pending, "yes")).toBe("answer");
-      expect(outcomeFor(pending, "Ana paid me 500")).toBe("answer");
-    }
-    expect(outcomeFor("repayment_payer", "Ana 500", ["Ana"])).toBe("answer");
-  });
-});
-
-describe("pending follow-up outcome for amount replies with a detail or a doubt", () => {
-  const accounts = [{ name: "Wallet" }, { name: "GCash" }, { name: "BDO Savings" }];
-  const pendingQuestions = ["repayment_amount", "repayment_payer", "ordinary_income"] as const;
-  const outcomeFor = (pending: (typeof pendingQuestions)[number], reply: string, openCounterparties: string[] = []) =>
-    pendingOutcome(pending, promptFacts(reply, openCounterparties, accounts));
-
-  const stillAnswers = [
-    "maybe 500", "perhaps 500", "I think 500", "probably 500", "not 500", "no 500", "500?", "500 or 600", "I guess 500", "500 I think", "it might be 500", "hindi 500", "siguro 500", "500ish",
-    "500 cash", "500 to Wallet", "500 sa GCash", "500 from BDO Savings", "500 into my Wallet", "500 yesterday", "yesterday 500", "500 today", "500 on 2026-10-08", "500 last friday", "500 at 3pm",
-    "5k", "5K", "1.5k", "2m", "5 thousand", "500 daw", "500 raw", "500 bucks", "500 piso", "500 pesos lang po", "500 now", "500 and 200",
+  const categories: AssistantCategory[] = [
+    { id: "c1", name: "Salary", type: "income" }, { id: "c2", name: "Other income", type: "income" },
+    { id: "c3", name: "Food", type: "expense" }, { id: "c4", name: "Transport", type: "expense" }, { id: "c5", name: "Other", type: "expense" },
+    { id: "c6", name: "Pets", type: "expense" }, { id: "c7", name: "Savings", type: "expense" },
   ];
-  for (const reply of stillAnswers) {
-    it(`keeps the pending question for "${reply}"`, () => {
-      for (const pending of pendingQuestions) expect(outcomeFor(pending, reply)).toBe("answer");
+  const accounts = [{ name: "Wallet" }, { name: "GCash" }, { name: "Savings" }, { name: "BDO Savings" }];
+  const outcomeFor = (pending: (typeof replaceable)[number], reply: string, openCounterparties = ["Ana"]) =>
+    pendingOutcome(pending, promptFacts(reply, openCounterparties, categories, accounts));
+
+  const answers = [
+    // amount forms and details that main never read as a bare amount
+    "500", "P500", "PHP 500", "₱500", "500 pesos", "500 po", "it was 500", "1,000.50", "500.", "just 500",
+    "500 cash", "500 in cash", "500 to Wallet", "500 sa GCash", "500 yesterday", "500 last night", "500 kahapon", "500 kanina", "5k", "5 hundred", "500 daw", "500 bucks", "500 lng", "mga 500",
+    // an account, even one that shares its name with a category
+    "500 to Savings", "500 from BDO Savings", "500 from Savings to GCash", "Savings 500",
+    // wording that names no category and so proves no request of its own
+    "She paid 500", "paid 500", "received 500", "binayaran nya 500", "the other 500", "Ana 500",
+    // approximate, hedged or negated
+    "about 500", "around 500", "roughly 500", "approximately 500", "500-ish", "500ish", "500 ata", "500 cguro", "parang 500", "di 500",
+    "maybe 500", "perhaps 500", "I think 500", "probably 500", "not 500", "no 500", "500?", "500 or 600", "hindi 500", "siguro 500",
+    // a category word without a number, a yes or no, payment wording
+    "Coffee", "yes", "no", "Ana paid me 500", "Coffee 120?", "maybe coffee 120", "not coffee 120",
+    // no number
+    "Other",
+  ];
+  for (const reply of answers) {
+    it(`treats "${reply}" as an answer to every pending question`, () => {
+      for (const pending of replaceable) expect(outcomeFor(pending, reply)).toBe("answer");
     });
   }
 
-  const replacements = ["Coffee 120", "Coffee 120 to Wallet", "Coffee 120 sa GCash", "Coffee 120 yesterday", "lunch 250 on may 5", "Taxi P85 cash", "Grab 1,200.50", "Lunch 5k", "Jollibee 250 daw", "Coffee 120 from Missing"];
-  for (const request of replacements) {
-    it(`replaces every pending question with "${request}"`, () => {
-      for (const pending of pendingQuestions) expect(outcomeFor(pending, request)).toBe("replace");
+  const requests = [
+    "Coffee 120", "coffee 120", "lunch 250", "Grab 180", "bought coffee 120", "Jollibee lunch 250", "Taxi P85", "lunch 250 yesterday", "Grab 1,200.50",
+    "Coffee 120 from Missing", "Coffee 120 to Wallet", "Coffee 120 sa GCash", "Lunch 5k", "Jollibee 250 daw", "salary 20000", "Pets 300", "500 for lunch",
+  ];
+  for (const request of requests) {
+    it(`replaces every pending question with the complete request "${request}"`, () => {
+      for (const pending of replaceable) expect(outcomeFor(pending, request)).toBe("replace");
     });
   }
 
-  it("keeps the pending question for a hedged or negated complete request", () => {
-    for (const pending of pendingQuestions) {
-      expect(outcomeFor(pending, "maybe coffee 120")).toBe("answer");
-      expect(outcomeFor(pending, "Coffee 120?")).toBe("answer");
-      expect(outcomeFor(pending, "not coffee 120")).toBe("answer");
-    }
+  it("answers a request that names someone with an open debt", () => {
+    expect(outcomeFor("repayment_payer", "Ana coffee 120")).toBe("answer");
+    expect(outcomeFor("repayment_payer", "Coffee 120 for Ana")).toBe("answer");
+    expect(outcomeFor("repayment_payer", "Coffee 120 for Ben", ["Ana"])).toBe("replace");
   });
 
-  it("does not count an account the user does not own as a detail", () => {
-    expect(pendingOutcome("repayment_amount", promptFacts("500 to Savings", [], accounts))).toBe("replace");
+  it("does not count an account name as category evidence, even when a category has the same name", () => {
+    expect(promptFacts("500 to Savings", [], categories, accounts).categoryEvidence).toBe(false);
+    expect(promptFacts("Pets 500 to Savings", [], categories, accounts).categoryEvidence).toBe(true);
+    expect(promptFacts("500 to Savings", [], categories, []).categoryEvidence).toBe(true);
+  });
+
+  it("finds a category the user renamed through the keyword map and through the user's own names", () => {
+    const renamed: AssistantCategory[] = [{ id: "x", name: "Groceries", type: "expense" }];
+    expect(promptFacts("coffee 120", [], renamed, accounts).categoryEvidence).toBe(true);
+    expect(promptFacts("Groceries 800", [], renamed, accounts).categoryEvidence).toBe(true);
+    expect(promptFacts("800", [], renamed, accounts).categoryEvidence).toBe(false);
   });
 });
