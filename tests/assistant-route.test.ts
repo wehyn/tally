@@ -2192,6 +2192,26 @@ describe("assistant turn commit", () => {
     });
   }
 
+  it("keeps a replaced repayment question out of every later turn of the new request", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Missing" })));
+    const replaced = await (await POST(assistantRequest("Coffee 120 from Missing", asked.conversationId))).json();
+    expect(replaced.answer).toContain("Missing");
+
+    const third = vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Wallet" }));
+    vi.stubGlobal("fetch", third);
+    const saved = await (await POST(assistantRequest("Wallet", asked.conversationId))).json();
+
+    const sent = JSON.parse(String((third.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
+    expect(sent.messages.map((message) => message.content)).not.toContain("Ana paid me");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+  });
+
   it("handles a complete unrelated prompt as a new request while a repayment amount is pending", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));

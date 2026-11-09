@@ -163,6 +163,17 @@ describe("regressions: the findings stay fixed", () => {
     expect(txCount()).toBe(1);
   });
 
+  it("PlainPromptNotTrapped (stays replaced): the abandoned question is not reloaded by a later turn of the new request", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const coffee = (account: string) => tool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }), coffee("Missing"), coffee("Wallet"));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    await ask("Coffee 120 from Missing", conversationId);
+    const third = await (await ask("Wallet", conversationId)).json();
+    expect(third.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
+  });
+
   it("PlainPromptNotTrapped (payer): a complete unrelated prompt is not swallowed by a pending payer question", async () => {
     store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
     store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });

@@ -308,6 +308,34 @@ describe("owner-scoped ledger", () => {
     }]);
   });
 
+  it("adds the context-start flag to legacy assistant messages as off, and migrating again changes nothing", () => {
+    const user = store.registerUser("legacy_message_context", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,created_at) VALUES('old-message',?,?,'user','Lunch','2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+
+    store.migrate();
+    store.migrate();
+
+    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ id: "old-message", content: "Lunch", contextStart: false }]);
+  });
+
+  it("stores a context start on the message that was added with it", () => {
+    const user = store.registerUser("context_start_message", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    store.addMessage(user.id, conversationId, "user", "Ana paid me");
+    store.addMessage(user.id, conversationId, "user", "Coffee 120", undefined, null, undefined, true);
+
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.contextStart)).toEqual([false, true]);
+  });
+
   it("adds a nullable time column to legacy transactions without inventing event times", () => {
     const user = store.registerUser("legacy_transaction", "hash");
     const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
