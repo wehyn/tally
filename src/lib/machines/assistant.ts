@@ -32,13 +32,14 @@ export type PromptFacts = {
   yesOrNo: boolean; // starts with yes or no
   paymentWording: boolean; // incoming or outgoing debt repayment wording
   hasNumber: boolean; // carries its own amount
+  namesOpenDebt: boolean; // names a person with an open debt, which answers a payer question
 };
 
-const REPLACEABLE_QUESTIONS: ReadonlySet<FollowupKind> = new Set<FollowupKind>(["repayment_amount", "ordinary_income"]);
+const REPLACEABLE_QUESTIONS: ReadonlySet<FollowupKind> = new Set<FollowupKind>(["repayment_amount", "repayment_payer", "ordinary_income"]);
 
 export function pendingOutcome(pending: FollowupKind | null, prompt: PromptFacts): PendingOutcome {
   if (pending === null) return "none";
   if (!REPLACEABLE_QUESTIONS.has(pending)) return "answer";
-  if (prompt.bareAmount || prompt.yesOrNo || prompt.paymentWording || !prompt.hasNumber) return "answer";
+  if (prompt.bareAmount || prompt.yesOrNo || prompt.paymentWording || prompt.namesOpenDebt || !prompt.hasNumber) return "answer";
   return "replace";
 }

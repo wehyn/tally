@@ -2193,4 +2193,19 @@ describe("assistant turn commit", () => {
     expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
     expect(store.listTransactions(user.id)).toHaveLength(1);
   });
+
+  it("handles a complete unrelated prompt as a new request while a repayment payer is pending", async () => {
+    const momDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
+    const asked = await (await POST(assistantRequest("I paid Mom and Dad 100"))).json();
+    expect(asked.answer).toContain("Which person's open debt");
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
+    const result = await (await POST(assistantRequest("Coffee 120", asked.conversationId))).json();
+
+    expect(result.answer).not.toContain("repayment");
+    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === momDebt.id)).toMatchObject({ amountMinor: 20_000, status: "open" });
+  });
 });

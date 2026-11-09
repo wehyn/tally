@@ -117,12 +117,13 @@ function bareAmountFromPrompt(prompt: string): number | undefined {
   if (!match) return undefined;
   try { return parsePHPToMinor(`${match[1] ?? ""}${match[2]}${match[3] ? `.${match[3]}` : ""}`); } catch { return undefined; }
 }
-function promptFacts(prompt: string): PromptFacts {
+function promptFacts(prompt: string, openCounterparties: string[]): PromptFacts {
   return {
     bareAmount: bareAmountFromPrompt(prompt) !== undefined,
     yesOrNo: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that|no|nope|nah)\b/i.test(prompt),
     paymentWording: hasIncomingDebtRepaymentWording(prompt) || hasOutgoingDebtRepaymentWording(prompt),
     hasNumber: /\d/.test(prompt),
+    namesOpenDebt: openCounterparties.some((counterparty) => containsCounterparty(prompt, counterparty)),
   };
 }
 function parseProviderAmount(value: unknown): number | undefined {
@@ -689,7 +690,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     if (input.conversationId && !conversation) throw new HttpError(404, "Conversation not found.");
     const conversationMessages = conversation?.messages ?? [];
     const openRun = minimalFollowUpContext(conversationMessages);
-    const history = pendingOutcome(openRun.at(-1)?.followup ?? null, promptFacts(input.prompt)) === "replace" ? [] : openRun;
+    const openCounterparties = store.listDebts(user.id).filter((debt) => debt.status === "open").map((debt) => debt.counterparty);
+    const history = pendingOutcome(openRun.at(-1)?.followup ?? null, promptFacts(input.prompt, openCounterparties)) === "replace" ? [] : openRun;
     const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
     const promptCreatedAt = new Date().toISOString();
     const userMessages = [

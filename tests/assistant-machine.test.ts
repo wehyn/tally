@@ -26,7 +26,7 @@ describe("assistant undo window", () => {
   });
 });
 
-const prompt = (facts: Partial<PromptFacts>): PromptFacts => ({ bareAmount: false, yesOrNo: false, paymentWording: false, hasNumber: false, ...facts });
+const prompt = (facts: Partial<PromptFacts>): PromptFacts => ({ bareAmount: false, yesOrNo: false, paymentWording: false, hasNumber: false, namesOpenDebt: false, ...facts });
 
 describe("pending follow-up outcome", () => {
   it("does nothing when no question is pending", () => {
@@ -37,9 +37,14 @@ describe("pending follow-up outcome", () => {
     expect(pendingOutcome("repayment_amount", prompt({ bareAmount: true, hasNumber: true }))).toBe("answer");
   });
 
-  it("replaces a pending repayment amount with a complete unrelated request", () => {
+  it("replaces a pending repayment or income question with a complete unrelated request", () => {
     expect(pendingOutcome("repayment_amount", prompt({ hasNumber: true }))).toBe("replace");
+    expect(pendingOutcome("repayment_payer", prompt({ hasNumber: true }))).toBe("replace");
     expect(pendingOutcome("ordinary_income", prompt({ hasNumber: true }))).toBe("replace");
+  });
+
+  it("answers a pending payer question when the reply names a person with an open debt", () => {
+    expect(pendingOutcome("repayment_payer", prompt({ hasNumber: true, namesOpenDebt: true }))).toBe("answer");
   });
 
   it("answers with payment wording, yes or no, or no amount", () => {
@@ -49,7 +54,7 @@ describe("pending follow-up outcome", () => {
   });
 
   it("keeps answering the other pending questions, which the code resolves from context", () => {
-    expect(pendingOutcome("repayment_payer", prompt({ hasNumber: true }))).toBe("answer");
     expect(pendingOutcome("clarification", prompt({ hasNumber: true }))).toBe("answer");
+    expect(pendingOutcome("account_or_date", prompt({ hasNumber: true }))).toBe("answer");
   });
 });
