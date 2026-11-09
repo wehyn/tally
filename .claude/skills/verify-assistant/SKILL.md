@@ -27,7 +27,7 @@ Not covered: bill follow-ups (`bill_*`), debt creation and `debt_transaction`, `
 
 ## Run it
 
-1. Real-code replay (needs `npm ci` once): `.claude/skills/verify-assistant/model/check.sh`. All 12 tests must pass.
+1. Real-code replay (needs `npm ci` once): `.claude/skills/verify-assistant/model/check.sh`. All 13 tests must pass.
 2. Model check. Use `/statechart` on `model/Assistant.tla` once per config, or run TLC directly with a `tla2tools.jar` (for example `java -cp tla2tools.jar tlc2.TLC -workers 4 -config model/core.cfg model/Assistant.tla` from `.claude/skills/verify-assistant`).
    - `model/core.cfg`: **must hold** (about 16k distinct states, a few seconds). A violation is a real break of a rule the code upholds at the sync commit.
    - `model/findings.cfg`: sets `Legacy = TRUE`, which replays the rules before the fixes. It **must fail** on the four invariants (`NoDuplicateIntentWrite`, `WriteNeedsConsent`, `FollowupSurvivesError`, `PlainPromptNotTrapped`). TLC reports the first one it reaches; to check a single invariant, put only that name on the `INVARIANTS` line.
@@ -40,7 +40,7 @@ Each finding is fixed and pinned by a replay in `model/conformance.test.ts` (des
 1. **Duplicate save** (`c6f5d5b`). The write and its reply used to commit separately. Now `commitTurn` runs them in one store transaction. A deleted chat makes the reply insert throw, which rolls the write back. Replayed by `NoDuplicateIntentWrite (fixed)`.
 2. **Save after consent withdrawn** (`d05bb50`). Access is checked again inside the commit transaction, before any write. The check lives in `commitTurn` itself, which every stored turn uses, so the local debt-list answer (no model call) is covered too; `tests/assistant-route.test.ts` pins that path ("refuses a local debt-list turn when consent is withdrawn while the request body streams"). Replayed by `WriteNeedsConsent (fixed)`.
 3. **Failed model call drops the question** (`3f73ccd`). The user message is stored with the turn's commit, not before the call. A failed call stores nothing, so the pending question stays last. Replayed by `FollowupSurvivesError (fixed)`.
-4. **Unrelated prompt is swallowed** (`25e864f` for a pending repayment amount or ordinary income question; `64efa45` for a pending repayment payer question). `pendingOutcome` in `src/lib/machines/assistant.ts` decides. A complete prompt that carries its own number and names no open debt replaces the question, and the prompt runs with no prior context. A bare amount, a yes or no, debt-payment wording, or a name with an open debt still answers it. Replayed by `PlainPromptNotTrapped (fixed)` and `PlainPromptNotTrapped (payer)`.
+4. **Unrelated prompt is swallowed** (`25e864f` for a pending repayment amount or ordinary income question; `64efa45` for a pending repayment payer question). `pendingOutcome` in `src/lib/machines/assistant.ts` decides. A complete prompt that carries its own number and its own subject word ("Coffee 120") and names no open debt replaces the question, and the prompt runs with no prior context. An amount-only reply in any common peso form ("500", "P500", "PHP 500", "500 po", "it was 500"), a yes or no, debt-payment wording, or a name with an open debt still answers it; doubtful wording resolves to answer, because a wrong replace drops the user's context. Replayed by `PlainPromptNotTrapped (fixed)`, `PlainPromptNotTrapped (payer)` and `PlainPromptNotTrapped (amount forms)`; the wording table is in `tests/assistant-machine.test.ts`.
 
 ## Telling a real bug from a modeling error
 

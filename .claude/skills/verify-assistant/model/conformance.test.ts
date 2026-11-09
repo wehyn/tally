@@ -112,7 +112,7 @@ describe("core: rules the model relies on", () => {
   });
 });
 
-describe("regressions: the four findings stay fixed", () => {
+describe("regressions: the findings stay fixed", () => {
   it("NoDuplicateIntentWrite (fixed): a chat deleted mid-flight saves nothing, and a resend saves once", async () => {
     provider(tool("ask_clarification", { question: "q" }));
     const { conversationId } = await (await ask("hello")).json();
@@ -150,6 +150,16 @@ describe("regressions: the four findings stay fixed", () => {
     const second = await (await ask("Coffee 120", conversationId)).json();
     expect(second.answer).not.toBe("What amount should I use for the repayment?");
     expect(second.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(txCount()).toBe(1);
+  });
+
+  it("PlainPromptNotTrapped (amount forms): an amount-only reply in a peso form answers the pending amount question instead of replacing it", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    const second = await (await ask("P500", conversationId)).json();
+    expect(second.answer).toContain("repayment from Ana");
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
     expect(txCount()).toBe(1);
   });
 

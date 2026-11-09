@@ -112,17 +112,30 @@ function repaymentAmountFromPrompt(prompt: string): number | undefined {
   if (!raw) return undefined;
   try { return parsePHPToMinor(raw) || undefined; } catch { return undefined; }
 }
-function bareAmountFromPrompt(prompt: string): number | undefined {
-  const match = /^\s*(₱\s*)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*(?:php|pesos?)?\s*[.!]?\s*$/i.exec(prompt);
-  if (!match) return undefined;
-  try { return parsePHPToMinor(`${match[1] ?? ""}${match[2]}${match[3] ? `.${match[3]}` : ""}`); } catch { return undefined; }
+// Words that can surround an amount in an answer to "how much?" without being a request of their own.
+const AMOUNT_ANSWER_WORDS: ReadonlySet<string> = new Set([
+  "p", "php", "peso", "pesos", "po", "opo", "lang", "na", "only", "just", "about", "around", "roughly", "approximately", "exactly",
+  "it", "its", "it's", "it’s", "that", "thats", "that's", "that’s", "is", "was", "the", "amount", "total", "please", "pls", "sorry", "thanks",
+]);
+// What is left of a prompt once the amount's peso marker and answer filler are removed.
+function withoutAmountAnswerWords(prompt: string): string {
+  return prompt.replace(/₱/g, " ").replace(/[\p{L}'’]+/gu, (word) => AMOUNT_ANSWER_WORDS.has(word.toLowerCase()) ? " " : word);
 }
-function promptFacts(prompt: string, openCounterparties: string[]): PromptFacts {
+function bareAmountFromPrompt(prompt: string): number | undefined {
+  const match = /^[\s.,!?]*(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?[\s.,!?]*$/.exec(withoutAmountAnswerWords(prompt));
+  if (!match) return undefined;
+  try { return parsePHPToMinor(`${match[1]}${match[2] ? `.${match[2]}` : ""}`); } catch { return undefined; }
+}
+// Letters that no amount or answer filler explains: the description of a request, such as "Coffee".
+function carriesOwnSubject(prompt: string): boolean {
+  return /\p{L}/u.test(withoutAmountAnswerWords(prompt).replace(/\d[\d,.]*/g, " "));
+}
+export function promptFacts(prompt: string, openCounterparties: string[]): PromptFacts {
   return {
-    bareAmount: bareAmountFromPrompt(prompt) !== undefined,
     yesOrNo: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that|no|nope|nah)\b/i.test(prompt),
     paymentWording: hasIncomingDebtRepaymentWording(prompt) || hasOutgoingDebtRepaymentWording(prompt),
     hasNumber: /\d/.test(prompt),
+    ownSubject: carriesOwnSubject(prompt),
     namesOpenDebt: openCounterparties.some((counterparty) => containsCounterparty(prompt, counterparty)),
   };
 }

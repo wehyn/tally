@@ -2172,6 +2172,26 @@ describe("assistant turn commit", () => {
     expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
   });
 
+  for (const reply of ["P500", "PHP 500", "500 pesos po", "it was 500"]) {
+    it(`records the repayment when "${reply}" answers the pending amount question`, async () => {
+      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+      const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+      expect(asked.answer).toBe("What amount should I use for the repayment?");
+
+      const second = vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+      vi.stubGlobal("fetch", second);
+      const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
+
+      const sent = JSON.parse(String((second.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
+      expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
+      expect(result.answer).toContain("repayment from Ana");
+      expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
+      expect(store.listTransactions(user.id)).toHaveLength(1);
+      expect(store.listTransactions(user.id)[0]).toMatchObject({ amountMinor: 50_000, kind: "debt_repayment", categoryName: null });
+    });
+  }
+
   it("handles a complete unrelated prompt as a new request while a repayment amount is pending", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));

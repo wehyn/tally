@@ -23,7 +23,7 @@ AllIntents == {"plain", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPa
 \* debtPay          "Ana paid me 500" and Ana has one open debt: confirmed repayment
 \* debtPayNoAmount  "Ana paid me": payer known, amount missing
 \* noMatchPay       "Zed paid me 500", no open debt for Zed
-\* amount           a bare number such as "500"
+\* amount           an amount-only reply: "500", "P500", "PHP 500", "500 po", "it was 500", "1,000.50"
 \* yes              a bare "yes"
 Kinds == {"none", "clarification", "ordinary_income", "repayment_amount", "repayment_payer"}
 
@@ -44,8 +44,9 @@ VARIABLES
 vars == <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs,
           wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain>>
 
-\* pendingOutcome (src/lib/machines/assistant.ts): a complete prompt that names no open debt replaces a
-\* pending repayment or income question, and the turn runs with no prior context.
+\* pendingOutcome (src/lib/machines/assistant.ts): a complete prompt that names no open debt and carries
+\* its own subject beside the number ("Coffee 120") replaces a pending repayment or income question, and
+\* the turn runs with no prior context. An amount-only reply in any common peso form never does.
 Outcome(i, p) ==
     IF ~Legacy /\ i = "plain" /\ p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
     THEN "replace" ELSE "answer"
