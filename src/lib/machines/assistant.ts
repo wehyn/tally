@@ -11,3 +11,11 @@ export function undoUntilFor(source: "manual" | "assistant", nowMs: number): str
 export function canUndo(row: { source: "manual" | "assistant"; undoUntil: string | null }, nowMs: number): boolean {
   return row.source === "assistant" && row.undoUntil !== null && nowMs <= Date.parse(row.undoUntil);
 }
+
+// Consent: "on" only while the opt-in matches the current provider disclosure. A disclosure change
+// turns "on" into "stale" without any write. Writes need "on" both before and after the model call.
+export type ConsentState = "off" | "on" | "stale";
+
+export function canWrite(consent: ConsentState): boolean {
+  return consent === "on";
+}

@@ -6,7 +6,7 @@ import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type 
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
 import { isFollowupKind, type FollowupKind } from "./assistant-followup";
-import { canUndo, undoUntilFor } from "./machines/assistant";
+import { canUndo, canWrite, undoUntilFor, type ConsentState } from "./machines/assistant";
 import { isManualTransactionKind, type ManualTransactionKind, type TransactionKind } from "./transaction-model";
 
 export { BILL_ICONS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji } from "./bill-icons";
@@ -1010,12 +1010,15 @@ export function createStore(db: Database.Database) {
       else db.prepare("DELETE FROM assistant_consents WHERE user_id=?").run(userId);
     }).immediate();
   }
-  function getAssistantOptIn(userId: string, disclosureHash?: string): boolean {
+  function getAssistantConsent(userId: string, disclosureHash?: string): ConsentState {
     const enabled = Boolean((db.prepare("SELECT assistant_opt_in FROM users WHERE id=?").get(userId) as { assistant_opt_in: number } | undefined)?.assistant_opt_in);
-    if (!enabled) return false;
-    if (!disclosureHash) return true;
+    if (!enabled) return "off";
+    if (!disclosureHash) return "on";
     const consent = db.prepare("SELECT disclosure_hash FROM assistant_consents WHERE user_id=?").get(userId) as { disclosure_hash: string } | undefined;
-    return consent?.disclosure_hash === disclosureHash;
+    return consent?.disclosure_hash === disclosureHash ? "on" : "stale";
+  }
+  function getAssistantOptIn(userId: string, disclosureHash?: string): boolean {
+    return canWrite(getAssistantConsent(userId, disclosureHash));
   }
 
   function createConversation(userId: string, title: string): string {

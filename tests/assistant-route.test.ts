@@ -2123,4 +2123,15 @@ describe("assistant turn commit", () => {
     expect(retried.status).toBe(200);
     expect(store.listTransactions(user.id)).toHaveLength(1);
   });
+
+  it("saves nothing when the assistant is turned off during the model call", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      store.setAssistantConsent(user.id, null);
+      return providerTool("log_transaction", { amount: "250", description: "lunch", kind: "expense", category: "Food" });
+    }));
+    const response = await POST(assistantRequest("Jollibee lunch 250"));
+
+    expect(response.status).toBe(403);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
 });

@@ -128,8 +128,8 @@ describe("FINDING: known bugs the model reports (a failure here means the bug wa
 
   it("WriteNeedsConsent: consent withdrawn while the provider call is in flight does not stop the write", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { store.setAssistantConsent(user.id, null); return tool("log_transaction", { amount: "250", description: "lunch", kind: "expense" }); }));
-    expect((await ask("Jollibee lunch 250")).status).toBe(200);
-    expect(txCount()).toBe(1);
+    expect((await ask("Jollibee lunch 250")).status).toBe(403);
+    expect(txCount()).toBe(0);
     expect(store.getAssistantOptIn(user.id)).toBe(false);
   });
 
