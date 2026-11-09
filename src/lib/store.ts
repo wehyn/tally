@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { debtAfterPayment, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
+import { nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
+import { acceptsAdvance, acceptsPayment, canChangeDirection, debtAfterPayment, nextDebtStatus, type DebtDirection, type DebtStatus } from "./machines/debt";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
@@ -35,8 +36,7 @@ export type TransactionUpdateInput = Omit<TransactionInput, "kind"> & { kind: Tr
 type DebtRepaymentTransactionInput = Omit<TransactionFields, "source"> & { kind: "debt_repayment"; categoryId?: never; destinationAccountId?: never };
 export type DebtPaymentInput = Omit<TransactionFields, "source"> & { kind?: never; categoryId?: never; destinationAccountId?: never };
 export type Transaction = { id: string; kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; debtId?: string; description: string; date: string; time: string | null; source: "manual" | "assistant"; categoryName: string | null; categoryIcon: CategoryIconId | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
-export type DebtDirection = "owed_to_you" | "you_owe";
-export type DebtStatus = "open" | "settled";
+export type { DebtDirection, DebtStatus };
 export type DebtActivity = {
   transactionId: string; date: string; time: string | null; kind: Exclude<TransactionKind, "transfer">; amountMinor: number;
   categoryName: string | null; accountName: string; description: string;
@@ -570,7 +570,7 @@ export function createStore(db: Database.Database) {
     return db.transaction(() => {
       const row = db.prepare("SELECT id,direction,status,amount_minor FROM debts WHERE id=? AND user_id=?").get(debtId, userId) as { id: string; direction: DebtDirection; status: DebtStatus; amount_minor: number } | undefined;
       if (!row) throw new Error("Debt not found.");
-      if (row.status !== "open") throw new Error("A settled debt cannot receive an advance transaction.");
+      if (!acceptsAdvance(row.status)) throw new Error("A settled debt cannot receive an advance transaction.");
       const expectedKind = row.direction === "owed_to_you" ? "expense" : "income";
       if (input.kind !== expectedKind) throw new Error(`This debt advance must be recorded as ${expectedKind}.`);
       if (input.amountMinor !== row.amount_minor) throw new Error("Debt advance transaction must match the debt amount.");
@@ -598,9 +598,10 @@ export function createStore(db: Database.Database) {
       dueDate: input.dueDate === undefined ? current.dueDate : input.dueDate,
       note: input.note ?? current.note,
     });
-    const status = input.status ?? current.status;
+    const status = nextDebtStatus(current.status, input.status);
     if (!(status === "open" || status === "settled")) throw new Error("Choose open or settled status.");
-    if (value.direction !== current.direction && db.prepare("SELECT 1 FROM transactions WHERE debt_id=? AND user_id=? LIMIT 1").get(debtId, userId)) {
+    const hasLinkedActivity = !!db.prepare("SELECT 1 FROM transactions WHERE debt_id=? AND user_id=? LIMIT 1").get(debtId, userId);
+    if (value.direction !== current.direction && !canChangeDirection(hasLinkedActivity)) {
       throw new Error("A debt with linked activity cannot change direction.");
     }
     const updatedAt = stamp();
@@ -832,7 +833,7 @@ export function createStore(db: Database.Database) {
         FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
       if (!row) throw new Error("Debt not found.");
       const debt = debtFromRow(row);
-      if (debt.status !== "open" || debt.direction !== "owed_to_you") throw new Error("Only an open debt owed to you can receive a payment.");
+      if (!acceptsPayment(debt, "owed_to_you")) throw new Error("Only an open debt owed to you can receive a payment.");
       if (["kind", "categoryId", "destinationAccountId", "source"].some((field) => Object.hasOwn(input, field))) {
         throw new Error("A debt repayment accepts only the payment details.");
       }
@@ -854,7 +855,7 @@ export function createStore(db: Database.Database) {
         FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
       if (!row) throw new Error("Debt not found.");
       const debt = debtFromRow(row);
-      if (debt.status !== "open" || debt.direction !== "you_owe") throw new Error("Only an open debt you owe can receive a repayment.");
+      if (!acceptsPayment(debt, "you_owe")) throw new Error("Only an open debt you owe can receive a repayment.");
       if (input.kind !== "expense") throw new Error("A debt repayment you make must be recorded as an expense.");
       const paymentInput = { ...input, kind: "expense" as const, source: "assistant" as const };
       assertTransactionInput(userId, paymentInput);

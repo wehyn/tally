@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { debtAfterPayment, nextGoalStatus, nextMembershipStatus } from "../src/lib/lifecycle";
+import { nextGoalStatus, nextMembershipStatus } from "../src/lib/lifecycle";
 
 describe("goal lifecycle", () => {
   it("completes at the target and reopens when it is raised or contributions drop", () => {
@@ -14,15 +14,6 @@ describe("goal lifecycle", () => {
   it("never leaves archived", () => {
     expect(nextGoalStatus("archived", 500, 100)).toBe("archived");
     expect(nextGoalStatus("archived", 0, 100)).toBe("archived");
-  });
-});
-
-describe("debt lifecycle", () => {
-  it("stays open with the remaining balance after a partial payment", () => {
-    expect(debtAfterPayment(1000, 400)).toEqual({ amountMinor: 600, status: "open" });
-  });
-  it("settles on full payment and keeps the last outstanding balance", () => {
-    expect(debtAfterPayment(1000, 1000)).toEqual({ amountMinor: 1000, status: "settled" });
   });
 });
 
