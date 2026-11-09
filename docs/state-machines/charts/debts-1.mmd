@@ -1,31 +1,29 @@
+---
+title: "A debt from first record to deletion"
+---
 stateDiagram-v2
+  state "Legend" as legend {
+    lg0: blue
+    lg1: teal
+    lg2: tan
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 tan
   s0: Open
   s1: Open, partly repaid
   s2: Settled
   s3: Deleted (transactions stay, unlinked)
-  s4: Reopened (screen and history disagree)
   [*] --> s0
   s0 --> s2: last payment is recorded or you press Settle
   s0 --> s3: you delete the debt
   s0 --> s1: a partial payment is recorded
   s1 --> s2: you press Settle or last payment is recorded
   s1 --> s3: you delete the debt
-  s2 --> s4: you press Reopen
   s2 --> s3: you delete the debt
-  s2 --> s0: you press Reopen
   s2 --> s1: you press Reopen
-  s4 --> s2: you press Settle or last payment is recorded
-  s4 --> s3: you delete the debt
-  classDef breaks fill:#ffecee,stroke:#e72e3b,stroke-width:2.5px,color:#cd2834
-  classDef mayBreak fill:#fff3e6,stroke:#e8730c,stroke-width:2.5px,color:#b85a06
+  s2 --> s0: you press Reopen
   class s0 blue
-  class s0 bugPath
   class s1 blue
   class s2 teal
-  class s2 mayBreak
-  class s2 bugPath
   class s3 tan
-  class s3 mayBreak
-  class s4 orange
-  class s4 breaks
-  class s4 bugPath

@@ -13,7 +13,7 @@ export const state = (v) => {
 };
 export const group = (v) => (v.acct.length === 0 ? "tan" : v.txn[1].kind === "none" ? "blue" : "teal");
 export const colors = { tan: "tan", blue: "blue", teal: "teal" };
-export const step = (action, from, to) => {
+export const step = (action, from) => {
   switch (action) {
     case "CreateAccount": return from.acct.length === 0 ? "you add your first account (it becomes the default)" : "you add another account";
     case "SetDefault": return "you pick the default account";
