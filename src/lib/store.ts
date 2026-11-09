@@ -9,6 +9,7 @@ import { canScheduleDueDate, planPosting, type BillSchedule } from "./machines/b
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
 import { isFollowupKind, type FollowupKind } from "./assistant-followup";
+import { canUndo, canWrite, undoUntilFor, type ConsentState } from "./machines/assistant";
 import { isManualTransactionKind, type ManualTransactionKind, type TransactionKind } from "./transaction-model";
 
 export { BILL_ICONS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji } from "./bill-icons";
@@ -877,7 +878,7 @@ export function createStore(db: Database.Database) {
       const transactionInput = { ...input, time };
       assertTransactionInput(userId, transactionInput);
       const source = input.source ?? "manual";
-      const undoUntil = source === "assistant" ? new Date(Date.now() + 10_000).toISOString() : null;
+      const undoUntil = undoUntilFor(source, Date.now());
       return insertTransaction(userId, transactionInput, { source, undoUntil });
     }).immediate();
   }
@@ -983,7 +984,7 @@ export function createStore(db: Database.Database) {
       const row = db.prepare("SELECT source,undo_until,debt_id FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { source: string; undo_until: string | null; debt_id: string | null } | undefined;
       if (!row) throw new Error("Transaction not found.");
       if (row.debt_id) throw new Error("A transaction linked to a debt cannot be deleted. Delete the debt first.");
-      if (undoOnly && (row.source !== "assistant" || !row.undo_until || Date.now() > Date.parse(row.undo_until))) throw new Error("The 10-second Undo period has expired.");
+      if (undoOnly && !canUndo({ source: row.source as "manual" | "assistant", undoUntil: row.undo_until }, Date.now())) throw new Error("The 10-second Undo period has expired.");
       db.prepare("DELETE FROM transactions WHERE id=? AND user_id=?").run(id, userId);
       assertLedgerTotalsSafe(userId);
     }).immediate();
@@ -1064,12 +1065,15 @@ export function createStore(db: Database.Database) {
       else db.prepare("DELETE FROM assistant_consents WHERE user_id=?").run(userId);
     }).immediate();
   }
-  function getAssistantOptIn(userId: string, disclosureHash?: string): boolean {
+  function getAssistantConsent(userId: string, disclosureHash?: string): ConsentState {
     const enabled = Boolean((db.prepare("SELECT assistant_opt_in FROM users WHERE id=?").get(userId) as { assistant_opt_in: number } | undefined)?.assistant_opt_in);
-    if (!enabled) return false;
-    if (!disclosureHash) return true;
+    if (!enabled) return "off";
+    if (!disclosureHash) return "on";
     const consent = db.prepare("SELECT disclosure_hash FROM assistant_consents WHERE user_id=?").get(userId) as { disclosure_hash: string } | undefined;
-    return consent?.disclosure_hash === disclosureHash;
+    return consent?.disclosure_hash === disclosureHash ? "on" : "stale";
+  }
+  function getAssistantOptIn(userId: string, disclosureHash?: string): boolean {
+    return canWrite(getAssistantConsent(userId, disclosureHash));
   }
 
   function createConversation(userId: string, title: string): string {
@@ -1271,6 +1275,9 @@ export function createStore(db: Database.Database) {
       db.prepare("DELETE FROM users WHERE id=?").run(userId);
     }).immediate();
   }
+  function transaction<T>(work: () => T): T {
+    return db.transaction(work).immediate();
+  }
   function deleteAllConversations(userId: string): void {
     db.prepare("DELETE FROM conversations WHERE user_id=?").run(userId);
   }
@@ -1282,7 +1289,7 @@ export function createStore(db: Database.Database) {
     listDebts, listDebtPayments, debtBalanceFromPayments, createDebt, updateDebt, deleteDebt, recordDebtAdvance, recordDebtAdvanceTransaction, recordDebtPayment, recordDebtRepayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
-    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,
+    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations, transaction,
     createGoal, listGoals, inviteToGoal, respondInvitation, listInvitations, updateGoal, changeMembership, addContribution, updateContribution,
     deleteContribution, deleteAccountOwner,
   };

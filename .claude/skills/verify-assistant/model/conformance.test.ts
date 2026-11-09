@@ -1,6 +1,5 @@
 // Pins the facts that Assistant.tla assumes about the real code. If one of these fails, either
 // the code broke a rule the model relies on, or the code changed and the model must be updated.
-// "FINDING" tests pass while a known bug exists (see SKILL.md); a failure there means it was fixed.
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStore } from "../../../../src/lib/store";
@@ -113,27 +112,27 @@ describe("core: rules the model relies on", () => {
   });
 });
 
-describe("FINDING: known bugs the model reports (a failure here means the bug was fixed)", () => {
-  it("NoDuplicateIntentWrite: a chat deleted mid-flight still saves, the reply fails, a resend saves again", async () => {
+describe("regressions: the four findings stay fixed", () => {
+  it("NoDuplicateIntentWrite (fixed): a chat deleted mid-flight saves nothing, and a resend saves once", async () => {
     provider(tool("ask_clarification", { question: "q" }));
     const { conversationId } = await (await ask("hello")).json();
     vi.stubGlobal("fetch", vi.fn(async () => { store.deleteConversation(user.id, conversationId); return tool("log_transaction", { amount: "250", description: "lunch", kind: "expense" }); }));
     const failed = await ask("Jollibee lunch 250", conversationId);
     expect(failed.status).toBe(404);
-    expect(txCount()).toBe(1);
+    expect(txCount()).toBe(0);
     provider(tool("log_transaction", { amount: "250", description: "lunch", kind: "expense" }));
     expect((await ask("Jollibee lunch 250")).status).toBe(200);
-    expect(txCount()).toBe(2);
+    expect(txCount()).toBe(1);
   });
 
-  it("WriteNeedsConsent: consent withdrawn while the provider call is in flight does not stop the write", async () => {
+  it("WriteNeedsConsent (fixed): consent withdrawn while the provider call is in flight stops the write", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { store.setAssistantConsent(user.id, null); return tool("log_transaction", { amount: "250", description: "lunch", kind: "expense" }); }));
-    expect((await ask("Jollibee lunch 250")).status).toBe(200);
-    expect(txCount()).toBe(1);
+    expect((await ask("Jollibee lunch 250")).status).toBe(403);
+    expect(txCount()).toBe(0);
     expect(store.getAssistantOptIn(user.id)).toBe(false);
   });
 
-  it("FollowupSurvivesError: a provider failure drops the pending question from the next request's context", async () => {
+  it("FollowupSurvivesError (fixed): a provider failure keeps the pending question in the next request's context", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     provider(tool("record_debt_payment", { counterparty: "Ana" }));
     const { conversationId } = await (await ask("Ana paid me")).json();
@@ -141,15 +140,26 @@ describe("FINDING: known bugs the model reports (a failure here means the bug wa
     expect((await ask("500", conversationId)).status).toBe(400);
     const bodies = provider(tool("ask_clarification", { question: "q" }));
     await ask("500", conversationId);
-    expect(JSON.stringify(bodies[0].messages)).not.toContain("Ana paid me");
+    expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
   });
 
-  it("PlainPromptNotTrapped: a complete unrelated prompt is swallowed by a pending repayment-amount question", async () => {
+  it("PlainPromptNotTrapped (fixed): a complete unrelated prompt is not swallowed by a pending repayment-amount question", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
-    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("log_transaction", { amount: "120", description: "coffee" }));
+    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" }));
     const { conversationId } = await (await ask("Ana paid me")).json();
     const second = await (await ask("Coffee 120", conversationId)).json();
-    expect(second.answer).toBe("What amount should I use for the repayment?");
-    expect(txCount()).toBe(0);
+    expect(second.answer).not.toBe("What amount should I use for the repayment?");
+    expect(second.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(txCount()).toBe(1);
+  });
+
+  it("PlainPromptNotTrapped (payer): a complete unrelated prompt is not swallowed by a pending payer question", async () => {
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
+    provider(tool("record_debt_repayment", { counterparty: "Mom", amount: "100" }), tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" }));
+    const { conversationId } = await (await ask("I paid Mom and Dad 100")).json();
+    const second = await (await ask("Coffee 120", conversationId)).json();
+    expect(second.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(txCount()).toBe(1);
   });
 });
