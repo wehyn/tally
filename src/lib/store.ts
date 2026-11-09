@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { debtAfterPayment, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
-import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
+import { isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
+import { planPosting, type BillSchedule } from "./machines/bill";
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
 import { isFollowupKind, type FollowupKind } from "./assistant-followup";
@@ -679,6 +680,12 @@ export function createStore(db: Database.Database) {
       archivedAt: row.archived_at ? String(row.archived_at) : null,
     };
   }
+  function billSchedule(row: Record<string, unknown>): BillSchedule {
+    return {
+      nextDueDate: String(row.next_due_date), endDate: row.end_date == null ? null : String(row.end_date), archived: row.archived_at != null,
+      frequency: row.frequency as BillFrequency, anchorDay: Number(row.anchor_day), anchorMonth: Number(row.anchor_month),
+    };
+  }
   const billSelect = `SELECT b.*,a.name AS account_name,c.name AS category_name FROM bills b
     JOIN financial_accounts a ON a.id=b.account_id JOIN categories c ON c.id=b.category_id`;
   function listBills(userId: string): Bill[] {
@@ -757,22 +764,24 @@ export function createStore(db: Database.Database) {
         try {
           posted = db.transaction(() => {
             const row = db.prepare("SELECT * FROM bills WHERE id=? AND user_id=? AND archived_at IS NULL").get(candidate.id, candidate.user_id) as Record<string, unknown> | undefined;
-            if (!row || String(row.next_due_date) > today) return false;
+            if (!row) return false;
             dueDate = String(row.next_due_date);
-            if (row.end_date != null && dueDate > String(row.end_date)) {
+            const plan = planPosting(billSchedule(row), today);
+            if (plan.kind === "none") return false;
+            if (plan.kind === "end") {
               db.prepare("UPDATE bills SET archived_at=?,updated_at=? WHERE id=? AND user_id=? AND archived_at IS NULL").run(stamp(), stamp(), candidate.id, candidate.user_id);
               return false;
             }
+            dueDate = plan.dueDate;
             const tx: TransactionInput = { kind: "expense", amountMinor: safeMinorNumber(row.amount_minor, "Bill amount"), accountId: String(row.account_id), categoryId: String(row.category_id), description: String(row.name), date: dueDate };
             assertTransactionInput(candidate.user_id, tx);
             const id = randomUUID();
             db.prepare(`INSERT INTO transactions(id,user_id,kind,amount_minor,account_id,category_id,description,date,time,source,undo_until,created_at)
               VALUES(?,?,'expense',?,?,?,?,?,NULL,'manual',NULL,?)`).run(id, candidate.user_id, tx.amountMinor, tx.accountId, tx.categoryId, tx.description, dueDate, stamp());
             assertLedgerTotalsSafe(candidate.user_id);
-            const nextDueDate = advanceBillDate(dueDate, row.frequency as BillFrequency, Number(row.anchor_day), Number(row.anchor_month));
-            const ended = row.end_date != null && nextDueDate > String(row.end_date);
+            const ended = plan.outcome === "ended";
             const advanced = db.prepare("UPDATE bills SET next_due_date=?,archived_at=CASE WHEN ? THEN ? ELSE archived_at END,updated_at=? WHERE id=? AND archived_at IS NULL AND next_due_date=?")
-              .run(nextDueDate, ended ? 1 : 0, ended ? stamp() : null, stamp(), candidate.id, dueDate);
+              .run(plan.nextDueDate, ended ? 1 : 0, ended ? stamp() : null, stamp(), candidate.id, dueDate);
             if (!advanced.changes) throw new Error("Bill schedule changed while posting.");
             return true;
           }).immediate();
