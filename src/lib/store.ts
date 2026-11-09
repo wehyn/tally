@@ -1096,7 +1096,7 @@ export function createStore(db: Database.Database) {
       t.date AS transactionDate,t.time AS transactionTime,c.name AS categoryName,a.name AS accountName,t.source,t.undo_until AS undoUntil
       FROM assistant_messages m LEFT JOIN transactions t ON t.id=m.transaction_id
       LEFT JOIN categories c ON c.id=t.category_id LEFT JOIN financial_accounts a ON a.id=t.account_id
-      WHERE m.user_id=? AND m.conversation_id=? ORDER BY m.created_at,m.rowid`).all(userId, id) as Record<string, unknown>[];
+      WHERE m.user_id=? AND m.conversation_id=? ORDER BY m.rowid`).all(userId, id) as Record<string, unknown>[];
     return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), followup: followupFromRow(message), debtId: message.messageDebtId ? String(message.messageDebtId) : null, contextStart: Boolean(message.contextStart),
       transaction: message.transactionId ? {
         id: String(message.transactionId), kind: message.kind as TransactionKind, amountMinor: Number(message.amountMinor), accountId: String(message.accountId),
@@ -1110,11 +1110,9 @@ export function createStore(db: Database.Database) {
     if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");
     const now = stamp();
     // A user message keeps the time its request was received, which relative dates in later follow-ups read.
-    // No message is stamped before the one already stored, so a reply never sorts ahead of its prompt.
-    const latest = (db.prepare("SELECT MAX(created_at) AS latest FROM assistant_messages WHERE conversation_id=?").get(conversationId) as { latest: string | null }).latest ?? "";
-    const messageTime = [createdAt ?? now, latest].reduce((a, b) => (a >= b ? a : b));
-    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,context_start,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, contextStart ? 1 : 0, messageTime);
-    db.prepare("UPDATE conversations SET updated_at=? WHERE id=? AND user_id=?").run(messageTime >= now ? messageTime : now, conversationId, userId);
+    // The turn commits prompt then reply in one transaction, so rowid order is their order whatever the clock did.
+    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,context_start,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, contextStart ? 1 : 0, createdAt ?? now);
+    db.prepare("UPDATE conversations SET updated_at=? WHERE id=? AND user_id=?").run(now, conversationId, userId);
   }
   function deleteConversation(userId: string, id: string): void {
     const result = db.prepare("DELETE FROM conversations WHERE id=? AND user_id=?").run(id, userId);

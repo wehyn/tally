@@ -2182,6 +2182,24 @@ describe("assistant turn commit", () => {
     expect(store.getConversation(user.id, saved.conversationId)!.messages[0].createdAt).toBe("2026-10-09T15:59:59.000Z");
   });
 
+  it("keeps today relative to when the request arrived when the clock moves backwards", async () => {
+    vi.setSystemTime(new Date("2026-10-09T16:00:01.000Z"));
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "How can I help?" })));
+    const started = await (await POST(assistantRequest("hello"))).json();
+
+    vi.setSystemTime(new Date("2026-10-09T15:59:59.000Z"));
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "How much was lunch?" })));
+    await POST(assistantRequest("lunch today", started.conversationId));
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "250", category: "Food", description: "lunch" })));
+    const result = await (await POST(assistantRequest("250", started.conversationId))).json();
+
+    expect(result.transaction.date).toBe("2026-10-09");
+    const stored = store.getConversation(user.id, started.conversationId)!.messages;
+    expect(stored.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+    expect(stored[2].createdAt).toBe("2026-10-09T15:59:59.000Z");
+  });
+
   it("keeps the pending repayment question and its earlier context when the model call fails", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));

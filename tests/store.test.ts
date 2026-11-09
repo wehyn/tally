@@ -345,11 +345,10 @@ describe("owner-scoped ledger", () => {
     const messages = store.getConversation(user.id, conversationId)!.messages;
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[0].createdAt).toBe("2026-10-09T15:59:59.000Z");
-    expect(messages[1].createdAt >= messages[0].createdAt).toBe(true);
   });
 
-  it("never stamps a message earlier than the latest message in its conversation", () => {
-    const user = store.registerUser("monotonic_messages", "hash");
+  it("keeps each message's own time and lists a conversation in insertion order when the clock goes backwards", () => {
+    const user = store.registerUser("backwards_clock_messages", "hash");
     const conversationId = store.createConversation(user.id, "Chat");
     store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, false, "2999-01-01T00:00:00.000Z");
     store.addMessage(user.id, conversationId, "assistant", "reply");
@@ -357,7 +356,8 @@ describe("owner-scoped ledger", () => {
 
     const messages = store.getConversation(user.id, conversationId)!.messages;
     expect(messages.map((message) => message.content)).toEqual(["first", "reply", "second"]);
-    expect(messages.map((message) => message.createdAt)).toEqual(["2999-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z"]);
+    expect(messages[0].createdAt).toBe("2999-01-01T00:00:00.000Z");
+    expect(messages[2].createdAt).toBe("2026-10-09T00:00:00.000Z");
   });
 
   it("adds a nullable time column to legacy transactions without inventing event times", () => {
