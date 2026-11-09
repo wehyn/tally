@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { debtAfterPayment } from "./lifecycle";
-import { nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./machines/goal";
+import { answerInvitation, contributionRefusal, decideSuccession, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus, type SuccessionMember } from "./machines/goal";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
@@ -334,8 +334,13 @@ export function createStore(db: Database.Database) {
   }
   function setUserEnabled(adminId: string, userId: string, enabled: boolean): void {
     if (adminId === userId) throw new Error("You cannot disable your own admin account.");
-    const result = db.prepare("UPDATE users SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, userId);
-    if (!result.changes) throw new Error("User not found.");
+    db.transaction(() => {
+      const result = db.prepare("UPDATE users SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, userId);
+      if (!result.changes) throw new Error("User not found.");
+      if (enabled) return;
+      const managed = db.prepare("SELECT id FROM goals WHERE manager_id=? AND status!='archived'").all(userId) as { id: string }[];
+      for (const goal of managed) succession(goal.id, userId);
+    }).immediate();
   }
   function setResetCredential(userId: string, hash: string, expiresAt: string): void {
     const result = db.prepare("UPDATE users SET reset_token_hash = ?, reset_expires_at = ? WHERE id = ?").run(hash, expiresAt, userId);
@@ -1099,10 +1104,14 @@ export function createStore(db: Database.Database) {
     else db.prepare("INSERT INTO goal_members(id,goal_id,user_id,username_snapshot,status,invited_at) VALUES(?,?,?,?, 'invited',?)").run(randomUUID(), goalId, invitee.id, invitee.username, stamp());
   }
   function respondInvitation(userId: string, membershipId: string, accept: boolean): void {
-    const next = nextMembershipStatus("invited", accept ? "accept" : "decline")!;
-    const result = db.prepare("UPDATE goal_members SET status=?,accepted_at=? WHERE id=? AND user_id=? AND status='invited'")
-      .run(next, accept ? stamp() : null, membershipId, userId);
-    if (!result.changes) throw new Error("Invitation not found or already answered.");
+    db.transaction(() => {
+      const row = db.prepare("SELECT g.status FROM goal_members m JOIN goals g ON g.id=m.goal_id WHERE m.id=? AND m.user_id=? AND m.status='invited'")
+        .get(membershipId, userId) as { status: GoalStatus } | undefined;
+      if (!row) throw new Error("Invitation not found or already answered.");
+      const next = answerInvitation(row.status, accept);
+      if (!next) throw new Error("This goal is archived.");
+      db.prepare("UPDATE goal_members SET status=?,accepted_at=? WHERE id=?").run(next, accept ? stamp() : null, membershipId);
+    }).immediate();
   }
   function listInvitations(userId: string) {
     return db.prepare(`SELECT m.id,g.id AS goalId,g.name AS goalName,u.username AS managerName,m.invited_at AS invitedAt
@@ -1126,10 +1135,16 @@ export function createStore(db: Database.Database) {
     db.prepare(`UPDATE goals SET ${updates.join(",")} WHERE id=?`).run(...args, goalId);
   }
   function succession(goalId: string, outgoingUserId: string): void {
-    const successor = db.prepare(`SELECT m.user_id FROM goal_members m JOIN users u ON u.id=m.user_id
-      WHERE m.goal_id=? AND m.status='accepted' AND m.user_id!=? AND u.enabled=1 ORDER BY m.accepted_at,m.invited_at LIMIT 1`).get(goalId, outgoingUserId) as { user_id: string } | undefined;
-    if (successor) db.prepare("UPDATE goals SET manager_id=? WHERE id=?").run(successor.user_id, goalId);
-    else db.prepare("UPDATE goals SET manager_id=NULL,status='archived' WHERE id=?").run(goalId);
+    const members = (db.prepare(`SELECT m.user_id AS userId,m.status,m.accepted_at AS acceptedAt,m.invited_at AS invitedAt,u.enabled
+      FROM goal_members m JOIN users u ON u.id=m.user_id WHERE m.goal_id=? AND m.user_id IS NOT NULL`).all(goalId) as (Omit<SuccessionMember, "enabled"> & { enabled: number })[])
+      .map((row): SuccessionMember => ({ ...row, enabled: row.enabled === 1 }));
+    const next = decideSuccession(outgoingUserId, members);
+    if ("managerId" in next) {
+      db.prepare("UPDATE goals SET manager_id=? WHERE id=?").run(next.managerId, goalId);
+      return;
+    }
+    db.prepare("UPDATE goals SET manager_id=NULL,status='archived' WHERE id=?").run(goalId);
+    db.prepare("UPDATE goal_members SET status='left' WHERE goal_id=? AND status='accepted'").run(goalId);
   }
   function changeMembership(actorId: string, goalId: string, targetUserId: string, action: "leave" | "remove"): void {
     const goal = requireGoalMember(actorId, goalId);
@@ -1143,8 +1158,9 @@ export function createStore(db: Database.Database) {
   }
   function addContribution(userId: string, goalId: string, input: { amountMinor: number; note?: string; date: string }): string {
     const goal = requireGoalMember(userId, goalId);
-    if (goal.status === "completed") throw new Error("This goal is complete. Its manager must raise the target before continuing.");
-    if (goal.status === "archived") throw new Error("This goal is archived.");
+    const refusal = contributionRefusal(goal.status as GoalStatus);
+    if (refusal === "completed") throw new Error("This goal is complete. Its manager must raise the target before continuing.");
+    if (refusal === "archived") throw new Error("This goal is archived.");
     if (!validMoney(input.amountMinor) || !isDateOnly(input.date) || (input.note ?? "").length > 200) throw new Error("Enter a valid contribution amount, date, and note.");
     const username = (db.prepare("SELECT username FROM users WHERE id=?").get(userId) as { username: string }).username;
     const id = randomUUID(); const now = stamp();

@@ -27,3 +27,44 @@ export function nextMembershipStatus(current: MembershipStatus | null, action: M
   const move = MEMBERSHIP_MOVES[action];
   return move.from.includes(current) ? move.to : null;
 }
+
+// Invitations: an archived goal takes no new accepted member, so its invitations cannot be accepted.
+// Declining still records the answer ("left") and adds no member.
+export function answerInvitation(goal: GoalStatus, accept: boolean): MembershipStatus | null {
+  if (accept && goal === "archived") return null;
+  return nextMembershipStatus("invited", accept ? "accept" : "decline");
+}
+
+// Contributions: only an active goal takes them. The refusal names why, for the caller's message.
+export type ContributionRefusal = "completed" | "archived";
+
+export function contributionRefusal(goal: GoalStatus): ContributionRefusal | null {
+  if (goal === "active") return null;
+  return goal;
+}
+
+// Succession: when the manager leaves or is disabled, the earliest accepted, enabled member other
+// than the outgoing one takes over. No such member means the goal archives. The store also closes
+// every accepted membership on archive, so an archived goal has no accepted member.
+export type SuccessionMember = {
+  userId: string;
+  status: MembershipStatus;
+  acceptedAt: string | null;
+  invitedAt: string;
+  enabled: boolean;
+};
+export type Succession = { managerId: string } | { archive: true };
+
+export function decideSuccession(outgoingUserId: string, members: readonly SuccessionMember[]): Succession {
+  const successor = members
+    .filter((member) => member.status === "accepted" && member.enabled && member.userId !== outgoingUserId)
+    .sort((a, b) => compareNullableAsc(a.acceptedAt, b.acceptedAt) || compareNullableAsc(a.invitedAt, b.invitedAt))[0];
+  return successor ? { managerId: successor.userId } : { archive: true };
+}
+
+function compareNullableAsc(a: string | null, b: string | null): number {
+  if (a === b) return 0;
+  if (a === null) return -1;
+  if (b === null) return 1;
+  return a < b ? -1 : 1;
+}
