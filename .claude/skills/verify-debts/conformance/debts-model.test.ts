@@ -91,17 +91,26 @@ describe("model: EditAmount / Settle / EditDirection / Delete", () => {
   });
 });
 
-// KNOWN FINDING (see SKILL.md, finding 1). These tests pin today's behavior. When the code is fixed they
-// fail on purpose: update the model's Debts.cfg expectations and this block together.
-describe("model: Reopen and settled edits (known finding)", () => {
-  it("reopening a debt that payments settled leaves the payment history at zero while the screen shows the old amount", () => {
+// Reopen and settled edits: fixed in the machine (src/lib/machines/debt.ts, historyAdjustmentForUpdate).
+describe("model: Reopen and settled edits", () => {
+  it("reopening a payment-settled debt keeps history equal to the amount; the next payment settles it without going negative", () => {
     const debt = store.createDebt(ownerId, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
     pay(debt.id, 1_000);
     store.updateDebt(ownerId, debt.id, { status: "open" });
     const reopened = debtOf(debt.id);
     expect(reopened).toMatchObject({ status: "open", amountMinor: 1_000 });
-    expect(store.debtBalanceFromPayments(ownerId, reopened)).toBe(0); // violates OpenAmountMatchesHistory
+    expect(store.debtBalanceFromPayments(ownerId, reopened)).toBe(1_000); // OpenAmountMatchesHistory
     pay(debt.id, 1_000);
-    expect(store.debtBalanceFromPayments(ownerId, debt)).toBe(-1_000); // violates HistoryNeverNegative
+    expect(debtOf(debt.id)).toMatchObject({ status: "settled", amountMinor: 1_000 });
+    expect(store.debtBalanceFromPayments(ownerId, debt)).toBe(0); // HistoryNeverNegative
+  });
+  it("an amount edit on a settled debt writes no adjustment; reopening then matches the reopened amount", () => {
+    const debt = store.createDebt(ownerId, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+    pay(debt.id, 1_000);
+    store.updateDebt(ownerId, debt.id, { amountMinor: 600 });
+    expect(store.listDebtPayments(ownerId, debt.id)).toHaveLength(1);
+    expect(store.debtBalanceFromPayments(ownerId, debt)).toBe(0); // HistoryNeverNegative
+    store.updateDebt(ownerId, debt.id, { status: "open" });
+    expect(store.debtBalanceFromPayments(ownerId, debtOf(debt.id))).toBe(600); // OpenAmountMatchesHistory
   });
 });

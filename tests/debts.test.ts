@@ -623,7 +623,7 @@ describe("personal debt register", () => {
     expect(store.debtBalanceFromPayments(owner.id, debt)).toBe(1_400);
   });
 
-  it("sums payment deltas exactly beyond JavaScript safe integers", () => {
+  it("reopens a payment-settled debt at its largest safe amount without losing precision", () => {
     const owner = store.registerUser("debt_exact_payment_sum", "hash");
     const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
     const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: Number.MAX_SAFE_INTEGER });
@@ -631,9 +631,65 @@ describe("personal debt register", () => {
     store.recordDebtPayment(owner.id, debt.id, {
       amountMinor: Number.MAX_SAFE_INTEGER, accountId: account.id, description: "Mina paid me", date: "2026-10-11",
     });
-    store.updateDebt(owner.id, debt.id, { amountMinor: 1, status: "open" });
+    store.updateDebt(owner.id, debt.id, { amountMinor: Number.MAX_SAFE_INTEGER - 1, status: "open" });
 
-    expect(store.debtBalanceFromPayments(owner.id, debt)).toBe(-9_007_199_254_740_990);
+    expect(store.debtBalanceFromPayments(owner.id, debt)).toBe(Number.MAX_SAFE_INTEGER - 1);
+  });
+
+  it("reopening a payment-settled debt writes an adjustment so history matches the reopened amount", () => {
+    const owner = store.registerUser("debt_reopen_history", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+    store.recordDebtPayment(owner.id, debt.id, { amountMinor: 1_000, accountId: account.id, description: "Mina paid me", date: "2026-10-11" });
+    const cashBefore = store.listAccounts(owner.id)[0].balanceMinor;
+
+    const reopened = store.updateDebt(owner.id, debt.id, { status: "open" });
+
+    expect(reopened).toMatchObject({ status: "open", amountMinor: 1_000 });
+    expect(store.debtBalanceFromPayments(owner.id, reopened)).toBe(1_000);
+    expect(store.listDebtPayments(owner.id, debt.id).at(-1)).toMatchObject({ kind: "adjustment", amountMinor: 1_000, deltaMinor: 1_000, reason: "reopened", transactionId: null });
+    expect(store.listAccounts(owner.id)[0].balanceMinor).toBe(cashBefore);
+
+    store.recordDebtPayment(owner.id, debt.id, { amountMinor: 1_000, accountId: account.id, description: "Mina paid me again", date: "2026-10-12" });
+    expect(store.listDebts(owner.id)[0]).toMatchObject({ status: "settled", amountMinor: 1_000 });
+    expect(store.debtBalanceFromPayments(owner.id, debt)).toBe(0);
+  });
+
+  it("reopening a settled debt with a new amount makes the history equal that amount", () => {
+    const owner = store.registerUser("debt_reopen_edit", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+    store.recordDebtPayment(owner.id, debt.id, { amountMinor: 1_000, accountId: account.id, description: "Mina paid me", date: "2026-10-11" });
+
+    const reopened = store.updateDebt(owner.id, debt.id, { status: "open", amountMinor: 700 });
+
+    expect(reopened).toMatchObject({ status: "open", amountMinor: 700 });
+    expect(store.debtBalanceFromPayments(owner.id, reopened)).toBe(700);
+    expect(store.listDebtPayments(owner.id, debt.id).at(-1)).toMatchObject({ kind: "adjustment", deltaMinor: 700, reason: "reopened" });
+  });
+
+  it("editing a settled debt's amount writes no adjustment and keeps history non-negative", () => {
+    const owner = store.registerUser("debt_settled_edit", "hash");
+    const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+    store.recordDebtPayment(owner.id, debt.id, { amountMinor: 1_000, accountId: account.id, description: "Mina paid me", date: "2026-10-11" });
+    const rowsBefore = store.listDebtPayments(owner.id, debt.id).length;
+
+    const edited = store.updateDebt(owner.id, debt.id, { amountMinor: 600 });
+
+    expect(edited).toMatchObject({ status: "settled", amountMinor: 600 });
+    expect(store.listDebtPayments(owner.id, debt.id)).toHaveLength(rowsBefore);
+    expect(store.debtBalanceFromPayments(owner.id, edited)).toBe(0);
+  });
+
+  it("settling an open debt with a new amount keeps history at that amount", () => {
+    const owner = store.registerUser("debt_open_edit_settle", "hash");
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Mina", amountMinor: 1_000 });
+
+    const settled = store.updateDebt(owner.id, debt.id, { amountMinor: 1_400, status: "settled" });
+
+    expect(settled).toMatchObject({ status: "settled", amountMinor: 1_400 });
+    expect(store.debtBalanceFromPayments(owner.id, settled)).toBe(1_400);
   });
 
   it("does not record payment history when an update leaves the amount unchanged", () => {
