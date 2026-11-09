@@ -2104,3 +2104,23 @@ describe("assistant debt capture", () => {
     expect((await response.json()).transaction.time).toBe("15:30");
   });
 });
+
+describe("assistant turn commit", () => {
+  it("saves nothing when the chat is deleted during the model call, so a retry saves once", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "What else?" })));
+    const started = await (await POST(assistantRequest("hello"))).json();
+
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      store.deleteConversation(user.id, started.conversationId);
+      return providerTool("log_transaction", { amount: "250", description: "lunch", kind: "expense", category: "Food" });
+    }));
+    const failed = await POST(assistantRequest("Jollibee lunch 250", started.conversationId));
+    expect(failed.status).toBe(404);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "250", description: "lunch", kind: "expense", category: "Food" })));
+    const retried = await POST(assistantRequest("Jollibee lunch 250"));
+    expect(retried.status).toBe(200);
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+  });
+});

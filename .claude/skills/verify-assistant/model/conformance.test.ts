@@ -120,10 +120,10 @@ describe("FINDING: known bugs the model reports (a failure here means the bug wa
     vi.stubGlobal("fetch", vi.fn(async () => { store.deleteConversation(user.id, conversationId); return tool("log_transaction", { amount: "250", description: "lunch", kind: "expense" }); }));
     const failed = await ask("Jollibee lunch 250", conversationId);
     expect(failed.status).toBe(404);
-    expect(txCount()).toBe(1);
+    expect(txCount()).toBe(0);
     provider(tool("log_transaction", { amount: "250", description: "lunch", kind: "expense" }));
     expect((await ask("Jollibee lunch 250")).status).toBe(200);
-    expect(txCount()).toBe(2);
+    expect(txCount()).toBe(1);
   });
 
   it("WriteNeedsConsent: consent withdrawn while the provider call is in flight does not stop the write", async () => {

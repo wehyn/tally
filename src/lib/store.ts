@@ -1207,6 +1207,9 @@ export function createStore(db: Database.Database) {
       db.prepare("DELETE FROM users WHERE id=?").run(userId);
     }).immediate();
   }
+  function transaction<T>(work: () => T): T {
+    return db.transaction(work).immediate();
+  }
   function deleteAllConversations(userId: string): void {
     db.prepare("DELETE FROM conversations WHERE user_id=?").run(userId);
   }
@@ -1218,7 +1221,7 @@ export function createStore(db: Database.Database) {
     listDebts, listDebtPayments, debtBalanceFromPayments, createDebt, updateDebt, deleteDebt, recordDebtAdvance, recordDebtAdvanceTransaction, recordDebtPayment, recordDebtRepayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
-    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,
+    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations, transaction,
     createGoal, listGoals, inviteToGoal, respondInvitation, listInvitations, updateGoal, changeMembership, addContribution, updateContribution,
     deleteContribution, deleteAccountOwner,
   };
