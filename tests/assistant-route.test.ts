@@ -2134,4 +2134,24 @@ describe("assistant turn commit", () => {
     expect(response.status).toBe(403);
     expect(store.listTransactions(user.id)).toHaveLength(0);
   });
+
+  it("keeps the pending repayment question and its earlier context when the model call fails", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("repayment_amount");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 502 })));
+    expect((await POST(assistantRequest("500", asked.conversationId))).status).toBe(400);
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("repayment_amount");
+
+    const retry = vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+    vi.stubGlobal("fetch", retry);
+    const response = await POST(assistantRequest("500", asked.conversationId));
+
+    const sent = JSON.parse(String((retry.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
+    expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
+    expect(response.status).toBe(200);
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
+  });
 });

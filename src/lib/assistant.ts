@@ -663,14 +663,22 @@ function directDebtCapture(prompt: string): { name: string; args: Record<string,
   return null;
 }
 
+// The user message, the write and the reply commit together. A new chat is created in the same step,
+// so a turn that fails (provider error, consent withdrawn, chat deleted) leaves nothing behind.
+function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, prompt: string, work: (conversationId: string) => T): T {
+  return store.transaction(() => {
+    const id = conversationId ?? store.createConversation(userId, prompt.slice(0, 80));
+    store.addMessage(userId, id, "user", prompt);
+    return work(id);
+  });
+}
+
 export async function runAssistantPrompt(store: ReturnType<typeof getStore>, user: { id: string }, input: AssistantPromptInput) {
     const accounts = store.listAccounts(user.id);
     const categories = store.listCategories(user.id);
-    let conversationId = input.conversationId;
-    if (conversationId) {
-      if (!store.getConversation(user.id, conversationId)) throw new HttpError(404, "Conversation not found.");
-    } else conversationId = store.createConversation(user.id, input.prompt.slice(0, 80));
-    const conversationMessages = store.getConversation(user.id, conversationId)?.messages ?? [];
+    const conversation = input.conversationId ? store.getConversation(user.id, input.conversationId) : null;
+    if (input.conversationId && !conversation) throw new HttpError(404, "Conversation not found.");
+    const conversationMessages = conversation?.messages ?? [];
     const history = minimalFollowUpContext(conversationMessages);
     const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
     const promptCreatedAt = new Date().toISOString();
@@ -681,11 +689,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const userMessageText = userMessages.map((message) => message.content);
     const requestedMetrics = requestedFinanceMetrics(input.prompt);
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
-    store.addMessage(user.id, conversationId, "user", input.prompt);
     if (debtQuestion(input.prompt, requestedMetrics)) {
       const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
-      store.addMessage(user.id, conversationId, "assistant", answer);
-      return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
+      return commitTurn(store, user.id, input.conversationId, input.prompt, (conversationId) => {
+        store.addMessage(user.id, conversationId, "assistant", answer);
+        return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
+      });
     }
     const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
     const openOwedToYouDebts = store.listDebts(user.id)
@@ -743,7 +752,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
-    return store.transaction(() => {
+    return commitTurn(store, user.id, input.conversationId, input.prompt, (conversationId) => {
       assertAssistantAccess(store, user.id);
       let call = providerCall;
       // Set alongside each question the code itself asks; the model's generic clarifications keep this null.

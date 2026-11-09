@@ -141,7 +141,7 @@ describe("FINDING: known bugs the model reports (a failure here means the bug wa
     expect((await ask("500", conversationId)).status).toBe(400);
     const bodies = provider(tool("ask_clarification", { question: "q" }));
     await ask("500", conversationId);
-    expect(JSON.stringify(bodies[0].messages)).not.toContain("Ana paid me");
+    expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
   });
 
   it("PlainPromptNotTrapped: a complete unrelated prompt is swallowed by a pending repayment-amount question", async () => {
