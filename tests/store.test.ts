@@ -336,6 +336,30 @@ describe("owner-scoped ledger", () => {
     expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.contextStart)).toEqual([false, true]);
   });
 
+  it("stamps a message with the time it was received and keeps a later reply after it", () => {
+    const user = store.registerUser("received_time_message", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    store.addMessage(user.id, conversationId, "user", "lunch today", undefined, null, undefined, false, "2026-10-09T15:59:59.000Z");
+    store.addMessage(user.id, conversationId, "assistant", "How much?");
+
+    const messages = store.getConversation(user.id, conversationId)!.messages;
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(messages[0].createdAt).toBe("2026-10-09T15:59:59.000Z");
+    expect(messages[1].createdAt >= messages[0].createdAt).toBe(true);
+  });
+
+  it("never stamps a message earlier than the latest message in its conversation", () => {
+    const user = store.registerUser("monotonic_messages", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, false, "2999-01-01T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "assistant", "reply");
+    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, false, "2026-10-09T00:00:00.000Z");
+
+    const messages = store.getConversation(user.id, conversationId)!.messages;
+    expect(messages.map((message) => message.content)).toEqual(["first", "reply", "second"]);
+    expect(messages.map((message) => message.createdAt)).toEqual(["2999-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z"]);
+  });
+
   it("adds a nullable time column to legacy transactions without inventing event times", () => {
     const user = store.registerUser("legacy_transaction", "hash");
     const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });

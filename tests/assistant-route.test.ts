@@ -2152,6 +2152,36 @@ describe("assistant turn commit", () => {
     expect(store.listConversations(user.id)).toHaveLength(0);
   });
 
+  it("keeps today relative to when the request arrived when the answer comes after midnight", async () => {
+    vi.setSystemTime(new Date("2026-10-09T15:59:59.000Z"));
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      vi.setSystemTime(new Date("2026-10-09T16:00:01.000Z"));
+      return providerTool("ask_clarification", { question: "How much was lunch?" });
+    }));
+    const asked = await (await POST(assistantRequest("lunch today"))).json();
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "250", category: "Food", description: "lunch" })));
+    const result = await (await POST(assistantRequest("250", asked.conversationId))).json();
+
+    expect(result.transaction.date).toBe("2026-10-09");
+    const stored = store.getConversation(user.id, asked.conversationId)!.messages;
+    expect(stored.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(stored[0].createdAt).toBe("2026-10-09T15:59:59.000Z");
+    expect(stored[1].createdAt).toBe("2026-10-09T16:00:01.000Z");
+  });
+
+  it("keeps today relative to when the request arrived when the provider call spans midnight", async () => {
+    vi.setSystemTime(new Date("2026-10-09T15:59:59.000Z"));
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      vi.setSystemTime(new Date("2026-10-09T16:00:01.000Z"));
+      return providerTool("log_transaction", { amount: "250", category: "Food", description: "lunch" });
+    }));
+    const saved = await (await POST(assistantRequest("lunch 250 today"))).json();
+
+    expect(saved.transaction.date).toBe("2026-10-09");
+    expect(store.getConversation(user.id, saved.conversationId)!.messages[0].createdAt).toBe("2026-10-09T15:59:59.000Z");
+  });
+
   it("keeps the pending repayment question and its earlier context when the model call fails", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
