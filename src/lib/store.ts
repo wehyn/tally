@@ -6,6 +6,7 @@ import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type 
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
 import { isFollowupKind, type FollowupKind } from "./assistant-followup";
+import { canUndo, undoUntilFor } from "./machines/assistant";
 import { isManualTransactionKind, type ManualTransactionKind, type TransactionKind } from "./transaction-model";
 
 export { BILL_ICONS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji } from "./bill-icons";
@@ -822,7 +823,7 @@ export function createStore(db: Database.Database) {
       const transactionInput = { ...input, time };
       assertTransactionInput(userId, transactionInput);
       const source = input.source ?? "manual";
-      const undoUntil = source === "assistant" ? new Date(Date.now() + 10_000).toISOString() : null;
+      const undoUntil = undoUntilFor(source, Date.now());
       return insertTransaction(userId, transactionInput, { source, undoUntil });
     }).immediate();
   }
@@ -928,7 +929,7 @@ export function createStore(db: Database.Database) {
       const row = db.prepare("SELECT source,undo_until,debt_id FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { source: string; undo_until: string | null; debt_id: string | null } | undefined;
       if (!row) throw new Error("Transaction not found.");
       if (row.debt_id) throw new Error("A transaction linked to a debt cannot be deleted. Delete the debt first.");
-      if (undoOnly && (row.source !== "assistant" || !row.undo_until || Date.now() > Date.parse(row.undo_until))) throw new Error("The 10-second Undo period has expired.");
+      if (undoOnly && !canUndo({ source: row.source as "manual" | "assistant", undoUntil: row.undo_until }, Date.now())) throw new Error("The 10-second Undo period has expired.");
       db.prepare("DELETE FROM transactions WHERE id=? AND user_id=?").run(id, userId);
       assertLedgerTotalsSafe(userId);
     }).immediate();
