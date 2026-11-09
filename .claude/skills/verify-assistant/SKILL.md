@@ -1,6 +1,6 @@
 ---
 name: verify-assistant
-description: Model-check Tally's Ask Tally assistant (consent, follow-up questions, writes, Undo window, conversation delete) with TLA+ and replay the model's assumptions on the real code. Use when a change touches runAssistantPrompt, minimalFollowUpContext, FOLLOWUP_KINDS, getAssistantOptIn/setAssistantConsent, createTransaction's undoUntil, deleteTransaction's undoOnly path, addMessage/deleteConversation, or the assistant and shortcuts/assistant routes.
+description: Model-check Tally's Ask Tally assistant (consent, follow-up questions, writes, Undo window, conversation delete) with TLA+ and replay the model's assumptions on the real code. Use when a change touches runAssistantPrompt, minimalFollowUpContext, FOLLOWUP_KINDS, getAssistantOptIn/setAssistantConsent, createTransaction's undoUntil, deleteTransaction's undoOnly path, addMessage/deleteConversation, src/lib/machines/assistant.ts, or the assistant and shortcuts/assistant routes.
 ---
 
 # Verify the assistant
@@ -14,32 +14,33 @@ Model: `model/Assistant.tla`, one conversation. A hand model proves nothing abou
 
 | Covered code | What the model says about it |
 |---|---|
-| `src/lib/assistant.ts` `assertAssistantAccess` (13), `runAssistantPrompt` (666-1087): follow-up reads (701-740), override chain (749-803), the write branches, reply insert (1086) | `Decision` operator, `ProviderOk` |
-| `src/lib/provider.ts` `minimalFollowUpContext` (188), `askProvider` failure paths | `Send` (pending question read before the new message), `ProviderFail` |
-| `src/lib/assistant-followup.ts` `FOLLOWUP_KINDS` | `Kinds` (only 4 of 17 kinds modeled) |
-| `src/lib/store.ts` `createTransaction` undoUntil (825), `deleteTransaction` undoOnly (926), `setAssistantConsent`/`getAssistantOptIn` (1004-1018), `addMessage`, `deleteConversation` (1047-1056) | `CodeAllowsUndo`, `access`, `conv` |
+| `src/lib/assistant.ts` `assertAssistantAccess` (13), `runAssistantPrompt` and `commitTurn`: the turn's reads, the commit transaction, the override chain, the write branches, the reply insert | `Decision`, `Effective`, `CommitOk`, `ProviderOk` |
+| `src/lib/machines/assistant.ts`: `canWrite` (consent), `pendingOutcome` (replace or answer), `undoUntilFor` and `canUndo` (Undo window) | `CommitOk`, `Outcome`, `CodeAllowsUndo` |
+| `src/lib/provider.ts` `minimalFollowUpContext` (188), `askProvider` failure paths | `Send` (the stored follow-up is the context), `ProviderFail` |
+| `src/lib/assistant-followup.ts` `FOLLOWUP_KINDS` | `Kinds` (`none` and the four question kinds only) |
+| `src/lib/store.ts` `transaction`, `createTransaction` and `deleteTransaction` (Undo), `getAssistantConsent`/`getAssistantOptIn`, `addMessage`, `deleteConversation` | `CodeAllowsUndo`, `access`, `conv` |
 | `src/app/api/assistant/route.ts`, `src/app/api/shortcuts/assistant/route.ts` | `Send` guard (access on, chat live) |
 
-Not covered: bill follow-ups (`bill_*`), debt creation and `debt_transaction`, `account_or_date`, category/date/account inference, finance questions, the widget UI, Shortcut credential auth (see `verify-identity-access`), debt balance rules (see `verify-debts`). Undo is modeled for the latest transaction only. One conversation, one user.
+Not covered: bill follow-ups (`bill_*`), debt creation and `debt_transaction`, `account_or_date`, category/date/account inference, finance questions, the widget UI, Shortcut credential auth (see `verify-identity-access`), debt balance rules (see `verify-debts`). Undo is modeled for the latest transaction only. One conversation, one user. The uncertain-wording abandon path (`uncertainRepayment` in `assistant.ts`) is not in the machine; the model covers its effect (`UncertainNeverWrites`) only.
 
-**Sync commit: `c006c65`.** If `git diff c006c65 -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
+**Sync commit: `64efa45`.** If `git diff 64efa45 -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
 
 ## Run it
 
-1. Real-code replay (needs `npm ci` once): `.claude/skills/verify-assistant/model/check.sh`. All tests must pass.
-2. Model check: give `/statechart` the spec `model/Assistant.tla` once per config and read what it reports.
-   - `model/core.cfg`: **must hold** (about 64k states, a few seconds). A violation is a real break of a rule the code upheld at the sync commit.
-   - `model/findings.cfg`: **known to fail today** on exactly `NoDuplicateIntentWrite`, `WriteNeedsConsent`, `FollowupSurvivesError`, `PlainPromptNotTrapped`. See below. If one starts to hold, the bug was fixed.
-   - `model/flows/*.cfg` with `model/views/*.mjs` redraw the charts in `docs/state-machines/assistant.md`.
+1. Real-code replay (needs `npm ci` once): `.claude/skills/verify-assistant/model/check.sh`. All 12 tests must pass.
+2. Model check. Use `/statechart` on `model/Assistant.tla` once per config, or run TLC directly with a `tla2tools.jar` (for example `java -cp tla2tools.jar tlc2.TLC -workers 4 -config model/core.cfg model/Assistant.tla` from `.claude/skills/verify-assistant`).
+   - `model/core.cfg`: **must hold** (about 16k distinct states, a few seconds). A violation is a real break of a rule the code upholds at the sync commit.
+   - `model/findings.cfg`: sets `Legacy = TRUE`, which replays the rules before the fixes. It **must fail** on the four invariants (`NoDuplicateIntentWrite`, `WriteNeedsConsent`, `FollowupSurvivesError`, `PlainPromptNotTrapped`). TLC reports the first one it reaches; to check a single invariant, put only that name on the `INVARIANTS` line.
+   - `model/flows/*.cfg` with `model/views/*.mjs` redraw the charts in `docs/state-machines/assistant.md`. The renderer is not installed everywhere, so check the doc's charts by hand against the model when it is not.
 
-## Known findings (current code breaks these)
+## Fixed findings (kept as regression replays)
 
-1. **Duplicate save.** Send "Jollibee lunch 250", delete the chat while the model call is running: the transaction is still saved (`assistant.ts:1077`), the reply insert then fails with 404 (`:1086`), the user sees an error with no Undo, sends it again in a new chat and gets a second transaction. Replayed by the `NoDuplicateIntentWrite` test.
-2. **Save after consent withdrawn.** `assertAssistantAccess` runs once, before the model call. Turn the assistant off during the call and the transaction is still saved.
-3. **Failed model call drops the question.** The user message is stored before the call (`:684`). If the call fails, the last stored message is the user's, `minimalFollowUpContext` returns nothing, and the next message loses "Ana paid me" and the pending "how much?".
-4. **Unrelated prompt is swallowed.** After "How much was repaid?", "Coffee 120" is read as part of the repayment (`repaymentContextText` joins every message since the last finished reply, `:721`) and gets the same question again, nothing saved. Only a bare number or a new chat escapes.
+Each finding is fixed and pinned by a replay in `model/conformance.test.ts` (describe block "regressions") and a route test in `tests/assistant-route.test.ts` ("assistant turn commit").
 
-The conformance tests labelled `FINDING` pass while each bug exists and fail when it is fixed. When one fails: confirm the fix, move that invariant from `findings.cfg` to `core.cfg`, and flip the test.
+1. **Duplicate save** (`c6f5d5b`). The write and its reply used to commit separately. Now `commitTurn` runs them in one store transaction. A deleted chat makes the reply insert throw, which rolls the write back. Replayed by `NoDuplicateIntentWrite (fixed)`.
+2. **Save after consent withdrawn** (`d05bb50`). Access is checked again inside the commit transaction, before any write. Replayed by `WriteNeedsConsent (fixed)`.
+3. **Failed model call drops the question** (`3f73ccd`). The user message is stored with the turn's commit, not before the call. A failed call stores nothing, so the pending question stays last. Replayed by `FollowupSurvivesError (fixed)`.
+4. **Unrelated prompt is swallowed** (`25e864f` for a pending repayment amount or ordinary income question; `64efa45` for a pending repayment payer question). `pendingOutcome` in `src/lib/machines/assistant.ts` decides. A complete prompt that carries its own number and names no open debt replaces the question, and the prompt runs with no prior context. A bare amount, a yes or no, debt-payment wording, or a name with an open debt still answers it. Replayed by `PlainPromptNotTrapped (fixed)` and `PlainPromptNotTrapped (payer)`.
 
 ## Telling a real bug from a modeling error
 
@@ -47,4 +48,6 @@ A `core.cfg` counterexample is a sequence of the model's actions (`YouSend`, `Pr
 
 ## Updating after an intended change
 
-New follow-up kind or branch: add it to `Kinds` and `Decision` with the new file:line, add an intent if a new prompt shape reaches it, add a conformance test that drives it, then rerun both checks. Prove the check can still fail: temporarily weaken the real guard in a throwaway worktree (for example drop `Date.now() > Date.parse(row.undo_until)` in `deleteTransaction`, or make `isUncertainStatement` return false) and confirm `check.sh` fails; then change the model guard (for example `CodeAllowsUndo`) and confirm `core.cfg` reports `UndoOnlyInWindow`.
+New follow-up kind or branch: add it to `Kinds` and `Decision` with the new file:line, add an intent if a new prompt shape reaches it, add a conformance test that drives it, then rerun both checks.
+
+Prove the check can still fail. `findings.cfg` does this for the four rules (`Legacy = TRUE`). For a single rule, copy the model to a scratch directory and weaken one guard. For example `CommitOk == conv = "live"` drops the consent re-check, and `WriteNeedsConsent` must fail. Or make `ProviderFail` clear `pend`, and `FollowupSurvivesError` must fail. Then confirm `core.cfg` holds again on the real model.

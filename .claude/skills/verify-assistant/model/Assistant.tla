@@ -1,8 +1,12 @@
 ---------------------------- MODULE Assistant ----------------------------
 \* One Ask Tally conversation, as runAssistantPrompt (src/lib/assistant.ts) drives it.
-\* Granularity: everything between "the provider answered" and "the reply message is stored"
-\* is synchronous code (better-sqlite3), so it is ONE step here (ProviderOk). The only
-\* interleaving points are the awaited provider call and separate HTTP requests.
+\* A turn has two parts. Before the provider answers, nothing is stored: the turn reads the stored
+\* follow-up and waits for the model. After it answers, the user message, the write (if any) and the
+\* reply commit in one store transaction (commitTurn). Consent and the chat are checked again at commit.
+\* The only interleaving points are the awaited provider call and separate HTTP requests.
+\*
+\* Legacy = TRUE replays the rules before the fixes (user message stored before the call, no re-check
+\* at commit, no replacement of a pending question). findings.cfg runs that variant and must fail.
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS
@@ -10,10 +14,11 @@ CONSTANTS
     Intents,    \* which kinds of user prompt may be sent (subset of AllIntents)
     Env,        \* TRUE: consent revoke/stale and chat delete may interleave with a request
     Clock,      \* TRUE: the ten-second Undo window may expire
-    Fails       \* TRUE: the provider call may fail
+    Fails,      \* TRUE: the provider call may fail
+    Legacy      \* TRUE: the pre-fix rules (see the header)
 
 AllIntents == {"plain", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPay", "amount", "yes"}
-\* plain            "Jollibee lunch 250": a complete transaction
+\* plain            "Jollibee lunch 250": a complete transaction, no payer named
 \* uncertainPay     "maybe Ana paid me?": negated or uncertain payment wording
 \* debtPay          "Ana paid me 500" and Ana has one open debt: confirmed repayment
 \* debtPayNoAmount  "Ana paid me": payer known, amount missing
@@ -23,11 +28,11 @@ AllIntents == {"plain", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPa
 Kinds == {"none", "clarification", "ordinary_income", "repayment_amount", "repayment_payer"}
 
 VARIABLES
-    access,        \* "on" | "off" | "stale": opt-in with the current disclosure hash (getAssistantOptIn)
+    access,        \* "on" | "off" | "stale": opt-in with the current disclosure hash (getAssistantConsent)
     conv,          \* "live" | "gone": conversation row exists (deleteConversation)
     pend,          \* follow-up kind stored on the last assistant message
-    last,          \* "reply": last stored message is an assistant question or answer; "wrote": a reply that saved a transaction; "orphan": last is the user's
-    phase,         \* "idle" | "saved" (user message stored, provider in flight) | "errored"
+    last,          \* "reply": last stored message is an assistant question or answer; "wrote": a reply that saved a transaction; "orphan": last is the user's (Legacy only)
+    phase,         \* "idle" | "saved" (provider in flight) | "errored"
     intent, pendAtStart,
     written,       \* ledger writes made for the user's current intent
     ledger,        \* assistant-written transactions currently stored
@@ -39,12 +44,21 @@ VARIABLES
 vars == <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs,
           wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain>>
 
-\* What the code decides for (intent, pending follow-up). Mirrors the override chain at
+\* pendingOutcome (src/lib/machines/assistant.ts): a complete prompt that names no open debt replaces a
+\* pending repayment or income question, and the turn runs with no prior context.
+Outcome(i, p) ==
+    IF ~Legacy /\ i = "plain" /\ p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
+    THEN "replace" ELSE "answer"
+Effective(i, p) == IF Outcome(i, p) = "replace" THEN "none" ELSE p
+
+\* What the code decides for (intent, follow-up the turn answers). Mirrors the override chain at
 \* assistant.ts:749-803 and the per-tool branches below it.
 Decision(i, p) ==
     CASE i = "plain" ->
             IF p \in {"repayment_amount", "repayment_payer"}
-            THEN [out |-> "ask", next |-> p, trap |-> TRUE]      \* assistant.ts:763-770 re-asks
+            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:763-770 re-asks
+            ELSE IF p = "ordinary_income"
+            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:752-757 re-asks
             ELSE [out |-> "wplain", next |-> "none", trap |-> FALSE]
       [] i = "uncertainPay"   -> [out |-> "ask",    next |-> "none",             trap |-> FALSE]  \* :725, :1084
       [] i = "debtPay"        -> [out |-> "wrepay", next |-> "none",             trap |-> FALSE]  \* :784-785, :966
@@ -63,6 +77,9 @@ Decision(i, p) ==
 \* inside the ten-second window.
 CodeAllowsUndo(window, kind) == window = "open" /\ kind # "repayment"
 
+\* commitTurn re-checks consent (assertAssistantAccess) and the chat (addMessage) before it writes.
+CommitOk == access = "on" /\ conv = "live"
+
 Init ==
     /\ access = "on" /\ conv = "live" /\ pend = "none" /\ last = "reply" /\ phase = "idle"
     /\ intent = "plain" /\ pendAtStart = "none" /\ written = 0 /\ ledger = 0
@@ -70,46 +87,54 @@ Init ==
     /\ wroteNoConsent = FALSE /\ lostFollowup = FALSE /\ trapped = FALSE
     /\ badUndo = FALSE /\ ordNoQuestion = FALSE /\ wroteUncertain = FALSE
 
-\* The route: assertAssistantAccess, then user message stored with the follow-up read BEFORE it.
+\* The route: assertAssistantAccess, then the turn reads the stored follow-up and waits for the model.
 Send(i, fresh) ==
     /\ access = "on" /\ conv = "live" /\ reqs < MaxReqs
-    /\ pendAtStart' = IF last # "orphan" THEN pend ELSE "none"   \* minimalFollowUpContext (provider.ts:188)
-    /\ pend' = "none" /\ last' = "orphan" /\ phase' = "saved"
-    /\ intent' = i /\ reqs' = reqs + 1
+    /\ intent' = i /\ reqs' = reqs + 1 /\ phase' = "saved"
     /\ written' = IF fresh THEN 0 ELSE written
+    /\ IF Legacy
+       THEN \* the user message was stored before the call, so the stored follow-up was no longer last
+            /\ pendAtStart' = IF last # "orphan" THEN pend ELSE "none"
+            /\ pend' = "none" /\ last' = "orphan"
+       ELSE /\ pendAtStart' = pend /\ pend' = pend /\ last' = last
     /\ UNCHANGED <<access, conv, ledger, undo, txKind, wroteNoConsent, lostFollowup, trapped,
                    badUndo, ordNoQuestion, wroteUncertain>>
 
 YouSend(i) == i \in Intents /\ phase = "idle" /\ Send(i, TRUE)
 YouResend == phase = "errored" /\ Send(intent, FALSE)
 
-\* The provider answered. The write (if any) and the reply message are one synchronous block,
-\* except that the reply insert throws if the conversation was deleted meanwhile.
+\* The provider answered. The user message, the write (if any) and the reply commit together.
+\* A refused commit stores nothing. Legacy writes first and then fails at the reply insert.
 ProviderOk ==
     /\ phase = "saved"
-    /\ LET d == Decision(intent, pendAtStart)
-           writes == d.out \in {"wplain", "wrepay", "word"}
-       IN /\ ledger' = IF writes THEN ledger + 1 ELSE ledger
-          /\ written' = IF writes THEN written + 1 ELSE written
-          /\ txKind' = CASE d.out = "wrepay" -> "repayment"
-                         [] writes -> "plain"
-                         [] OTHER -> txKind
-          /\ undo' = CASE d.out = "wrepay" -> "none"      \* recordDebtPayment: undoUntil null
-                       [] writes -> IF conv = "live" THEN "open" ELSE "none"  \* gone: client never got the handle
-                       [] OTHER -> undo
-          /\ wroteNoConsent' = (wroteNoConsent \/ (writes /\ access # "on"))
-          /\ ordNoQuestion'  = (ordNoQuestion \/ (d.out = "word" /\ pendAtStart # "ordinary_income"))
-          /\ wroteUncertain' = (wroteUncertain \/ (writes /\ intent = "uncertainPay"))
-          /\ trapped' = (trapped \/ d.trap)
-          /\ IF conv = "live"
-             THEN /\ phase' = "idle" /\ last' = (IF writes THEN "wrote" ELSE "reply") /\ pend' = d.next
-             ELSE /\ phase' = "errored" /\ last' = "orphan" /\ pend' = "none"   \* addMessage throws, 404
+    /\ IF ~Legacy /\ ~CommitOk
+       THEN /\ phase' = "errored"
+            /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs,
+                           wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain>>
+       ELSE LET d == Decision(intent, Effective(intent, pendAtStart))
+                writes == d.out \in {"wplain", "wrepay", "word"}
+                replyStored == conv = "live"
+            IN /\ ledger' = IF writes THEN ledger + 1 ELSE ledger
+               /\ written' = IF writes THEN written + 1 ELSE written
+               /\ txKind' = CASE d.out = "wrepay" -> "repayment"
+                             [] writes -> "plain"
+                             [] OTHER -> txKind
+               /\ undo' = CASE d.out = "wrepay" -> "none"      \* recordDebtPayment: undoUntil null
+                             [] writes -> IF replyStored THEN "open" ELSE "none"   \* Legacy: the client never got the handle
+                             [] OTHER -> undo
+               /\ wroteNoConsent' = (wroteNoConsent \/ (writes /\ access # "on"))
+               /\ ordNoQuestion'  = (ordNoQuestion \/ (d.out = "word" /\ pendAtStart # "ordinary_income"))
+               /\ wroteUncertain' = (wroteUncertain \/ (writes /\ intent = "uncertainPay"))
+               /\ trapped' = (trapped \/ d.trap)
+               /\ IF replyStored
+                  THEN /\ phase' = "idle" /\ last' = (IF writes THEN "wrote" ELSE "reply") /\ pend' = d.next
+                  ELSE /\ phase' = "errored" /\ last' = "orphan" /\ pend' = "none"   \* Legacy: the reply insert throws, 404
     /\ UNCHANGED <<access, conv, intent, pendAtStart, reqs, lostFollowup, badUndo>>
 
 ProviderFail ==
     /\ Fails /\ phase = "saved"
     /\ phase' = "errored"
-    /\ lostFollowup' = (lostFollowup \/ pendAtStart # "none")   \* the stored follow-up is no longer the last message
+    /\ lostFollowup' = (lostFollowup \/ (IF Legacy THEN pendAtStart # "none" ELSE conv = "live" /\ pend # pendAtStart))
     /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs,
                    wroteNoConsent, trapped, badUndo, ordNoQuestion, wroteUncertain>>
 
@@ -157,19 +182,17 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-\* ---- Rules the code upholds (core.cfg) ------------------------------------------------------
+\* ---- Rules the code upholds (core.cfg and findings.cfg) -----------------------------------------
 UncertainNeverWrites  == ~wroteUncertain      \* negated or uncertain payment wording never writes
 RepaymentNoUndo       == txKind = "repayment" => undo = "none"
 UndoOnlyInWindow      == ~badUndo             \* no Undo after expiry or on a repayment
 OrdinaryIncomeAsked   == ~ordNoQuestion       \* a bare yes writes income only after the question
 ReplyConsumesFollowup == last = "wrote" => pend = "none"   \* a saving reply leaves no question pending
-TypeOK == /\ access \in {"on", "off", "stale"} /\ conv \in {"live", "gone"} /\ pend \in Kinds
-          /\ last \in {"reply", "wrote", "orphan"} /\ phase \in {"idle", "saved", "errored"}
-          /\ undo \in {"none", "open", "expired", "used"} /\ ledger \in 0..MaxReqs
-
-\* ---- Rules the code breaks today (findings.cfg) -------------------------------------------
 NoDuplicateIntentWrite == written <= 1       \* one user intent, at most one transaction
 WriteNeedsConsent      == ~wroteNoConsent    \* no transaction after consent was withdrawn
 FollowupSurvivesError  == ~lostFollowup      \* a failed provider call keeps the pending question
-PlainPromptNotTrapped  == ~trapped           \* an unrelated complete prompt is not swallowed by a pending repayment question
+PlainPromptNotTrapped  == ~trapped           \* an unrelated complete prompt is not swallowed by a pending question
+TypeOK == /\ access \in {"on", "off", "stale"} /\ conv \in {"live", "gone"} /\ pend \in Kinds
+          /\ last \in {"reply", "wrote", "orphan"} /\ phase \in {"idle", "saved", "errored"}
+          /\ undo \in {"none", "open", "expired", "used"} /\ ledger \in 0..MaxReqs
 ====

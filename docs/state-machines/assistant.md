@@ -1,10 +1,10 @@
 # Assistant state machines
 
-Subsystem: Ask Tally (`src/lib/assistant.ts`, `src/lib/provider.ts`, `src/lib/assistant-followup.ts`, assistant routes, assistant parts of `src/lib/store.ts`). Verified by `.claude/skills/verify-assistant` (sync commit `c006c65`). Charts below are generated from `model/Assistant.tla`; `model/views/*.mjs` and `model/flows/*.cfg` regenerate them.
+Subsystem: Ask Tally (`src/lib/assistant.ts`, `src/lib/machines/assistant.ts`, `src/lib/provider.ts`, `src/lib/assistant-followup.ts`, assistant routes, assistant parts of `src/lib/store.ts`). Verified by `.claude/skills/verify-assistant` (sync commit `64efa45`). The charts below were edited by hand to match `model/Assistant.tla` after the fixes, because the `/statechart` renderer is not installed here. Regenerate them with that renderer when it is available (`model/views/*.mjs` and `model/flows/*.cfg`).
 
 ## Inventory
 
-### 1. Access (consent) — `users.assistant_opt_in` + `assistant_consents.disclosure_hash`
+### 1. Access (consent), stored in `users.assistant_opt_in` and `assistant_consents.disclosure_hash`
 
 | State | Meaning |
 |---|---|
@@ -12,48 +12,49 @@ Subsystem: Ask Tally (`src/lib/assistant.ts`, `src/lib/provider.ts`, `src/lib/as
 | on | opted in and stored hash equals `providerDisclosureHash()` |
 | stale | opted in, but the provider disclosure changed since (hash differs) |
 
-Transitions: `setAssistantConsent(hash)` off/stale to on, `setAssistantConsent(null)` to off (`store.ts:1004`); a disclosure change makes on become stale without any write. Guard: `getAssistantOptIn` (`store.ts:1012`) inside `assertAssistantAccess` (`assistant.ts:13`), checked once per request by both routes (`api/assistant/route.ts`, `api/shortcuts/assistant/route.ts`, the latter after credential lookup and a 30/min limiter). Not re-checked after the model call (finding 2).
+Transitions: `setAssistantConsent(hash)` off/stale to on, `setAssistantConsent(null)` to off (`store.ts`). A disclosure change makes on become stale without any write. The state comes from `getAssistantConsent`, and `canWrite` (`machines/assistant.ts`) is the only rule that lets a write happen. Access is checked once per request by both routes (`api/assistant/route.ts`, `api/shortcuts/assistant/route.ts`, the latter after credential lookup and a 30/min limiter), and again inside the turn's commit transaction before any write (`assertAssistantAccess` in `commitTurn`, fixed in `d05bb50`).
 
-### 2. Request (one POST to runAssistantPrompt)
+### 2. Request, one POST to runAssistantPrompt
 
 | State | Meaning |
 |---|---|
 | idle | no request running |
-| saved | user message stored (`assistant.ts:684`), model call in flight (`:699`) |
-| errored | model call threw, or the reply insert threw |
+| requesting | model call in flight; nothing is stored yet |
+| errored | the model call threw, consent or the chat was gone at commit, or the reply insert threw |
 
-Transitions: send idle to saved; saved to idle (reply stored, `:1086`); saved to errored on provider error (`provider.ts:289-297`) or when the chat was deleted meanwhile (`addMessage` throws "Conversation not found", `store.ts:1047`). All code after the model call is synchronous (better-sqlite3), so "write + reply" is one step.
+Transitions: send idle to requesting. Requesting to idle when the turn commits: the user message, the write (if any) and the reply are stored in one store transaction (`commitTurn`, `store.transaction`). Requesting to errored when the provider fails or the commit is refused, and then nothing is stored (`d05bb50`, `3f73ccd`). A reply insert that throws rolls the write back too (`c6f5d5b`).
 
-### 3. Pending follow-up (the question the last assistant message waits on)
+### 3. Pending follow-up, the question the last assistant message waits on
 
-Stored on the assistant message as `followup_kind` (`store.ts:1047`, 17 kinds in `assistant-followup.ts`). Read back only if the **last** stored message is an assistant reply with a kind (`provider.ts:188`). Modeled kinds: none, clarification, ordinary_income, repayment_amount, repayment_payer. Resolution per new prompt (`assistant.ts:749-803` override chain):
+Stored on the assistant message as `followup_kind` (`store.ts`, 17 kinds in `assistant-followup.ts`). Read back only if the **last** stored message is an assistant reply with a kind (`provider.ts:188`). Modeled kinds: none, clarification, ordinary_income, repayment_amount, repayment_payer. The rule for a new prompt is `pendingOutcome` in `machines/assistant.ts`. Its facts come from the existing wording heuristics in `assistant.ts`:
 
 | Pending | New prompt | Outcome |
 |---|---|---|
-| ordinary_income | "yes" | save income, category "Other income" (`:710`, `:752-757`), follow-up cleared |
-| ordinary_income | "no" | write nothing, follow-up cleared (`:1085`) |
-| repayment_amount / repayment_payer | a bare number (amount) | save the repayment (`:742-743`, `:784-785`), cleared |
-| repayment_amount / repayment_payer | a complete unrelated transaction | asks the repayment question again (finding 4) |
-| any | uncertain or negated payment wording | write nothing, follow-up cleared (`:725`, `:763`, `:1084`) |
-| none | payment with no matching open debt | ask ordinary_income (`:773-774`) |
-| none | payer known, amount missing | ask repayment_amount (`:769-770`) |
+| ordinary_income | "yes" or "no" | answers the question (`:710`, `:752-757`, `:1085`) |
+| repayment_amount | a bare number | answers it, saves the repayment (`:742-743`, `:784-785`) |
+| repayment_amount, repayment_payer | payment wording, uncertain or negated | answers it through the existing branches; uncertain wording writes nothing and clears the question (`:725`, `:763`, `:1084`) |
+| repayment_payer | a name with an open debt | answers it (the payer is matched to the debt) |
+| repayment_amount, repayment_payer, ordinary_income | a complete prompt with its own number, naming no open debt | **replaces** the question: the question is dropped, the prompt runs with no prior context, as in a new chat (`25e864f`, `64efa45`) |
+| repayment_amount, repayment_payer, ordinary_income | no number (for example "Coffee") | answers it, as before |
+| none | payment with no matching open debt | asks ordinary_income (`:773-774`) |
+| none | payer known, amount missing | asks repayment_amount (`:769-770`) |
 
-Debt repayment rule from `AGENTS.md`: ask without writing when wording is negated or uncertain, no debt matches, several debt counterparties are named, the model selects a different payer, or the amount exceeds the balance.
+Debt repayment rule from `AGENTS.md`: ask without writing when wording is negated or uncertain, no debt matches, several debt counterparties are named, the model selects a different payer, or the payment exceeds the balance. This table does not change those rules.
 
-### 4. Undo window (per assistant transaction)
+### 4. Undo window, per assistant transaction
 
 | State | Meaning |
 |---|---|
-| open | `undo_until` set 10 s after save (`store.ts:825`) |
-| expired | now > `undo_until` |
-| used | deleted through `DELETE /api/transactions/:id?undo=1` (`api/transactions/[id]/route.ts:19`) |
-| none | debt repayment: `undo_until` null and `debt_id` set; `deleteTransaction` rejects it (`store.ts:926-935`) |
+| open | `undo_until` set 10 s after save (`undoUntilFor`, `createTransaction`) |
+| expired | now > `undo_until` (`canUndo`) |
+| used | deleted through `DELETE /api/transactions/:id?undo=1` (`api/transactions/[id]/route.ts`) |
+| none | debt repayment: `undo_until` null and `debt_id` set; `deleteTransaction` rejects it (`store.ts`) |
 
-### 5. Conversation — live, then deleted (`deleteConversation`, `store.ts:1053`, cascades messages). The widget also holds UI state (`assistant-widget.tsx`: `busy`, `conversationId`, `openTransactionControl`); not modeled.
+### 5. Conversation, live and then deleted (`deleteConversation`, cascades messages). A new chat is created in the same commit as the first turn that succeeds, so a failed first turn leaves no empty chat. The widget also holds UI state (`assistant-widget.tsx`: `busy`, `conversationId`, `openTransactionControl`); not modeled.
 
 ## Flow 1: log a transaction, then Undo
 
-TLC: 25 states, `UndoOnlyInWindow` holds. A model call can fail and be retried; an Undo after ten seconds is not an arrow because the store refuses it.
+TLC: 24 distinct states, `UndoOnlyInWindow` holds. A model call can fail and be retried; an Undo after ten seconds is not an arrow because the store refuses it.
 
 ```mermaid
 ---
@@ -97,7 +98,7 @@ stateDiagram-v2
 
 ## Flow 2: follow-up question, answer, save
 
-TLC: 35 states. `PlainPromptNotTrapped` breaks (marked): from "Asked: how much was repaid?" a complete transaction goes back to the same question and nothing is saved. Repayments leave no Undo (`RepaymentNoUndo` holds). Model-call failures and consent/chat changes are left out of this chart to keep it readable.
+TLC: 36 distinct states. Every invariant holds. A complete prompt sent while a question is pending no longer returns to the same question: from "Asked: how much was repaid?" it saves as a new request (the `s5 → s3 → s6` path). Repayments leave no Undo (`RepaymentNoUndo` holds). Model-call failures and consent/chat changes are left out of this chart to keep it readable.
 
 ```mermaid
 ---
@@ -109,15 +110,11 @@ stateDiagram-v2
     lg1: waiting
     lg2: asking
     lg3: saved
-    lg4: Breaks PlainPromptNotTrapped in some cases
-    lg5: Path to the PlainPromptNotTrapped bug
   }
   class lg0 teal
   class lg1 blue
   class lg2 yellow
   class lg3 purple
-  class lg4 mayBreak
-  class lg5 bugPath
   s0: Ready
   s1: Waiting for the model: a number
   s2: Waiting for the model: payer, no amount
@@ -148,19 +145,12 @@ stateDiagram-v2
   s7 --> s2: you say who paid, no amount
   s7 --> s3: you send a complete transaction
   s1 --> s8: the model answers and Tally saves it
-  s3 --> s5: the model answers and Tally asks, saving nothing
-  classDef mayBreak fill:#fff3e6,stroke:#e8730c,stroke-width:2.5px,color:#b85a06
   class s0 teal
-  class s0 bugPath
   class s1 blue
   class s2 blue
-  class s2 bugPath
   class s3 blue
-  class s3 bugPath
   class s4 yellow
   class s5 yellow
-  class s5 mayBreak
-  class s5 bugPath
   class s6 purple
   class s7 purple
   class s8 purple
@@ -168,7 +158,7 @@ stateDiagram-v2
 
 ## Flow 3: ask without writing
 
-TLC: 26 states. `UncertainNeverWrites` and `OrdinaryIncomeAsked` hold: an uncertain payment returns to Ready with nothing saved, an unmatched payment asks about ordinary income, and income is saved only after that question and a "yes". The "Saved, Undo open" arrow is the confirmed ordinary-income path.
+TLC: 26 distinct states. `UncertainNeverWrites` and `OrdinaryIncomeAsked` hold: an uncertain payment returns to Ready with nothing saved, an unmatched payment asks about ordinary income, and income is saved only after that question and a "yes". The "Saved, Undo open" arrow is the confirmed ordinary-income path.
 
 ```mermaid
 ---
@@ -218,15 +208,15 @@ stateDiagram-v2
   class s7 purple
 ```
 
-## Findings
+## Findings (all fixed)
 
-All four are replayed against the real code in `model/conformance.test.ts` (tests labelled `FINDING`). Product code was not changed.
+Each finding was replayed against the real code before its fix. The conformance replays in `model/conformance.test.ts` (describe block "regressions") now pin the fixed behavior, and `findings.cfg` (`Legacy = TRUE`) still fails on all four invariants, so the checks can fail.
 
-1. **`NoDuplicateIntentWrite`: one request saves twice.** Send "Jollibee lunch 250" in chat A. While the model call runs, delete chat A. The transaction is saved, then the reply insert fails with 404, so the user sees an error with no Undo. They send it again in a new chat: second transaction.
-2. **`WriteNeedsConsent`: save after consent withdrawn.** Send a prompt; while the model call runs, turn the assistant off in Settings. The transaction is saved anyway because access is checked only before the call.
-3. **`FollowupSurvivesError`: a failed model call forgets the question.** After "Ana paid me" / "What amount?", the next message "500" gets an HTTP 502 from the provider. The user message is stored but no reply, so on the next "500" the pending question and "Ana paid me" are gone from the model's context.
-4. **`PlainPromptNotTrapped`: pending repayment question swallows an unrelated prompt.** After "Ana paid me" / "What amount should I use for the repayment?", sending "Coffee 120" returns the same question and saves nothing. Only a bare number or a new chat gets out.
+1. **`NoDuplicateIntentWrite`: one request saved twice. Fixed in `c6f5d5b`.** The write and the reply committed separately. A chat deleted during the model call left a transaction with no conversation, and a resend saved a second one. The turn now commits its write and reply in one transaction, so a deleted chat saves nothing and the retry saves once.
+2. **`WriteNeedsConsent`: save after consent withdrawn. Fixed in `d05bb50`.** Access was checked only before the model call. It is now checked again at commit, before any write.
+3. **`FollowupSurvivesError`: a failed model call forgets the question. Fixed in `3f73ccd`.** The user message used to be stored before the call, so after a failure the pending question was no longer the last message. The user message is now stored with the turn's commit, so a failed call changes nothing.
+4. **`PlainPromptNotTrapped`: a pending question swallows an unrelated prompt. Fixed in `25e864f` (repayment amount, ordinary income) and `64efa45` (repayment payer).** "Coffee 120" after "What amount should I use for the repayment?" used to get the same question, because the repayment context joined every message since the last finished reply. A complete prompt with its own number and no open-debt name now replaces the question. A bare answer still resolves it.
 
 ## Left out of the model
 
-`bill_*`, `debt_transaction`, `account_or_date` and 11 other follow-up kinds; category, date and account inference; debt creation; finance questions; the widget UI; Shortcut credential auth; the shortcut route returns only `answer` and `conversationId`, so a Shortcut user never gets a transaction id to Undo with (by design, not modeled). Hidden steps in the charts: consent changes, chat deletion, retry after an error (flows 2 and 3 only).
+`bill_*`, `debt_transaction`, `account_or_date` and the other follow-up kinds; category, date and account inference; debt creation; finance questions; the widget UI; Shortcut credential auth; the shortcut route returns only `answer` and `conversationId`, so a Shortcut user never gets a transaction id to Undo with (by design, not modeled). The abandon path for uncertain payment wording (`uncertainRepayment` in `assistant.ts`) is not a machine outcome: its input scans every message of the run, so it stays with the wording heuristics. Hidden steps in the charts: consent changes, chat deletion, retry after an error (flows 2 and 3 only).
