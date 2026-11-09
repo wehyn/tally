@@ -708,6 +708,29 @@ describe("recurring bills", () => {
     expect(store.listBills(available.id).find((bill) => bill.id === availableBill.id)?.nextDueDate).toBe(expectedNextDate);
   });
 
+  it("refuses to move a posted bill back to a date already posted, and keeps legitimate edits", () => {
+    const user = store.registerUser("bill_posted_dates", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const today = todayInManila();
+    const plusDays = (days: number) => new Date(Date.parse(`${today}T00:00:00.000Z`) + days * 86_400_000).toISOString().slice(0, 10);
+    const bill = store.createBill(user.id, { name: "Water", amountMinor: 100, frequency: "weekly", nextDueDate: today, accountId: account.id, categoryId: food.id });
+    store.processDueBills(today);
+    const posted = () => (database.prepare("SELECT date FROM transactions WHERE user_id=? AND description='Water' ORDER BY date").all(user.id) as { date: string }[]).map((row) => row.date);
+    expect(posted()).toEqual([today]);
+    const current = store.listBills(user.id).find((entry) => entry.id === bill.id)!;
+
+    expect(() => store.updateBill(user.id, bill.id, { nextDueDate: today }, current.nextDueDate)).toThrow(/already posted/);
+    expect(store.listBills(user.id).find((entry) => entry.id === bill.id)).toMatchObject({ nextDueDate: plusDays(7) });
+    store.processDueBills(today);
+    expect(posted()).toEqual([today]);
+
+    expect(store.updateBill(user.id, bill.id, { amountMinor: 250 }, current.nextDueDate)).toMatchObject({ amountMinor: 250, nextDueDate: plusDays(7) });
+    expect(store.updateBill(user.id, bill.id, { nextDueDate: plusDays(3) }, plusDays(7))).toMatchObject({ nextDueDate: plusDays(3) });
+    store.processDueBills(plusDays(3));
+    expect(posted()).toEqual([today, plusDays(3)]);
+  });
+
   it("removes bills before deleting their owner", () => {
     store.registerUser("bill_owner_admin", "hash");
     const user = store.registerUser("bill_owner_delete", "hash");
