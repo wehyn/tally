@@ -1,5 +1,5 @@
 ---- MODULE Goals ----
-\* Model of one shared goal in Tally. Code: src/lib/lifecycle.ts and src/lib/store.ts
+\* Model of one shared goal in Tally. Code: src/lib/machines/goal.ts and src/lib/store.ts
 \* (createGoal, inviteToGoal, respondInvitation, updateGoal, succession, changeMembership,
 \* addContribution, updateContribution, deleteContribution, deleteAccountOwner, setUserEnabled).
 EXTENDS Naturals
@@ -16,7 +16,7 @@ VARIABLES gstatus, manager, mstat, enabled, alive, target, contrib
 
 vars == <<gstatus, manager, mstat, enabled, alive, target, contrib>>
 
-\* lifecycle.ts nextMembershipStatus table
+\* machines/goal.ts nextMembershipStatus table
 Move(cur, act) ==
   CASE act = "invite"  -> IF cur \in {"none", "left", "removed"} THEN "invited" ELSE "illegal"
     [] act = "accept"  -> IF cur = "invited" THEN "accepted" ELSE "illegal"
@@ -29,14 +29,18 @@ SumOf(S) == IF S = {} THEN 0 ELSE LET s == CHOOSE x \in S : TRUE IN contrib[s].a
 \* SUM(amount_minor) over all contributions
 Raised == SumOf(Slots)
 
-\* lifecycle.ts nextGoalStatus
+\* machines/goal.ts nextGoalStatus
 NextStatus(cur, raised, tgt) ==
   IF cur = "archived" THEN "archived" ELSE IF raised >= tgt THEN "completed" ELSE "active"
 
-\* store.ts succession(): first enabled accepted member other than the outgoing one, else archive.
+\* machines/goal.ts decideSuccession: first enabled accepted member other than the outgoing one, else archive.
 \* The model picks any such member; the code picks the earliest accepted. Which one does not
 \* change any rule checked here.
 Successors(out, ms) == {u \in Users : u # out /\ ms[u] = "accepted" /\ enabled[u] /\ alive[u]}
+
+\* store.ts succession, archive branch: every accepted membership closes ("left").
+\* Only the archive branch changes membership; a hand-over leaves memberships alone.
+Close(out, ms) == [v \in Users |-> IF ms[v] = "accepted" THEN "left" ELSE ms[v]]
 
 Init ==
   /\ gstatus = "active" /\ manager = 1 /\ target \in Targets
@@ -51,9 +55,10 @@ Invite(m, u) ==
   /\ mstat' = [mstat EXCEPT ![u] = "invited"]
   /\ UNCHANGED <<gstatus, manager, enabled, alive, target, contrib>>
 
-\* store.ts respondInvitation: checks only that the row is still 'invited', not the goal status
+\* store.ts respondInvitation: the row must still be 'invited'; accept is refused once the goal is archived
 Respond(u, accept) ==
   /\ mstat[u] = "invited" /\ alive[u]
+  /\ ~(accept /\ gstatus = "archived")
   /\ mstat' = [mstat EXCEPT ![u] = Move("invited", IF accept THEN "accept" ELSE "decline")]
   /\ UNCHANGED <<gstatus, manager, enabled, alive, target, contrib>>
 
@@ -65,7 +70,9 @@ Change(actor, u, act) ==
               THEN \E n \in Successors(u, mstat) : manager' = n /\ gstatus' = gstatus
               ELSE manager' = 0 /\ gstatus' = "archived"
        ELSE UNCHANGED <<manager, gstatus>>
-  /\ mstat' = [mstat EXCEPT ![u] = Move(mstat[u], act)]
+  /\ mstat' = [v \in Users |->
+       IF v = u THEN Move(mstat[u], act)
+       ELSE IF manager = u /\ Successors(u, mstat) = {} THEN Close(u, mstat)[v] ELSE mstat[v]]
   /\ UNCHANGED <<enabled, alive, target, contrib>>
 
 Leave(u) == Change(u, u, "leave")
@@ -99,10 +106,16 @@ RaiseOrLowerTarget(m, t) ==
   /\ gstatus' = NextStatus(gstatus, Raised, t)
   /\ UNCHANGED <<manager, mstat, enabled, alive, contrib>>
 
-\* store.ts setUserEnabled: no goal logic runs
+\* store.ts setUserEnabled: disabling a manager runs the same succession as leaving. Enabling runs nothing.
 ToggleEnabled(u) ==
   /\ alive[u] /\ enabled' = [enabled EXCEPT ![u] = ~@]
-  /\ UNCHANGED <<gstatus, manager, mstat, alive, target, contrib>>
+  /\ IF enabled[u] /\ manager = u
+       THEN /\ IF Successors(u, mstat) # {}
+                 THEN \E n \in Successors(u, mstat) : manager' = n /\ gstatus' = gstatus
+                 ELSE manager' = 0 /\ gstatus' = "archived"
+            /\ mstat' = [v \in Users |-> IF Successors(u, mstat) = {} THEN Close(u, mstat)[v] ELSE mstat[v]]
+       ELSE UNCHANGED <<manager, gstatus, mstat>>
+  /\ UNCHANGED <<alive, target, contrib>>
 
 \* store.ts deleteAccountOwner: succession for a managed non-archived goal, contributions and
 \* membership become "Former member"
@@ -114,7 +127,9 @@ DeleteAccount(u) ==
               ELSE manager' = 0 /\ gstatus' = "archived"
        ELSE UNCHANGED <<manager, gstatus>>
   /\ alive' = [alive EXCEPT ![u] = FALSE]
-  /\ mstat' = [mstat EXCEPT ![u] = IF @ = "none" THEN "none" ELSE "former"]
+  /\ mstat' = [v \in Users |->
+       IF v = u THEN IF mstat[u] = "none" THEN "none" ELSE "former"
+       ELSE IF manager = u /\ gstatus # "archived" /\ Successors(u, mstat) = {} THEN Close(u, mstat)[v] ELSE mstat[v]]
   /\ contrib' = [s \in Slots |-> IF contrib[s].owner = u THEN [contrib[s] EXCEPT !.owner = NoOwner] ELSE contrib[s]]
   /\ UNCHANGED <<enabled, target>>
 
@@ -157,7 +172,7 @@ FormerMembersOwnNothing ==
     /\ mstat[u] \in {"none", "former"} /\ manager # u
     /\ \A s \in Slots : contrib[s].owner # u
 
-\* ---- Rules that currently break (see SKILL.md, Findings) ----
+\* ---- Rules that hold after the fixes (see SKILL.md, Findings) ----
 \* A live goal's manager is an enabled user.
 ManagerIsEnabled == gstatus # "archived" => enabled[manager]
 
