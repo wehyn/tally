@@ -1,0 +1,45 @@
+---
+title: "Ask without writing"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: ready
+    lg1: waiting
+    lg2: asking
+    lg3: saved
+  }
+  class lg0 teal
+  class lg1 blue
+  class lg2 yellow
+  class lg3 purple
+  s0: Ready
+  s1: Waiting for the model: payer with no debt
+  s2: Waiting for the model: uncertain payment
+  s3: Waiting for the model: a yes
+  s4: Asked a question
+  s5: Asked: record as ordinary income?
+  s6: Saved, Undo open
+  s7: Saved, then undone
+  [*] --> s0
+  s0 --> s1: you report a payment from someone with no open debt
+  s0 --> s2: you send an uncertain payment
+  s0 --> s3: you send a bare yes
+  s1 --> s5: the model answers and Tally asks, saving nothing
+  s2 --> s0: the model answers and Tally asks, saving nothing
+  s3 --> s4: the model answers and Tally asks, saving nothing
+  s4 --> s1: you report a payment from someone with no open debt
+  s4 --> s2: you send an uncertain payment
+  s4 --> s3: you send a bare yes
+  s5 --> s1: you report a payment from someone with no open debt
+  s5 --> s2: you send an uncertain payment
+  s5 --> s3: you send a bare yes
+  s3 --> s6: the model answers and Tally saves it
+  s6 --> s7: you press Undo
+  class s0 teal
+  class s1 blue
+  class s2 blue
+  class s3 blue
+  class s4 yellow
+  class s5 yellow
+  class s6 purple
+  class s7 purple

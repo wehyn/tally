@@ -1,0 +1,40 @@
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: normal
+    lg1: reset
+    lg2: none
+  }
+  class lg0 teal
+  class lg1 orange
+  class lg2 tan
+  s0: No account
+  s1: Signed out
+  s2: Signed in
+  s3: Signed out, reset code waiting
+  s4: Signed in, reset code waiting
+  s5: Signed in with the old password
+  s6: Signed in with the old password, reset code waiting
+  [*] --> s0
+  s0 --> s1: you register (the first user is the admin)
+  s1 --> s2: you sign in
+  s1 --> s3: the admin issues a one-time reset code
+  s2 --> s1: you sign out
+  s2 --> s4: the admin issues a one-time reset code
+  s3 --> s4: you sign in
+  s3 --> s1: 15 minutes pass or you use the code to choose a new password
+  s4 --> s3: you sign out
+  s4 --> s2: 15 minutes pass
+  s4 --> s5: you use the code to choose a new password
+  s5 --> s1: you sign out
+  s5 --> s2: you sign in
+  s5 --> s6: the admin issues a one-time reset code
+  s6 --> s3: you sign out
+  s6 --> s4: you sign in
+  s6 --> s5: you use the code to choose a new password or 15 minutes pass
+  class s0 tan
+  class s1 teal
+  class s2 teal
+  class s3 orange
+  class s4 orange
+  class s5 teal
+  class s6 orange

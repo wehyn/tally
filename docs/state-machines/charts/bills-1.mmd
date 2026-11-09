@@ -1,0 +1,26 @@
+stateDiagram-v2
+  s0: Bill saved, app not started
+  s1: Waiting for due date, run in progress
+  s2: Waiting for due date
+  s3: Due, run in progress
+  s4: Due, account invalid, run in progress
+  s5: Due, account invalid
+  s6: Due
+  s7: Archived, run in progress
+  s8: Archived
+  [*] --> s0
+  s0 --> s1: app starts and runs the scheduler
+  s1 --> s2: nothing left to post
+  s2 --> s3: Manila midnight
+  s2 --> s4: Manila midnight
+  s3 --> s4: the account or amount becomes invalid, or valid again
+  s3 --> s1: expense is posted
+  s4 --> s3: the account or amount becomes invalid, or valid again
+  s4 --> s5: posting fails, bill stays due
+  s5 --> s6: the account or amount becomes invalid, or valid again
+  s5 --> s4: Manila midnight
+  s6 --> s5: the account or amount becomes invalid, or valid again
+  s6 --> s3: Manila midnight
+  s3 --> s7: expense is posted
+  s7 --> s8: nothing left to post
+  s8 --> s7: Manila midnight

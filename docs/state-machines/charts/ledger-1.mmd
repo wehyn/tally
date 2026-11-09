@@ -1,0 +1,37 @@
+stateDiagram-v2
+  s0: No accounts / no transaction
+  s1: Cash only (default) / no transaction
+  s2: Bank only (default) / no transaction
+  s3: Cash only (default) / transaction logged
+  s4: Bank only (default) / transaction logged
+  s5: Cash and Bank, default Bank / no transaction
+  s6: Cash and Bank, default Cash / no transaction
+  s7: Cash and Bank, default Bank / transaction logged
+  s8: Cash and Bank, default Cash / transaction logged
+  [*] --> s0
+  s0 --> s1: add first account (becomes default)
+  s0 --> s2: add first account (becomes default)
+  s1 --> s3: log a transaction
+  s2 --> s4: log a transaction
+  s1 --> s6: add another account
+  s2 --> s5: add another account
+  s3 --> s8: add another account
+  s4 --> s7: add another account
+  s3 --> s1: delete or Undo the transaction
+  s4 --> s2: delete or Undo the transaction
+  s5 --> s6: pick the default
+  s6 --> s5: pick the default
+  s7 --> s8: pick the default
+  s8 --> s7: pick the default
+  s5 --> s7: log a transaction
+  s6 --> s8: log a transaction
+  s7 --> s5: delete or Undo the transaction
+  s8 --> s6: delete or Undo the transaction
+  s5 --> s1: delete the unused account (default moves if needed)
+  s5 --> s2: delete the unused account (default moves if needed)
+  s6 --> s1: delete the unused account (default moves if needed)
+  s6 --> s2: delete the unused account (default moves if needed)
+  s7 --> s3: delete the account without the transaction
+  s8 --> s3: delete the account without the transaction
+  s7 --> s4: delete the account without the transaction
+  s8 --> s4: delete the account without the transaction

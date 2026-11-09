@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="pele pele-state" viewBox="0 0 977 1063" width="977" height="1063" style="max-width:100%;height:auto;--_bg:var(--pele-bg,#fff);--_fg:var(--pele-fg,#1f1f1f);--_m:var(--pele-muted,#6e6e6e);--_l:var(--pele-line,#1f1f1f);--_s:var(--pele-surface,#f3f3f3);--_a:var(--pele-surface-alt,#e6e6e6);--_b:var(--pele-border,#8a8a8a);--_c:var(--pele-accent,#5b7bd5);color:var(--_fg);--_fm:var(--pele-font-mono,monospace);font:16px sans-serif;letter-spacing:normal;word-spacing:normal;text-transform:none;direction:ltr;font-family:var(--pele-font,sans-serif)" fill="var(--_fg)" role="graphics-document document" aria-roledescription="state"><style>.pele {
+  --pele-bg: #ffffff;
+  --pele-fg: #1c1c1c;
+  --pele-muted: #656565;
+  --pele-line: #808080;
+  --pele-surface: #fcfcfc;
+  --pele-surface-alt: #f1f1f1;
+  --pele-border: #c9c9c9;
+}
+.pele .blue rect { fill: #c3e0ff; }
+.pele .orange rect { fill: #f0d3bf; }
+.pele .purple rect { fill: #e3d5ff; }
+.pele .yellow rect { fill: #f0dcbf; }
+.pele .teal rect { fill: #bfe3df; }
+.pele .tan rect { fill: #e5d9ce; }
+.pele .pink rect { fill: #ffcbe6; }
+.pele .breaks rect {
+  fill: #ffecee !important;
+  stroke: #e72e3b !important;
+  stroke-width: 2.5px !important;
+}
+.pele .breaks text {
+  fill: #cd2834 !important;
+}
+.pele .mayBreak rect {
+  fill: #fff3e6 !important;
+  stroke: #e8730c !important;
+  stroke-width: 2.5px !important;
+}
+.pele .mayBreak text {
+  fill: #b85a06 !important;
+}
+.pele .bugPath rect {
+  stroke: #1680f3 !important;
+  stroke-width: 2.5px !important;
+}
+.pele .repeats rect {
+  stroke: #9b35d6 !important;
+  stroke-width: 2.5px !important;
+  stroke-dasharray: 6 3;
+}
+@media (prefers-color-scheme: dark) {
+  .pele {
+    --pele-bg: #1f1f1f;
+    --pele-fg: #f5f5f5;
+    --pele-muted: #acacac;
+    --pele-line: #939393;
+    --pele-surface: #121212;
+    --pele-surface-alt: #2c2c2c;
+    --pele-border: #4e4e4e;
+  }
+  .pele .blue rect { fill: #1b3857; }
+  .pele .orange rect { fill: #573117; }
+  .pele .purple rect { fill: #3c2e57; }
+  .pele .yellow rect { fill: #573d17; }
+  .pele .teal rect { fill: #174641; }
+  .pele .tan rect { fill: #3d3127; }
+  .pele .pink rect { fill: #57233e; }
+  .pele .breaks rect {
+    fill: #2e2021 !important;
+    stroke: #cf2b35 !important;
+  }
+  .pele .breaks text {
+    fill: #ff6463 !important;
+  }
+  .pele .mayBreak rect {
+    fill: #2e2619 !important;
+    stroke: #d0700f !important;
+  }
+  .pele .mayBreak text {
+    fill: #ffa257 !important;
+  }
+  .pele .bugPath rect {
+    stroke: #116dd2 !important;
+  }
+  .pele .repeats rect {
+    stroke: #9a3fcf !important;
+  }
+}
+</style><g class="pele-clusters"><g class="pele-cluster pele-state-composite" data-id="legend"><rect x="309.69" y="8" width="352.06" height="112" rx="10" fill="var(--_a)" fill-opacity="0.5" stroke="var(--_b)"/><path d="M309.69,44H661.75" fill="none" stroke="var(--_b)"/><text class="pele-cluster-label" x="485.72" y="31.6" text-anchor="middle">Legend</text></g></g><g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round"><g class="pele-edge pele-transition" data-id="edge0"><path d="M262.69,120L262.69,157"/><path class="pele-marker" d="M262.69,164L259.33,156L266.05,156Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge1"><path d="M323.19,226L323.19,238.25C323.19,248.02 380.49,254 473.98,254C567.47,254 624.77,269.2 624.77,294L624.77,319C624.77,324.63 583.08,324.63 583.08,330.25L583.08,334"/><path class="pele-marker" d="M583.08,341L579.72,333L586.44,333Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge2"><path d="M254.69,226L254.69,516C254.69,551.5 201.72,551.5 201.72,587L201.72,593"/><path class="pele-marker" d="M201.72,600L198.36,592L205.08,592Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge3"><path d="M512.8,341L512.8,331.38C512.8,325.19 471.11,325.19 471.11,319L471.11,294C471.11,276.64 439.97,266 389.15,266C338.33,266 307.19,255.74 307.19,239L307.19,233"/><path class="pele-marker" d="M307.19,226L310.55,234L303.83,234Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge4"><path d="M583.08,403L583.08,412.63C583.08,417.8 701.43,419.82 701.43,425L701.43,465"/><path class="pele-marker" d="M701.43,472L698.07,464L704.79,464Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge5"><path d="M117.85,600L117.85,341C117.85,290 210.19,290 210.19,239L210.19,233"/><path class="pele-marker" d="M210.19,226L213.55,234L206.83,234Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge6"><path d="M209.72,662L209.72,671.63C209.72,677.81 274.34,677.81 274.34,684L274.34,733"/><path class="pele-marker" d="M274.34,740L270.98,732L277.7,732Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge7"><path d="M608.7,472L608.7,462.38C608.7,456.19 547.94,456.19 547.94,450L547.94,410"/><path class="pele-marker" d="M547.94,403L551.3,411L544.58,411Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge8"><path d="M608.7,516L608.7,525.63C608.7,531.57 505.66,532.06 505.66,538L505.66,578C505.66,580.81 217.72,586.44 217.72,589.25L217.72,593"/><path class="pele-marker" d="M217.72,600L214.36,592L221.08,592Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge9"><path d="M725.13,516L725.13,525.63C725.13,529.34 890.04,534.29 890.04,538L890.04,578C890.04,583.63 826.75,583.63 826.75,589.25L826.75,593"/><path class="pele-marker" d="M826.75,600L823.39,592L830.11,592Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge10"><path d="M329.92,740L329.92,727C329.92,714.88 388.33,714.88 388.33,702.75L388.33,431.25C388.33,423.28 512.8,423.28 512.8,415.31L512.8,410"/><path class="pele-marker" d="M512.8,403L516.16,411L509.44,411Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge11"><path d="M218.75,740L218.75,727C218.75,718 95.7,718 95.7,709L95.7,669"/><path class="pele-marker" d="M95.7,662L99.06,670L92.34,670Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge12"><path d="M367.51,784L367.51,840C367.51,845.63 326.8,845.63 326.8,851.25L326.8,855"/><path class="pele-marker" d="M326.8,862L323.44,854L330.16,854Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge13"><path d="M709.13,600L709.13,523"/><path class="pele-marker" d="M709.13,516L712.49,524L705.77,524Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge14"><path d="M826.75,662L826.75,671.63C826.75,677.81 876.42,677.81 876.42,684L876.42,709C876.42,714.63 812.54,714.63 812.54,720.25L812.54,724"/><path class="pele-marker" d="M812.54,731L809.18,723L815.9,723Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge15"><path d="M221.87,862L221.87,852.38C221.87,846.19 181.17,846.19 181.17,840L181.17,791"/><path class="pele-marker" d="M181.17,784L184.53,792L177.81,792Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge16"><path d="M348.45,924L348.45,986"/><path class="pele-marker" d="M348.45,993L345.09,985L351.81,985Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge17"><path d="M722.76,731L722.76,669"/><path class="pele-marker" d="M722.76,662L726.12,670L719.4,670Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge18"><path d="M200.23,993L200.23,931"/><path class="pele-marker" d="M200.23,924L203.59,932L196.86,932Z" fill="var(--_l)" stroke="none"/></g></g><g class="pele-edge-labels" font-size="14"><g class="pele-edge-label" data-id="edge1"><rect x="576.81" y="296" width="95.91" height="21" rx="3" fill="var(--_bg)"/><text x="624.77" y="311.4" text-anchor="middle">Alice registers</text></g><g class="pele-edge-label" data-id="edge2"><rect x="209.45" y="361.5" width="90.47" height="21" rx="3" fill="var(--_bg)"/><text x="254.69" y="376.9" text-anchor="middle">Bob registers</text></g><g class="pele-edge-label" data-id="edge3"><rect x="385.41" y="296" width="171.41" height="21" rx="3" fill="var(--_bg)"/><text x="471.11" y="311.4" text-anchor="middle">Alice deletes their account</text></g><g class="pele-edge-label" data-id="edge4"><rect x="656.19" y="427" width="90.47" height="21" rx="3" fill="var(--_bg)"/><text x="701.43" y="442.4" text-anchor="middle">Bob registers</text></g><g class="pele-edge-label" data-id="edge5"><rect x="34.86" y="483.5" width="165.98" height="21" rx="3" fill="var(--_bg)"/><text x="117.85" y="498.9" text-anchor="middle">Bob deletes their account</text></g><g class="pele-edge-label" data-id="edge6"><rect x="226.38" y="686" width="95.91" height="21" rx="3" fill="var(--_bg)"/><text x="274.34" y="701.4" text-anchor="middle">Alice registers</text></g><g class="pele-edge-label" data-id="edge7"><rect x="464.95" y="427" width="165.98" height="21" rx="3" fill="var(--_bg)"/><text x="547.94" y="442.4" text-anchor="middle">Bob deletes their account</text></g><g class="pele-edge-label" data-id="edge8"><rect x="406.33" y="540" width="198.65" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="505.66" y="553.9">Alice deletes their account and</tspan><tspan x="505.66" y="571.9">hands admin to the other</tspan></text></g><g class="pele-edge-label" data-id="edge9"><rect x="813.28" y="547.5" width="153.52" height="21" rx="3" fill="var(--_bg)"/><text x="890.04" y="562.9" text-anchor="middle">the admin disables Bob</text></g><g class="pele-edge-label" data-id="edge10"><rect x="291.72" y="613" width="193.22" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="388.33" y="626.9">Bob deletes their account and</tspan><tspan x="388.33" y="644.9">hands admin to the other</tspan></text></g><g class="pele-edge-label" data-id="edge11"><rect x="10" y="686" width="171.41" height="21" rx="3" fill="var(--_bg)"/><text x="95.7" y="701.4" text-anchor="middle">Alice deletes their account</text></g><g class="pele-edge-label" data-id="edge12"><rect x="288.03" y="817" width="158.95" height="21" rx="3" fill="var(--_bg)"/><text x="367.51" y="832.4" text-anchor="middle">the admin disables Alice</text></g><g class="pele-edge-label" data-id="edge13"><rect x="624.98" y="547.5" width="168.3" height="21" rx="3" fill="var(--_bg)"/><text x="709.13" y="562.9" text-anchor="middle">the admin re-enables Bob</text></g><g class="pele-edge-label" data-id="edge14"><rect x="790.71" y="686" width="171.41" height="21" rx="3" fill="var(--_bg)"/><text x="876.42" y="701.4" text-anchor="middle">Alice deletes their account</text></g><g class="pele-edge-label" data-id="edge15"><rect x="94.3" y="817" width="173.73" height="21" rx="3" fill="var(--_bg)"/><text x="181.17" y="832.4" text-anchor="middle">the admin re-enables Alice</text></g><g class="pele-edge-label" data-id="edge16"><rect x="265.46" y="948" width="165.98" height="21" rx="3" fill="var(--_bg)"/><text x="348.45" y="963.4" text-anchor="middle">Bob deletes their account</text></g><g class="pele-edge-label" data-id="edge17"><rect x="674.81" y="686" width="95.91" height="21" rx="3" fill="var(--_bg)"/><text x="722.76" y="701.4" text-anchor="middle">Alice registers</text></g><g class="pele-edge-label" data-id="edge18"><rect x="154.99" y="948" width="90.47" height="21" rx="3" fill="var(--_bg)"/><text x="200.23" y="963.4" text-anchor="middle">Bob registers</text></g></g><g class="pele-nodes"><g class="pele-node pele-state blue" data-id="s0" transform="translate(262.69,195)"><rect x="-104.5" y="-31" width="208.99" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Alice no account, Bob no</tspan><tspan x="0" y="16.1">account</tspan></text></g><g class="pele-node pele-state teal" data-id="s1" transform="translate(547.94,372)"><rect x="-87.14" y="-31" width="174.29" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Alice admin, Bob no</tspan><tspan x="0" y="16.1">account</tspan></text></g><g class="pele-node pele-state teal" data-id="s2" transform="translate(168.34,631)"><rect x="-93.38" y="-31" width="186.75" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Alice no account, Bob</tspan><tspan x="0" y="16.1">admin</tspan></text></g><g class="pele-node pele-state teal" data-id="s3" transform="translate(664.28,494)"><rect x="-107.58" y="-22" width="215.17" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Alice admin, Bob member</text></g><g class="pele-node pele-state teal" data-id="s4" transform="translate(274.34,762)"><rect x="-107.58" y="-22" width="215.17" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Alice member, Bob admin</text></g><g class="pele-node pele-state tan" data-id="s5" transform="translate(771.17,631)"><rect x="-107.58" y="-31" width="215.17" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Alice admin, Bob member</tspan><tspan x="0" y="16.1">(disabled)</tspan></text></g><g class="pele-node pele-state tan" data-id="s6" transform="translate(274.34,893)"><rect x="-104.46" y="-31" width="208.93" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Alice member (disabled),</tspan><tspan x="0" y="16.1">Bob admin</tspan></text></g><g class="pele-node pele-state tan" data-id="s7" transform="translate(771.17,762)"><rect x="-93.38" y="-31" width="186.75" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Alice no account, Bob</tspan><tspan x="0" y="16.1">member (disabled)</tspan></text></g><g class="pele-node pele-state tan" data-id="s8" transform="translate(274.34,1024)"><rect x="-104.46" y="-31" width="208.93" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Alice member (disabled),</tspan><tspan x="0" y="16.1">Bob no account</tspan></text></g><g class="pele-node pele-state-start" data-id="root_start" transform="translate(262.69,113)"><circle r="7" fill="var(--_l)"/></g><g class="pele-node pele-state teal" data-id="lg0" transform="translate(366.14,82)"><rect x="-40.45" y="-22" width="80.9" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">normal</text></g><g class="pele-node pele-state tan" data-id="lg1" transform="translate(492.38,82)"><rect x="-45.79" y="-22" width="91.58" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">disabled</text></g><g class="pele-node pele-state blue" data-id="lg2" transform="translate(611.96,82)"><rect x="-33.79" y="-22" width="67.58" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">none</text></g></g></svg>
