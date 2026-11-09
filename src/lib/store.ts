@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { debtAfterPayment, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
+import { debtAfterPayment } from "./lifecycle";
+import { nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./machines/goal";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
