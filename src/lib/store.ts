@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { debtAfterPayment, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
+import { deleteRefusal, nextAccountState, roleForRegistration, type AccountState } from "./machines/identity";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
@@ -23,8 +24,8 @@ export const STARTER_CATEGORIES = {
 } as const;
 
 export type Role = "admin" | "user";
-export type User = { id: string; username: string; passwordHash: string; role: Role; enabled: boolean; assistantOptIn: boolean; createdAt: string };
-export type PublicUser = Omit<User, "passwordHash">;
+export type PublicUser = { id: string; username: string; role: Role; enabled: boolean; assistantOptIn: boolean; createdAt: string };
+export type User = PublicUser & { passwordHash: string; sessionVersion: number };
 export type AccountType = "cash" | "bank";
 export type Account = { id: string; name: string; type: AccountType; openingMinor: number; balanceMinor: number; isDefault: boolean };
 export type Category = { id: string; name: string; type: CategoryType; icon: CategoryIconId };
@@ -212,6 +213,9 @@ export function createStore(db: Database.Database) {
       db.exec("ALTER TABLE users ADD COLUMN shortcut_credential_hash TEXT");
     }
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_shortcut_credential_hash ON users(shortcut_credential_hash) WHERE shortcut_credential_hash IS NOT NULL");
+    if (!userColumns.some((column) => column.name === "session_version")) {
+      db.exec("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0");
+    }
     const accountColumns = db.pragma("table_info(financial_accounts)") as { name: string }[];
     if (!accountColumns.some((column) => column.name === "balance_adjustment_minor_exact")) {
       db.transaction(() => {
@@ -307,7 +311,7 @@ export function createStore(db: Database.Database) {
     return db.transaction(() => {
       const exists = db.prepare("SELECT 1 FROM users WHERE username = ?").get(normalized);
       if (exists) throw new Error("That username is already taken.");
-      const role: Role = db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get() ? "user" : "admin";
+      const role: Role = roleForRegistration(Boolean(db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get()));
       const user = { id: randomUUID(), username: normalized, passwordHash, role, enabled: true, assistantOptIn: false, createdAt: stamp() };
       db.prepare("INSERT INTO users(id,username,password_hash,role,enabled,assistant_opt_in,created_at) VALUES(?,?,?,?,1,0,?)")
         .run(user.id, normalized, passwordHash, role, user.createdAt);
@@ -319,13 +323,32 @@ export function createStore(db: Database.Database) {
     }).immediate();
   }
 
+  function userFromRow(row: Record<string, unknown>): User {
+    return { ...publicUser(row), passwordHash: String(row.password_hash), sessionVersion: Number(row.session_version) };
+  }
   function getUserByUsername(username: string): User | null {
     const row = db.prepare("SELECT * FROM users WHERE username = ?").get(username.trim()) as Record<string, unknown> | undefined;
-    return row ? { ...publicUser(row), passwordHash: String(row.password_hash) } : null;
+    return row ? userFromRow(row) : null;
   }
   function getUserById(id: string): User | null {
     const row = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    return row ? { ...publicUser(row), passwordHash: String(row.password_hash) } : null;
+    return row ? userFromRow(row) : null;
+  }
+  // The account state the machine decides from, read in the same transaction that writes it.
+  function accountState(userId: string, now: string): AccountState | null {
+    const row = db.prepare("SELECT enabled, reset_token_hash, reset_expires_at, shortcut_credential_hash, session_version FROM users WHERE id = ?")
+      .get(userId) as { enabled: number; reset_token_hash: string | null; reset_expires_at: string | null; shortcut_credential_hash: string | null; session_version: number } | undefined;
+    if (!row) return null;
+    const reset = row.reset_token_hash === null ? "none" : !row.reset_expires_at || row.reset_expires_at < now ? "expired" : "live";
+    return { enabled: Boolean(row.enabled), reset, shortcut: row.shortcut_credential_hash === null ? "none" : "live", sessionVersion: row.session_version };
+  }
+  // Writes what the machine decided. A credential that is not live is cleared; a live one keeps its stored value.
+  function saveAccountState(userId: string, state: AccountState): void {
+    db.prepare(`UPDATE users SET enabled = ?, session_version = ?,
+      reset_token_hash = CASE WHEN ? = 'live' THEN reset_token_hash END,
+      reset_expires_at = CASE WHEN ? = 'live' THEN reset_expires_at END,
+      shortcut_credential_hash = CASE WHEN ? = 'live' THEN shortcut_credential_hash END
+      WHERE id = ?`).run(state.enabled ? 1 : 0, state.sessionVersion, state.reset, state.reset, state.shortcut, userId);
   }
   function listUsers(): PublicUser[] {
     return (db.prepare("SELECT id,username,role,enabled,assistant_opt_in,created_at FROM users ORDER BY created_at")
@@ -333,18 +356,31 @@ export function createStore(db: Database.Database) {
   }
   function setUserEnabled(adminId: string, userId: string, enabled: boolean): void {
     if (adminId === userId) throw new Error("You cannot disable your own admin account.");
-    const result = db.prepare("UPDATE users SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, userId);
-    if (!result.changes) throw new Error("User not found.");
+    return db.transaction(() => {
+      const state = accountState(userId, stamp());
+      if (!state) throw new Error("User not found.");
+      const next = nextAccountState(state, enabled ? "enable" : "disable");
+      if (!next) throw new Error("This account cannot change state.");
+      saveAccountState(userId, next);
+    }).immediate();
   }
   function setResetCredential(userId: string, hash: string, expiresAt: string): void {
-    const result = db.prepare("UPDATE users SET reset_token_hash = ?, reset_expires_at = ? WHERE id = ?").run(hash, expiresAt, userId);
-    if (!result.changes) throw new Error("User not found.");
+    return db.transaction(() => {
+      const state = accountState(userId, stamp());
+      if (!state) throw new Error("User not found.");
+      if (!nextAccountState(state, "issueReset")) throw new Error("Only an enabled user can receive a reset code.");
+      db.prepare("UPDATE users SET reset_token_hash = ?, reset_expires_at = ? WHERE id = ?").run(hash, expiresAt, userId);
+    }).immediate();
   }
   function consumeResetCredential(userId: string, tokenHash: string, newPasswordHash: string): boolean {
     return db.transaction(() => {
-      const row = db.prepare("SELECT reset_token_hash, reset_expires_at FROM users WHERE id = ? AND enabled = 1").get(userId) as { reset_token_hash: string | null; reset_expires_at: string | null } | undefined;
-      if (!row || row.reset_token_hash !== tokenHash || !row.reset_expires_at || row.reset_expires_at < stamp()) return false;
-      db.prepare("UPDATE users SET password_hash = ?, reset_token_hash = NULL, reset_expires_at = NULL WHERE id = ?").run(newPasswordHash, userId);
+      const state = accountState(userId, stamp());
+      const row = db.prepare("SELECT reset_token_hash FROM users WHERE id = ?").get(userId) as { reset_token_hash: string | null } | undefined;
+      if (!state || row?.reset_token_hash !== tokenHash) return false;
+      const next = nextAccountState(state, "resetPassword");
+      if (!next) return false;
+      db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(newPasswordHash, userId);
+      saveAccountState(userId, next);
       return true;
     }).immediate();
   }
@@ -1189,14 +1225,13 @@ export function createStore(db: Database.Database) {
     db.transaction(() => {
       const user = getUserById(userId);
       if (!user) throw new Error("User not found.");
-      if (user.role === "admin") {
-        const enabled = db.prepare("SELECT id FROM users WHERE enabled=1 AND id!=?").all(userId) as { id: string }[];
-        if (enabled.length && !adminHandoffTo) throw new Error("Choose an enabled user to receive admin access before deleting this account.");
-        if (adminHandoffTo) {
-          if (!enabled.some((entry) => entry.id === adminHandoffTo)) throw new Error("Admin handoff must go to another enabled user.");
-          db.prepare("UPDATE users SET role='user' WHERE id=?").run(userId);
-          db.prepare("UPDATE users SET role='admin' WHERE id=? AND enabled=1").run(adminHandoffTo);
-        }
+      const enabled = (db.prepare("SELECT id FROM users WHERE enabled=1 AND id!=?").all(userId) as { id: string }[]).map((entry) => entry.id);
+      const refusal = deleteRefusal(user.role, enabled, adminHandoffTo);
+      if (refusal === "handoff-required") throw new Error("Choose an enabled user to receive admin access before deleting this account.");
+      if (refusal === "handoff-not-enabled") throw new Error("Admin handoff must go to another enabled user.");
+      if (user.role === "admin" && adminHandoffTo) {
+        db.prepare("UPDATE users SET role='user' WHERE id=?").run(userId);
+        db.prepare("UPDATE users SET role='admin' WHERE id=? AND enabled=1").run(adminHandoffTo);
       }
       const managed = db.prepare("SELECT id FROM goals WHERE manager_id=? AND status!='archived'").all(userId) as { id: string }[];
       for (const goal of managed) succession(goal.id, userId);
