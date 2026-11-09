@@ -2135,6 +2135,23 @@ describe("assistant turn commit", () => {
     expect(store.listTransactions(user.id)).toHaveLength(0);
   });
 
+  it("refuses a local debt-list turn when consent is withdrawn while the request body streams", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        store.setAssistantConsent(user.id, null);
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ prompt: "List my debts" })));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" }, body, ...{ duplex: "half" },
+    }));
+
+    expect(response.status).toBe(403);
+    expect(store.listConversations(user.id)).toHaveLength(0);
+  });
+
   it("keeps the pending repayment question and its earlier context when the model call fails", async () => {
     const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));

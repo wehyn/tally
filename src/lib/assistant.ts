@@ -675,8 +675,10 @@ function directDebtCapture(prompt: string): { name: string; args: Record<string,
 
 // The user message, the write and the reply commit together. A new chat is created in the same step,
 // so a turn that fails (provider error, consent withdrawn, chat deleted) leaves nothing behind.
+// Every turn that stores anything goes through here, so the consent recheck cannot be skipped by a branch.
 function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, prompt: string, work: (conversationId: string) => T): T {
   return store.transaction(() => {
+    assertAssistantAccess(store, userId);
     const id = conversationId ?? store.createConversation(userId, prompt.slice(0, 80));
     store.addMessage(userId, id, "user", prompt);
     return work(id);
@@ -765,7 +767,6 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
     return commitTurn(store, user.id, input.conversationId, input.prompt, (conversationId) => {
-      assertAssistantAccess(store, user.id);
       let call = providerCall;
       // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
       let clarificationKind: FollowupKind | null = null;
