@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNDO_WINDOW_MS, canUndo, undoUntilFor } from "../src/lib/machines/assistant";
+import { UNDO_WINDOW_MS, canUndo, pendingOutcome, undoUntilFor, type PromptFacts } from "../src/lib/machines/assistant";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
 
@@ -23,5 +23,33 @@ describe("assistant undo window", () => {
   it("refuses Undo for a manual transaction or one with no window", () => {
     expect(canUndo({ source: "manual", undoUntil: undoUntilFor("assistant", now) }, now)).toBe(false);
     expect(canUndo({ source: "assistant", undoUntil: null }, now)).toBe(false);
+  });
+});
+
+const prompt = (facts: Partial<PromptFacts>): PromptFacts => ({ bareAmount: false, yesOrNo: false, paymentWording: false, hasNumber: false, ...facts });
+
+describe("pending follow-up outcome", () => {
+  it("does nothing when no question is pending", () => {
+    expect(pendingOutcome(null, prompt({ hasNumber: true }))).toBe("none");
+  });
+
+  it("answers a pending repayment amount with a bare amount", () => {
+    expect(pendingOutcome("repayment_amount", prompt({ bareAmount: true, hasNumber: true }))).toBe("answer");
+  });
+
+  it("replaces a pending repayment amount with a complete unrelated request", () => {
+    expect(pendingOutcome("repayment_amount", prompt({ hasNumber: true }))).toBe("replace");
+    expect(pendingOutcome("ordinary_income", prompt({ hasNumber: true }))).toBe("replace");
+  });
+
+  it("answers with payment wording, yes or no, or no amount", () => {
+    expect(pendingOutcome("repayment_amount", prompt({ paymentWording: true, hasNumber: true }))).toBe("answer");
+    expect(pendingOutcome("ordinary_income", prompt({ yesOrNo: true, hasNumber: true }))).toBe("answer");
+    expect(pendingOutcome("repayment_amount", prompt({}))).toBe("answer");
+  });
+
+  it("keeps answering the other pending questions, which the code resolves from context", () => {
+    expect(pendingOutcome("repayment_payer", prompt({ hasNumber: true }))).toBe("answer");
+    expect(pendingOutcome("clarification", prompt({ hasNumber: true }))).toBe("answer");
   });
 });

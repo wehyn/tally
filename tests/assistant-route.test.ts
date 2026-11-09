@@ -2154,4 +2154,43 @@ describe("assistant turn commit", () => {
     expect(response.status).toBe(200);
     expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
   });
+
+  it("handles a complete unrelated prompt as a new request while a repayment amount is pending", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+    expect(asked.answer).toBe("What amount should I use for the repayment?");
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
+    const result = await (await POST(assistantRequest("Coffee 120", asked.conversationId))).json();
+
+    expect(result.answer).not.toContain("repayment");
+    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+  });
+
+  it("answers a pending repayment amount with a bare amount and records the repayment", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })));
+    const result = await (await POST(assistantRequest("500", asked.conversationId))).json();
+
+    expect(result.transaction).toMatchObject({ amountMinor: 50_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
+  });
+
+  it("handles a complete unrelated prompt as a new request while an ordinary income question is pending", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
+    const asked = await (await POST(assistantRequest("Zed paid me 500"))).json();
+    expect(asked.answer).toContain("ordinary income");
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
+    const result = await (await POST(assistantRequest("Coffee 120", asked.conversationId))).json();
+
+    expect(result.answer).not.toContain("ordinary income");
+    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+  });
 });

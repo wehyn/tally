@@ -7,6 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
+import { pendingOutcome, type PromptFacts } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -115,6 +116,14 @@ function bareAmountFromPrompt(prompt: string): number | undefined {
   const match = /^\s*(₱\s*)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*(?:php|pesos?)?\s*[.!]?\s*$/i.exec(prompt);
   if (!match) return undefined;
   try { return parsePHPToMinor(`${match[1] ?? ""}${match[2]}${match[3] ? `.${match[3]}` : ""}`); } catch { return undefined; }
+}
+function promptFacts(prompt: string): PromptFacts {
+  return {
+    bareAmount: bareAmountFromPrompt(prompt) !== undefined,
+    yesOrNo: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that|no|nope|nah)\b/i.test(prompt),
+    paymentWording: hasIncomingDebtRepaymentWording(prompt) || hasOutgoingDebtRepaymentWording(prompt),
+    hasNumber: /\d/.test(prompt),
+  };
 }
 function parseProviderAmount(value: unknown): number | undefined {
   if (typeof value !== "string" && typeof value !== "number") return undefined;
@@ -679,7 +688,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const conversation = input.conversationId ? store.getConversation(user.id, input.conversationId) : null;
     if (input.conversationId && !conversation) throw new HttpError(404, "Conversation not found.");
     const conversationMessages = conversation?.messages ?? [];
-    const history = minimalFollowUpContext(conversationMessages);
+    const openRun = minimalFollowUpContext(conversationMessages);
+    const history = pendingOutcome(openRun.at(-1)?.followup ?? null, promptFacts(input.prompt)) === "replace" ? [] : openRun;
     const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
     const promptCreatedAt = new Date().toISOString();
     const userMessages = [

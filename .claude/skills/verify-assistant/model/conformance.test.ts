@@ -146,10 +146,11 @@ describe("FINDING: known bugs the model reports (a failure here means the bug wa
 
   it("PlainPromptNotTrapped: a complete unrelated prompt is swallowed by a pending repayment-amount question", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
-    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("log_transaction", { amount: "120", description: "coffee" }));
+    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" }));
     const { conversationId } = await (await ask("Ana paid me")).json();
     const second = await (await ask("Coffee 120", conversationId)).json();
-    expect(second.answer).toBe("What amount should I use for the repayment?");
-    expect(txCount()).toBe(0);
+    expect(second.answer).not.toBe("What amount should I use for the repayment?");
+    expect(second.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(txCount()).toBe(1);
   });
 });
