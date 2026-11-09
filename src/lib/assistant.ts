@@ -120,20 +120,15 @@ const AMOUNT_ANSWER_WORDS: ReadonlySet<string> = new Set([
   "p", "php", "peso", "pesos", "po", "opo", "lang", "na", "only", "just", "about", "around", "roughly", "approximately", "exactly",
   "it", "its", "it's", "it’s", "that", "thats", "that's", "that’s", "is", "was", "the", "amount", "total", "please", "pls", "sorry", "thanks",
 ]);
-// What is left of a prompt once the amount's peso marker and answer filler are removed.
-function withoutAmountAnswerWords(prompt: string): string {
-  return prompt.replace(/₱/g, " ").replace(/[\p{L}'’]+/gu, (word) => AMOUNT_ANSWER_WORDS.has(word.toLowerCase()) ? " " : word);
-}
 function bareAmountFromPrompt(prompt: string): number | undefined {
-  const match = /^[\s.,!?]*(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?[\s.,!?]*$/.exec(withoutAmountAnswerWords(prompt));
+  const match = /^\s*(₱\s*)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*(?:php|pesos?)?\s*[.!]?\s*$/i.exec(prompt);
   if (!match) return undefined;
-  try { return parsePHPToMinor(`${match[1]}${match[2] ? `.${match[2]}` : ""}`); } catch { return undefined; }
+  try { return parsePHPToMinor(`${match[1] ?? ""}${match[2]}${match[3] ? `.${match[3]}` : ""}`); } catch { return undefined; }
 }
 // Words that carry a detail of an amount answer, not a request of their own ("500 cash", "500 daw").
 const AMOUNT_DETAIL_WORDS: ReadonlySet<string> = new Set(["cash", "bucks", "buck", "piso", "daw", "raw", "now", "already", "earlier", "at", "on", "by", "and"]);
 // An amount as people type it: "500", "1,000.50", and k or m shorthand ("5k", "2m", "5 thousand").
 const ANSWER_AMOUNT = "(\\d{1,3}(?:,\\d{3})+|\\d+)(\\.\\d+)?(?:\\s?(k|m|mil|million|thousand|grand)(?![\\p{L}\\p{N}]))?";
-const ANSWER_AMOUNT_UNIT: Record<string, number> = { k: 1_000, thousand: 1_000, grand: 1_000, m: 1_000_000, mil: 1_000_000, million: 1_000_000 };
 const WEEKDAYS = "(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)";
 function withoutDateWords(text: string): string {
   return withoutDatesAndTimes(text).replace(new RegExp(`\\b(?:today|yesterday|tomorrow|tonight|(?:last|next|this|on)\\s+${WEEKDAYS}|(?:last|next|this)\\s+(?:week|month|night)|this\\s+(?:morning|afternoon|evening))\\b`, "gi"), " ");
@@ -145,10 +140,6 @@ function accountNamePattern(account: { name: string }, prefix = ""): RegExp | un
 function accountsByNameLength<T extends { name: string }>(accounts: readonly T[]): T[] {
   return [...accounts].sort((a, b) => b.name.length - a.name.length);
 }
-// The account a reply names, with or without a preposition ("500 to Wallet", "500 GCash").
-function accountNamedIn(text: string, accounts: Account[]): Account | undefined {
-  return accountsByNameLength(accounts).find((account) => accountNamePattern(account)?.test(text));
-}
 // What is left of a reply once everything that only details an amount is removed: dates, the user's own
 // account names with their preposition, the peso marker and answer filler. Amounts stay.
 function withoutAnswerDetails(prompt: string, accounts: readonly { name: string }[]): string {
@@ -159,15 +150,6 @@ function withoutAnswerDetails(prompt: string, accounts: readonly { name: string 
   }, withoutDateWords(prompt));
   return withoutAccounts.replace(/₱/g, " ")
     .replace(/[\p{L}'’]+/gu, (word) => AMOUNT_ANSWER_WORDS.has(word.toLowerCase()) || AMOUNT_DETAIL_WORDS.has(word.toLowerCase()) ? " " : word);
-}
-// The amount of a reply that is nothing but an amount and its details ("500", "5k", "500 to Wallet", "500 yesterday").
-function answeredAmountFromPrompt(prompt: string, accounts: readonly { name: string }[] = []): number | undefined {
-  const match = new RegExp(`^[\\s.,!?]*${ANSWER_AMOUNT}[\\s.,!?]*$`, "iu").exec(withoutAnswerDetails(prompt, accounts));
-  if (!match) return undefined;
-  try {
-    const minor = parsePHPToMinor(`${match[1]}${match[2] ?? ""}`) * (match[3] ? ANSWER_AMOUNT_UNIT[match[3].toLowerCase()] : 1);
-    return Number.isSafeInteger(minor) ? minor || undefined : undefined;
-  } catch { return undefined; }
 }
 // Letters that no amount, date, owned account or answer filler explains: the description of a request, such as "Coffee".
 function carriesOwnSubject(prompt: string, accounts: readonly { name: string }[]): boolean {
@@ -829,10 +811,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const latestRepaymentPrompt = [...history].reverse().find((message) => message.role === "user"
       && (hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
     const currentAmountFollowup = lastFollowup === "repayment_amount";
-    // An account named in the amount answer ("500 sa GCash") is the one the user means, preposition or not.
-    const amountReplyAccount = currentAmountFollowup ? accountNamedIn(input.prompt, accounts) : undefined;
     const statedRepaymentAmount = repaymentAmountFromPrompt(input.prompt)
-      ?? (currentAmountFollowup ? answeredAmountFromPrompt(input.prompt, accounts) : undefined)
+      ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
     return commitTurn(store, user.id, input.conversationId, input.prompt, replacesPending, receivedAt, (conversationId) => {
@@ -1035,11 +1015,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
             const accountHint = accountHintFromMessages(userMessageText, accounts);
             const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-            const account = amountReplyAccount ?? (accountHint.mentioned
+            const account = accountHint.mentioned
               ? accountHint.account
               : requestedAccount
                 ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-                : defaultAccount);
+                : defaultAccount;
             const dateHint = priorDateHint(userMessages);
             const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
             const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
@@ -1079,11 +1059,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
           const accountHint = accountHintFromMessages(userMessageText, accounts);
           const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-          const account = amountReplyAccount ?? (accountHint.mentioned
+          const account = accountHint.mentioned
             ? accountHint.account
             : requestedAccount
               ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-              : defaultAccount);
+              : defaultAccount;
           const dateHint = priorDateHint(userMessages);
           const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
           const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());

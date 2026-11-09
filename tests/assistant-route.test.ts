@@ -2106,6 +2106,14 @@ describe("assistant debt capture", () => {
 });
 
 describe("assistant turn commit", () => {
+  async function askAnaPaidMe() {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+    expect(asked.answer).toBe("What amount should I use for the repayment?");
+    return { debt, conversationId: asked.conversationId as string };
+  }
+
   it("saves nothing when the chat is deleted during the model call, so a retry saves once", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "What else?" })));
     const started = await (await POST(assistantRequest("hello"))).json();
@@ -2220,19 +2228,14 @@ describe("assistant turn commit", () => {
     expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
   });
 
-  for (const reply of ["P500", "PHP 500", "500 pesos po", "it was 500"]) {
+  // main's strict reading of an answer to "How much?": digits with an optional peso sign or word, nothing else.
+  for (const reply of ["500", "₱500", "500 php", "500 pesos", "500."]) {
     it(`records the repayment when "${reply}" answers the pending amount question`, async () => {
-      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
-      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
-      const asked = await (await POST(assistantRequest("Ana paid me"))).json();
-      expect(asked.answer).toBe("What amount should I use for the repayment?");
+      const { debt, conversationId } = await askAnaPaidMe();
 
-      const second = vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
-      vi.stubGlobal("fetch", second);
-      const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })));
+      const result = await (await POST(assistantRequest(reply, conversationId))).json();
 
-      const sent = JSON.parse(String((second.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
-      expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
       expect(result.answer).toContain("repayment from Ana");
       expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
       expect(store.listTransactions(user.id)).toHaveLength(1);
@@ -2259,34 +2262,30 @@ describe("assistant turn commit", () => {
     });
   }
 
-  const detailReplies: { reply: string; amountMinor: number; account?: string; date?: string }[] = [
-    { reply: "500 cash", amountMinor: 50_000 },
-    { reply: "500 to Wallet", amountMinor: 50_000, account: "Wallet" },
-    { reply: "500 sa GCash", amountMinor: 50_000, account: "GCash" },
-    { reply: "500 yesterday", amountMinor: 50_000, date: "2026-10-08" },
-    { reply: "5k", amountMinor: 500_000 },
-    { reply: "500 daw", amountMinor: 50_000 },
-    { reply: "500 bucks", amountMinor: 50_000 },
+  const notBareAmounts = ["P500", "PHP 500", "500 pesos po", "it was 500", "about 500", "around 500", "roughly 500", "approximately 500", "500 cash", "500 to Wallet", "500 sa GCash", "500 yesterday", "500 last night", "5k", "500 daw", "500 bucks"];
+  const providerGuesses: [string, () => Response][] = [
+    ["a repayment of 500", () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })],
+    ["an expense of 500", () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "expense", category: "Other" })],
   ];
-  for (const { reply, amountMinor, account, date } of detailReplies) {
-    it(`records the repayment against Ana when "${reply}" answers the pending amount question`, async () => {
-      store.createAccount(user.id, { name: "GCash", type: "cash", openingMinor: 0 });
-      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 1_000_000 });
-      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
-      const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+  for (const reply of notBareAmounts) {
+    for (const [guess, response] of providerGuesses) {
+      it(`asks for the amount again and writes nothing when "${reply}" is not a bare amount and the model guesses ${guess}`, async () => {
+        store.createAccount(user.id, { name: "GCash", type: "cash", openingMinor: 0 });
+        const { debt, conversationId } = await askAnaPaidMe();
 
-      const second = vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: String(amountMinor / 100) }));
-      vi.stubGlobal("fetch", second);
-      const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
+        const second = vi.fn(async () => response());
+        vi.stubGlobal("fetch", second);
+        const result = await (await POST(assistantRequest(reply, conversationId))).json();
 
-      const sent = JSON.parse(String((second.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
-      expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
-      expect(result.answer).toContain("repayment from Ana");
-      expect(result.answer).not.toContain("ordinary income");
-      expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 1_000_000 - amountMinor, status: "open" });
-      expect(store.listTransactions(user.id)).toHaveLength(1);
-      expect(store.listTransactions(user.id)[0]).toMatchObject({ amountMinor, kind: "debt_repayment", categoryName: null, ...(account ? { accountName: account } : {}), ...(date ? { date } : {}) });
-    });
+        const sent = JSON.parse(String((second.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
+        expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
+        expect(result.answer).toBe("What amount should I use for the repayment?");
+        expect(result.transaction).toBeNull();
+        expect(store.listTransactions(user.id)).toHaveLength(0);
+        expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+        expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("repayment_amount");
+      });
+    }
   }
 
   it("keeps a replaced repayment question out of every later turn of the new request", async () => {

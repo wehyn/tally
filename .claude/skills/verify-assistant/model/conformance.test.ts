@@ -153,11 +153,11 @@ describe("regressions: the findings stay fixed", () => {
     expect(txCount()).toBe(1);
   });
 
-  it("PlainPromptNotTrapped (amount forms): an amount-only reply in a peso form answers the pending amount question instead of replacing it", async () => {
+  it("PlainPromptNotTrapped (amount forms): an amount-only reply with a peso sign or word answers the pending amount question instead of replacing it", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
     const { conversationId } = await (await ask("Ana paid me")).json();
-    const second = await (await ask("P500", conversationId)).json();
+    const second = await (await ask("₱500", conversationId)).json();
     expect(second.answer).toContain("repayment from Ana");
     expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
     expect(txCount()).toBe(1);
@@ -177,14 +177,19 @@ describe("regressions: the findings stay fixed", () => {
     expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
   });
 
-  it("AnswerNotReplaced (detail): an amount with a detail answers the pending amount question and records the repayment", async () => {
+  it("AnswerNotReplaced (detail): an amount with a detail keeps the pending question and asks for the amount again, writing nothing", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
-    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
-    const { conversationId } = await (await ask("Ana paid me")).json();
-    const second = await (await ask("500 cash", conversationId)).json();
-    expect(second.answer).toContain("repayment from Ana");
-    expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
-    expect(txCount()).toBe(1);
+    for (const reply of ["500 cash", "about 500", "P500"]) {
+      provider(tool("record_debt_payment", { counterparty: "Ana" }));
+      const { conversationId } = await (await ask("Ana paid me")).json();
+      const bodies = provider(tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+      const second = await (await ask(reply, conversationId)).json();
+      expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
+      expect(second.answer).toBe("What amount should I use for the repayment?");
+      expect(second.transaction).toBeNull();
+    }
+    expect(txCount()).toBe(0);
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
   });
 
   it("PlainPromptNotTrapped (stays replaced): the abandoned question is not reloaded by a later turn of the new request", async () => {
