@@ -1,53 +1,58 @@
 ---
 name: verify-bills
-description: Model-check Tally's recurring bill schedule (create, edit, archive, midnight posting, catch-up, failures, scheduler re-arm) with TLA+ and replay the same rules on the real store. Use when a change touches createBill, updateBill, archiveBill, processDueBills, advanceBillDate, src/lib/bill-scheduler.ts, src/instrumentation.ts, src/app/api/bills, or the bill actions in bills-view.tsx or assistant.ts.
+description: Model-check Tally's recurring bill schedule (create, edit, archive, midnight posting, catch-up, failures, scheduler re-arm) with TLA+ and replay the same rules on the real store. Use when a change touches createBill, updateBill, archiveBill, processDueBills, advanceBillDate, src/lib/machines/bill.ts, src/lib/bill-scheduler.ts, src/instrumentation.ts, src/app/api/bills, or the bill actions in bills-view.tsx or assistant.ts.
 ---
 
 # Verify the bill schedule
 
 ## What is promised
 
-- **Each due date is posted once.** A bill never charges the same date twice, and never skips a date that has passed. Harm: wrong balances and spending totals.
+- **Each due date is posted once.** A bill never charges the same date twice, including after the user edits its next due date. Harm: wrong balances and spending totals.
 - **An archived bill, a bill that is not due yet, or a bill past its end date never posts.**
 - **A failed posting changes nothing.** The bill stays due and is retried at the next midnight run or the next save of that bill; no date is lost.
 - **The midnight timer is always re-armed** after a run, a failed bill, or a crash of the run.
-- **Only a user edit moves `nextDueDate` backwards.**
+- **Only a user edit moves `nextDueDate` backwards, and never onto a date already posted.**
 
 ## Run it
 
 ```sh
-# Real code replays the model (under a minute; VERIFY_BILLS_DEPTH=4 takes about 80 seconds).
+# Real code replays the model (about 12 seconds at depth 3; VERIFY_BILLS_DEPTH=4 runs longer, not timed).
 npx vitest run --config .claude/skills/verify-bills/model/vitest.config.ts
-# Scheduler and API tests.
-npx vitest run tests/bill-scheduler.test.ts tests/bills-api.test.ts
+# Scheduler, API and machine tests.
+npx vitest run tests/bill-scheduler.test.ts tests/bills-api.test.ts tests/bill-machine.test.ts
 ```
 
-If `node_modules` is missing, run `npm ci` first. Also check the design model with the `/statechart` skill: give it `model/Bills.tla` with `model/Main.cfg` (all rules must hold), then `model/Edit.cfg` (expected to break `NoDoublePost`), and read its report: a broken rule is shown as its shortest path in plain words; a pass is a chart. For the main-flow chart use `model/BillsFlow.tla`, `model/Flow.cfg` and the view `model/flowview.ts`; `model/view.ts` is the view for `Bills.tla`.
+If `node_modules` is missing, run `npm ci` first. Also check the design model with the `/statechart` skill, one config at a time:
 
-Expected today: `Main.cfg` holds every rule. `Edit.cfg` (the API may edit `nextDueDate`) breaks `NoDoublePost`: this is a known finding, below. The second test in `conformance.test.ts` pins that finding on the real store; if it starts failing, the double post was fixed. Then update `Edit.cfg`, that test, and `docs/state-machines/bills.md`.
+- `model/Main.cfg`: every rule must hold.
+- `model/Edit.cfg`: the API may edit `nextDueDate`, and the guard is on. Every rule must hold.
+- `model/Unguarded.cfg`: the same edits with the guard off. It must break `NoDoublePost`. This is the proof that the check can fail.
 
-## Known finding (not fixed; product code is out of scope)
+For the main-flow chart use `model/BillsFlow.tla`, `model/Flow.cfg` and the view `model/flowview.ts`; `model/view.ts` is the view for `Bills.tla`.
 
-`PATCH /api/bills/[id]` lets the user set `nextDueDate` to today or later, even to a date that was already posted. The route then runs `processDueBills`, which posts that date again.
-1. A weekly bill due 10-09 is posted for 10-09; its next due date becomes 10-16.
-2. On 10-09 you edit the bill and set the next due date to 10-09.
-3. The save runs `processDueBills`: a second expense dated 10-09 is posted.
+## Fixed finding
+
+`PATCH /api/bills/[id]` used to accept a `nextDueDate` equal to a date already posted, and `processDueBills` then posted that date again. `updateBill` now refuses any next due date on or before the bill's `last_posted_due_date` (`canScheduleDueDate` in `src/lib/machines/bill.ts`). The refusal is a 400 with "was already posted". Moving the date forward, or to an unposted date after the last post, still works.
+
+The model's `GuardEdit` constant is the guard. `Unguarded.cfg` keeps the old behavior as a counterexample. The replay has two date actions (`date` at offsets 0 and +1 from today); it checks that the real store accepts or refuses each one exactly as the rule says. The store test "refuses to move a posted bill back to a date already posted" pins the same path.
+
+Known gap: a bill posted before `last_posted_due_date` existed has no record until its next post. An edit to a date posted before the deploy is not refused yet.
 
 ## Model to code map
 
 | Model (`model/Bills.tla`) | Code |
 |---|---|
-| `Init`, `end`, `first` | `createBill`, `validateBillInput` (store.ts:687-714) |
-| `Edit`, stale `expected` rejected | `updateBill` (store.ts:715-743); archives when `nextDueDate > endDate` (738) |
-| `Archive` | `archiveBill` (store.ts:744) |
-| `BeginRun`, `cand` | the SELECT at store.ts:752 |
-| `StepGone`, `StepEnded`, `StepFail`, `StepPost` | one `db.transaction` at store.ts:757-778; failure catch at 779-781 |
+| `Init`, `end`, `first` | `createBill`, `validateBillInput` (store.ts) |
+| `Edit`, stale `expected` rejected | `updateBill` (store.ts); `GuardEdit` is `canScheduleDueDate`; archives when `nextDueDate > endDate` |
+| `Archive` | `archiveBill` (store.ts) |
+| `BeginRun`, `cand` | the SELECT of due bills in `processDueBills` (store.ts) |
+| `StepGone`, `StepEnded`, `StepFail`, `StepPost` | `planPosting` (`src/lib/machines/bill.ts`) decides `none`, `end` or `post`; the store persists it in one `db.transaction`; a throw inside it is the failure case |
 | `Start`, `Tick`, `Crash`, `armed` | `startBillScheduler`, `nextBillRunAt` (bill-scheduler.ts); `register` in instrumentation.ts (production only) |
 | `ApiRun` | PATCH route, after `updateBill` |
 
-Atomic step in the model = one transaction in the code. Left out: real calendar arithmetic (`advanceBillDate`: weekly +7 days, month-end anchors; covered by `tests/dates.test.ts`), several bills and users, money amounts and balances, the assistant's bill dialog (`handleAssistantBillAction`, belongs to the assistant subsystem), bill icons. In the model, edits and archives can interleave between loop steps; in the code a whole run is synchronous, so the model is stricter than needed. One bill and 4 calendar days (`MaxDay = 3`, 3,024 states for `Main.cfg`); a pass covers that bound only. The replay covers every action sequence of length 3 (or 4) on a weekly bill with three start/end shapes; it injects failures by pointing the bill at an income category.
+Atomic step in the model = one transaction in the code. Left out: real calendar arithmetic (`advanceBillDate`: weekly +7 days, month-end anchors; covered by `tests/dates.test.ts`), several bills and users, money amounts and balances, the assistant's bill dialog (`handleAssistantBillAction`, belongs to the assistant subsystem), bill icons. In the model, edits and archives can interleave between loop steps; in the code a whole run is synchronous, so the model is stricter than needed. One bill and 4 calendar days (`MaxDay = 3`, 3,024 states for `Main.cfg`); a pass covers that bound only. The replay covers every action sequence of length 3 (or 4) on a weekly bill with three start/end shapes, including date edits; it injects failures by pointing the bill at an income category.
 
-Two guards in `processDueBills` are redundant on purpose (archived check in the SELECT and the row read versus the `archived_at IS NULL` condition of the UPDATE; the end-date check versus the `ended` calculation). Removing one alone is not caught, because the other still holds. Remove both and the replay fails.
+The model's `ExactlyOnce` and `NoLostDue` are checked only with `AllowDateEdit = FALSE`, because a forward date edit skips dates on purpose. The replay checks `NoDoublePost` always and `ExactlyOnce` until the first accepted date edit.
 
 ## When a check fails
 
@@ -56,6 +61,6 @@ Two guards in `processDueBills` are redundant on purpose (archived check in the 
 
 ## Coverage record
 
-- Files: `src/lib/store.ts` (bill functions, lines 669-788), `src/lib/bill-scheduler.ts`, `src/instrumentation.ts`, `src/lib/dates.ts` (`advanceBillDate`), `src/app/api/bills/**`.
-- **Sync commit: `c006c65`.** After a change to those files, run `git diff c006c65 -- <files>`. Move the sync commit forward only after the model and the replay are confirmed to describe the new code.
-- Proven able to fail at c006c65: a model without the `~archived` guard on `StepPost` breaks `NoPostWhenInactive`; a store without the three `archived_at IS NULL` conditions breaks the replay after `[tick, archive, tick]`.
+- Files: `src/lib/machines/bill.ts`, `src/lib/store.ts` (bill functions), `src/lib/bill-scheduler.ts`, `src/instrumentation.ts`, `src/lib/dates.ts` (`advanceBillDate`), `src/app/api/bills/**`.
+- **Sync commit: `39578af`.** After a change to those files, run `git diff 39578af -- <files>`. Move the sync commit forward only after the model and the replay are confirmed to describe the new code.
+- Proven able to fail: a model without the `~archived` guard on `StepPost` breaks `NoPostWhenInactive` (checked at c006c65); a store without the three `archived_at IS NULL` conditions breaks the replay after `[tick, archive, tick]` (checked at c006c65, not re-run since the machine extraction); a model with `GuardEdit = FALSE` breaks `NoDoublePost` (`Unguarded.cfg`, checked at 39578af); a store with the `canScheduleDueDate` check disabled breaks the replay and the store test (checked at 39578af).
