@@ -1,9 +1,9 @@
 // Flow chart: one person's sign-up, sign-in and admin-issued password reset.
-type V = Record<string, any>;
+type V = Record<string, Record<string, string>>;
 export const title = "One person: sign up, sign in, admin password reset";
 export const state = (v: V) => {
   if (v.status.u1 === "absent") return "No account";
-  const s = v.sess.u1 === "none" ? "Signed out" : v.sess.u1 === "live" ? "Signed in" : "Signed in with the old password";
+  const s = v.sess.u1 === "none" ? "Signed out" : v.sess.u1 === "live" ? "Signed in" : "Old browser session refused";
   return v.reset.u1 === "live" ? `${s}, reset code waiting` : s;
 };
 export const group = (v: V) => (v.reset.u1 === "live" ? "reset" : v.status.u1 === "absent" ? "none" : "normal");

@@ -1,3 +1,6 @@
+---
+title: "One person: sign up, sign in, admin password reset"
+---
 stateDiagram-v2
   state "Legend" as legend {
     lg0: normal
@@ -12,8 +15,8 @@ stateDiagram-v2
   s2: Signed in
   s3: Signed out, reset code waiting
   s4: Signed in, reset code waiting
-  s5: Signed in with the old password
-  s6: Signed in with the old password, reset code waiting
+  s5: Old browser session refused
+  s6: Old browser session refused, reset code waiting
   [*] --> s0
   s0 --> s1: you register (the first user is the admin)
   s1 --> s2: you sign in

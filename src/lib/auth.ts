@@ -13,7 +13,9 @@ function secretKey() {
 }
 
 export async function setSession(user: Pick<PublicUser, "id" | "role">) {
-  const token = await new SignJWT({ role: user.role }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(`${TTL_SECONDS}s`).sign(secretKey());
+  const sessionVersion = getStore().getUserById(user.id)?.sessionVersion;
+  if (sessionVersion === undefined) throw new Error("User not found.");
+  const token = await new SignJWT({ role: user.role, sessionVersion }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(`${TTL_SECONDS}s`).sign(secretKey());
   const jar = await cookies();
   jar.set(COOKIE_NAME, token, { httpOnly: true, secure: secureCookie(), sameSite: "lax", path: "/", maxAge: TTL_SECONDS });
 }
@@ -30,7 +32,7 @@ export async function currentUser(): Promise<PublicUser | null> {
     const { payload } = await jwtVerify(token, secretKey(), { algorithms: ["HS256"] });
     if (!payload.sub) return null;
     const user = getStore().getUserById(payload.sub);
-    if (!user || !user.enabled) return null;
+    if (!user || !user.enabled || payload.sessionVersion !== user.sessionVersion) return null;
     return { id: user.id, username: user.username, role: user.role, enabled: user.enabled, assistantOptIn: user.assistantOptIn, createdAt: user.createdAt };
   } catch {
     return null;

@@ -4,7 +4,7 @@ Verified at commit `c006c65`. Each subsystem has a TLA+ model and a project skil
 
 | Subsystem | Doc | Skill | Result |
 |---|---|---|---|
-| Identity and access | [identity-access.md](identity-access.md) | `verify-identity-access` | 3 rule breaks |
+| Identity and access | [identity-access.md](identity-access.md) | `verify-identity-access` | 3 rule breaks, fixed in `ea526d7` |
 | Shared goals | [goals.md](goals.md) | `verify-goals` | 2 rule breaks |
 | Debts | [debts.md](debts.md) | `verify-debts` | 1 inconsistency |
 | Bills | [bills.md](bills.md) | `verify-bills` | 1 rule break (product call) |

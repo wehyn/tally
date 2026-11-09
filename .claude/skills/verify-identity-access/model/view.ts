@@ -1,13 +1,13 @@
 // Statechart view for IdentityAccess: one region per person, in the words of a user.
-type V = Record<string, any>;
+type V = Record<string, Record<string, string>>;
 const person = (v: V, u: string) => {
   const s = v.status[u];
   if (s === "absent") return "No account";
   const admin = v.role[u] === "admin" ? "Admin" : "Member";
   if (s === "disabled") return `${admin}, disabled`;
-  const signedIn = v.sess[u] === "none" ? "signed out" : v.sess[u] === "live" ? "signed in" : "signed in (old password)";
+  const signedIn = v.sess[u] === "none" ? "signed out" : v.sess[u] === "live" ? "signed in" : "old browser session refused";
   const reset = v.reset[u] === "live" ? ", reset code issued" : v.reset[u] === "expired" ? ", reset code expired" : "";
-  const sc = v.cred[u] === "none" ? "" : v.cred[u] === "live" ? ", Shortcut credential" : ", Shortcut credential (old password)";
+  const sc = v.cred[u] === "live" ? ", Shortcut credential" : "";
   return `${admin}, ${signedIn}${sc}${reset}`;
 };
 export const title = "Identity and access: sign-up, sign-in, admin reset, account deletion";

@@ -1,5 +1,5 @@
 // Flow chart: two people, admin role, disabling, and deleting an account.
-type V = Record<string, any>;
+type V = Record<string, Record<string, string>>;
 const who = (v: V, u: string) => (v.status[u] === "absent" ? "no account" : `${v.role[u] === "admin" ? "admin" : "member"}${v.status[u] === "disabled" ? " (disabled)" : ""}`);
 export const title = "Two people: first admin, disable and re-enable, delete with admin handoff";
 export const state = (v: V) => `Alice ${who(v, "u1")}, Bob ${who(v, "u2")}`;
