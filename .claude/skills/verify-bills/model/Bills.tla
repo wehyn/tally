@@ -7,7 +7,8 @@
 EXTENDS Naturals
 
 CONSTANTS MaxDay,          \* last day the clock reaches
-          AllowDateEdit    \* TRUE: PATCH may change nextDueDate (the real API allows it)
+          AllowDateEdit,   \* TRUE: PATCH may change nextDueDate
+          GuardEdit        \* TRUE: an edit may not move nextDueDate to a date already posted (store.ts updateBill)
 
 None == 99
 Dates == 0..(MaxDay + 1)
@@ -87,6 +88,7 @@ Crash == /\ run = "sched" /\ Finish(TRUE)
 \* updateBill. expected = the nextDueDate the form was loaded with; a stale one is rejected (no change).
 Edit(n, e) ==
   /\ (n = next \/ (AllowDateEdit /\ n >= today))
+  /\ (~GuardEdit \/ ~(\E d \in Dates : cnt[d] > 0 /\ d >= n))   \* canScheduleDueDate: n must be after the last posted date
   /\ n \in Dates /\ e \in Ends
   /\ next' = n /\ end' = e
   /\ archived' = (archived \/ (e # None /\ n > e))

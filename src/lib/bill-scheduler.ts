@@ -20,8 +20,10 @@ export function startBillScheduler(): void {
       for (const failure of result.failures) console.error("Bill posting failed.", failure);
     }
     catch (error) { console.error("Bill schedule processing failed.", error); }
-    const delay = nextBillRunAt(new Date()).getTime() - Date.now();
-    setTimeout(() => { void run(); }, delay).unref();
+    finally {
+      const delay = nextBillRunAt(new Date()).getTime() - Date.now();
+      setTimeout(() => { void run(); }, delay).unref();
+    }
   };
   void run();
 }
