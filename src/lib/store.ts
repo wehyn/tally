@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
-import { acceptsAdvance, acceptsPayment, canChangeDirection, debtAfterPayment, nextDebtStatus, type DebtDirection, type DebtStatus } from "./machines/debt";
+import { acceptsAdvance, acceptsPayment, canChangeDirection, debtAfterPayment, historyAdjustmentForUpdate, nextDebtStatus, type DebtDirection, type DebtStatus } from "./machines/debt";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
 import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
@@ -605,6 +605,9 @@ export function createStore(db: Database.Database) {
       throw new Error("A debt with linked activity cannot change direction.");
     }
     const updatedAt = stamp();
+    const adjustment = addAdjustment
+      ? historyAdjustmentForUpdate(current, { status, amountMinor: value.amountMinor }, debtBalanceFromPayments(userId, current))
+      : null;
     const counterpartyId = ensureCounterparty(userId, value.counterparty);
     db.prepare(`UPDATE debts SET direction=?,counterparty=?,counterparty_id=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
       WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, counterpartyId, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
@@ -613,10 +616,10 @@ export function createStore(db: Database.Database) {
         SELECT 1 FROM debts WHERE counterparty_id=?
       )`).run(row.counterparty_id, userId, row.counterparty_id);
     }
-    if (addAdjustment && value.amountMinor !== current.amountMinor) {
+    if (adjustment) {
       db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
         VALUES(?,?,?,?,'adjustment',?,?,?,NULL,?)`).run(randomUUID(), userId, debtId, value.direction,
-        Math.abs(value.amountMinor - current.amountMinor), value.amountMinor - current.amountMinor, "manual amount edit", stamp());
+        Math.abs(adjustment.deltaMinor), adjustment.deltaMinor, adjustment.reason, stamp());
     }
     return listDebts(userId).find((debt) => debt.id === debtId)!;
   }

@@ -31,3 +31,18 @@ export function canChangeDirection(hasLinkedActivity: boolean): boolean {
 export function nextDebtStatus(current: DebtStatus, requested: DebtStatus | undefined): DebtStatus {
   return requested ?? current;
 }
+
+// The payment history must add up to the amount while a debt is open. A reopened debt gets an adjustment
+// to that amount, because its history was not kept while settled. An edit to a settled debt writes nothing.
+export function historyAdjustmentForUpdate(
+  before: { status: DebtStatus; amountMinor: number },
+  after: { status: DebtStatus; amountMinor: number },
+  historyBalanceMinor: number,
+): { deltaMinor: number; reason: "manual amount edit" | "reopened" } | null {
+  const reopened = before.status === "settled" && after.status === "open";
+  const edited = before.amountMinor !== after.amountMinor && (before.status === "open" || after.status === "open");
+  if (!reopened && !edited) return null;
+  const deltaMinor = after.amountMinor - historyBalanceMinor;
+  if (deltaMinor === 0) return null;
+  return { deltaMinor, reason: reopened ? "reopened" : "manual amount edit" };
+}

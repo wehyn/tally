@@ -7,7 +7,7 @@ CONSTANTS
   MaxAmount,            \* largest amount a debt may be given (bound)
   PayRequiresOpen,      \* TRUE = recordDebtPayment / recordDebtRepayment / recordDebtAdvanceTransaction refuse non-open debts
   DirectionLockedByTxn, \* TRUE = updateDebtInternal refuses a direction change once a linked transaction exists
-  SettledHistoryFrozen  \* FALSE = code today. TRUE = hypothetical fix: editing a settled debt writes no adjustment, and reopening writes one that makes the history add up to the amount
+  SettledHistoryFrozen  \* TRUE = code today: editing a settled debt writes no adjustment, and reopening writes one that makes the history add up to the amount. FALSE = the pre-fix code, kept as a mutant
 
 VARIABLES
   dir,       \* "owed_to_you" or "you_owe"
@@ -66,7 +66,7 @@ Pay(a) ==
   /\ lateTxn' = (lateTxn \/ status = "settled")
   /\ UNCHANGED <<dir, principal, advAmt, deleted>>
 
-\* updateDebt with a new amount, in any status: writes an "adjustment" history row, no transaction.
+\* updateDebt with a new amount, in any status: writes an "adjustment" history row, no transaction. A settled debt writes none (SettledHistoryFrozen).
 EditAmount(n) ==
   /\ ~deleted /\ n \in Amounts /\ n # amount
   /\ amount' = n
@@ -79,7 +79,7 @@ Settle ==
   /\ status' = "settled"
   /\ UNCHANGED <<dir, amount, principal, deltaSum, paid, advAmt, cash, nTxn, txnDir, lateTxn, deleted>>
 
-\* updateDebt with status "open" (Reopen button). Amount is kept; the code writes no history row.
+\* updateDebt with status "open" (Reopen button). Amount is kept; the code writes an adjustment that brings the history to the amount.
 Reopen ==
   /\ ~deleted /\ status = "settled"
   /\ status' = "open"
