@@ -14,16 +14,16 @@ Model: `model/Assistant.tla`, one conversation. A hand model proves nothing abou
 
 | Covered code | What the model says about it |
 |---|---|
-| `src/lib/assistant.ts` `assertAssistantAccess` (13), `runAssistantPrompt` and `commitTurn`: the turn's reads, the cancel branch, the commit transaction, the override chain, the write branches, the reply insert, and the strict repayment amount reading (`bareAmountFromPrompt`, `repaymentAmountFromPrompt`) | `Decision`, `Effective`, `CommitOk`, `ProviderOk` |
+| `src/lib/assistant.ts` `assertAssistantAccess`, `runAssistantPrompt` and `commitTurn`: the turn's reads, the cancel branch, the commit transaction, the override chain, the write branches, the reply insert, and the strict repayment amount reading (`bareAmountFromPrompt`, `repaymentAmountFromPrompt`) | `Decision`, `Effective`, `CommitOk`, `ProviderOk` |
 | `src/lib/machines/assistant.ts`: `canWrite` (consent), `turnMayCommit` (the conversation moved on since the turn read it), `pendingOutcome` (cancel or answer, from the exact cancel phrase list), `cancelReply` and `runSavedDebt` (what a cancel says), `cancelHint` (the way out on a re-ask), `undoUntilFor` and `canUndo` (Undo window) | `CommitOk`, `Fresh`, `Rival`, `Outcome`, `CodeAllowsUndo` |
-| `src/lib/provider.ts` `minimalFollowUpContext` (188), `askProvider` failure paths | `Send` (the stored follow-up is the context), `ProviderFail` |
+| `src/lib/provider.ts` `minimalFollowUpContext`, `askProvider` failure paths | `Send` (the stored follow-up is the context), `ProviderFail` |
 | `src/lib/assistant-followup.ts` `FOLLOWUP_KINDS` | `Kinds` (`none` and the four question kinds only) |
 | `src/lib/store.ts` `transaction`, `createTransaction` and `deleteTransaction` (Undo), `getAssistantConsent`/`getAssistantOptIn`, `addMessage`, `lastMessageId`, `deleteConversation` | `CodeAllowsUndo`, `access`, `conv`, `since` |
 | `src/app/api/assistant/route.ts`, `src/app/api/shortcuts/assistant/route.ts` | `Send` guard (access on, chat live) |
 
 Not covered: bill follow-ups (`bill_*`), debt creation and `debt_transaction`, `account_or_date`, category/date/account inference, finance questions, the widget UI, Shortcut credential auth (see `verify-identity-access`), debt balance rules (see `verify-debts`). Undo is modeled for the latest transaction only. One conversation, one user. The uncertain-wording abandon path (`uncertainRepayment` in `assistant.ts`) is not in the machine; the model covers its effect (`UncertainNeverWrites`) only. The cancel hint sentence on a re-ask and the wording of a cancel reply are text and are not modeled. A cancel is modeled for the four question kinds only; route tests cover it for an account and a bill question, and for the offer to add a debt to Transactions.
 
-**Sync commit: `39e0033`.** If `git diff 39e0033 -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
+**Sync commit: `6793ed8`.** If `git diff 6793ed8 -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
 
 ## Run it
 

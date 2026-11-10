@@ -1,6 +1,6 @@
 # Debt register state machines
 
-Skill: `.claude/skills/verify-debts` (TLA+ model + replay tests). Machine: `src/lib/machines/debt.ts`. Last confirmed at commit `33ce376`.
+Skill: `.claude/skills/verify-debts` (TLA+ model + replay tests). Machine: `src/lib/machines/debt.ts`. Last confirmed at commit `6793ed8`.
 
 ## Inventory
 
