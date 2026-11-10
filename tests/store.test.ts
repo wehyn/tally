@@ -356,8 +356,28 @@ describe("owner-scoped ledger", () => {
     store.migrate();
     store.migrate();
 
-    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ id: "old-message", content: "Lunch" }]);
+    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ id: "old-message", content: "Lunch", billId: null }]);
     expect((database.pragma("table_info(assistant_messages)") as { name: string }[]).map((column) => column.name)).not.toContain("context_start");
+  });
+
+  it("adds the bill column to legacy assistant messages and reads back the bill a reply saved", () => {
+    const user = store.registerUser("message_bill_column", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
+    )`);
+    store.migrate();
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const utilities = store.listCategories(user.id).find((category) => category.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Netflix", amountMinor: 54_900, frequency: "monthly", nextDueDate: "2099-01-01", accountId: wallet.id, categoryId: utilities.id });
+
+    store.addMessage(user.id, conversationId, "assistant", "Saved the bill.", undefined, "repayment_amount", undefined, undefined, bill.id);
+
+    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ content: "Saved the bill.", billId: bill.id }]);
   });
 
   it("names the last stored message of a conversation by insertion order, and null when it has none", () => {

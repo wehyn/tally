@@ -75,33 +75,47 @@ export function runExpired(runLength: number, outcome: PendingOutcome): boolean 
   return outcome === "answer" && runLength >= MAX_OPEN_RUN_MESSAGES;
 }
 
-// What an expired question tells the user. Like a cancel, it must not say nothing was recorded when the run
-// already saved a debt, because that debt is in Debts.
-export function expiredReply(debtAlreadySaved: boolean): string {
-  return debtAlreadySaved
-    ? "That question has been open too long, so I dropped it. The debt stays in Debts, and nothing was added to Transactions."
+// What the open question run already saved. A debt is in Debts and a bill is in Bills, so a reply that drops the
+// question must not say nothing was recorded when either exists.
+export type RunSaved = { debt: boolean; bill: boolean };
+
+// What a dropped question says it left behind. Most questions are asked before anything is saved, so nothing was
+// recorded. The offer to add a just-saved debt to Transactions is different, because the debt is already in Debts,
+// and so is every question that continues it ("add it to Transactions" asking for an account or a date). Saying
+// nothing was recorded there would invite entering the debt again. A bill saved under a question that is not about
+// a bill leaves that question pending, and the bill may have posted its due-today expense, so the wording about
+// Transactions is only made for a debt alone.
+function whatStays(pending: FollowupKind | null, saved: RunSaved): string | null {
+  const debt = saved.debt || pending === "debt_transaction";
+  if (debt && saved.bill) return "The debt stays in Debts and the bill stays in Bills.";
+  if (debt) return "The debt stays in Debts, and nothing was added to Transactions.";
+  if (saved.bill) return "The bill stays in Bills, and nothing else was recorded.";
+  return null;
+}
+
+// What an expired question tells the user.
+export function expiredReply(saved: RunSaved): string {
+  const stays = whatStays(null, saved);
+  return stays
+    ? `That question has been open too long, so I dropped it. ${stays}`
     : "That question has been open too long, so I dropped it. Nothing was recorded. Please send the details again.";
 }
 
-// What a cancel tells the user about what happened to the dropped question. Most questions are asked before
-// anything is saved, so nothing was recorded. The offer to add a just-saved debt to Transactions is different,
-// because the debt is already in Debts, and so is every question that continues it ("add it to Transactions"
-// asking for an account or a date). Saying nothing was recorded there would invite entering the debt again.
-// No bill question is asked after a bill was saved, so none needs a wording of its own.
-export function cancelReply(pending: FollowupKind, debtAlreadySaved: boolean): string {
-  return pending === "debt_transaction" || debtAlreadySaved
-    ? "Okay, I dropped that question. The debt stays in Debts, and nothing was added to Transactions."
-    : "Okay, I dropped that question. Nothing was recorded.";
+// What a cancel tells the user about what happened to the dropped question.
+export function cancelReply(pending: FollowupKind, saved: RunSaved): string {
+  return `Okay, I dropped that question. ${whatStays(pending, saved) ?? "Nothing was recorded."}`;
 }
 
-// Whether a reply of the open question run already saved a debt. The run is the messages since the last reply
-// that asked nothing, and the saving reply is the one that carries the debt.
-export function runSavedDebt(messages: readonly { role: "user" | "assistant"; followup?: FollowupKind | null; debtId?: string | null }[]): boolean {
+// What a reply of the open question run already saved. The run is the messages since the last reply that asked
+// nothing, and the saving reply is the one that carries the debt or the bill.
+export function runSaved(messages: readonly { role: "user" | "assistant"; followup?: FollowupKind | null; debtId?: string | null; billId?: string | null }[]): RunSaved {
+  const saved = { debt: false, bill: false };
   for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index].role === "assistant" && !messages[index].followup) return false;
-    if (messages[index].debtId) return true;
+    if (messages[index].role === "assistant" && !messages[index].followup) break;
+    if (messages[index].debtId) saved.debt = true;
+    if (messages[index].billId) saved.bill = true;
   }
-  return false;
+  return saved;
 }
 
 // The way out, appended when the code asks a question again while one is pending. The repayment and income

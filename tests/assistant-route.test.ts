@@ -2918,6 +2918,63 @@ describe("assistant turn commit", () => {
     await expectAnaRepaid500(conversationId, debt.id);
   });
 
+  describe("a bill saved under a pending repayment question", () => {
+    const billStays = "The bill stays in Bills, and nothing else was recorded.";
+    async function saveBillUnderAnaQuestion() {
+      const { debt, conversationId } = await askAnaPaidMe();
+      vi.stubGlobal("fetch", vi.fn(async () => billSpec()));
+      const saved = await (await POST(assistantRequest(billPrompt, conversationId))).json();
+      expect(saved.bill).toMatchObject({ name: "Netflix" });
+      expect(lastStored(conversationId).followup).toBe("repayment_amount");
+      expect(store.listBills(user.id)).toHaveLength(1);
+      expect(store.listTransactions(user.id)).toHaveLength(1);
+      return { debt, conversationId };
+    }
+    function expectBillKept(debtId: string) {
+      expect(store.listBills(user.id)).toHaveLength(1);
+      expect(store.listTransactions(user.id)).toHaveLength(1);
+      expect(store.listDebts(user.id).find((item) => item.id === debtId)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    }
+
+    it("says the bill stays in Bills when the question is cancelled, not that nothing was recorded", async () => {
+      const { debt, conversationId } = await saveBillUnderAnaQuestion();
+      vi.stubGlobal("fetch", vi.fn());
+
+      const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+
+      expect(cancelled.answer).toBe(`Okay, I dropped that question. ${billStays}`);
+      expect(lastStored(conversationId).followup).toBeNull();
+      expectBillKept(debt.id);
+    });
+
+    it("says the bill stays in Bills when the question expires, not that nothing was recorded", async () => {
+      const { debt, conversationId } = await saveBillUnderAnaQuestion();
+      vi.stubGlobal("fetch", vi.fn());
+      for (let round = 0; round < 10; round++) await POST(assistantRequest("List my debts", conversationId));
+      expect(store.getConversation(user.id, conversationId)!.messages).toHaveLength(24);
+
+      const expired = await (await POST(assistantRequest("List my debts", conversationId))).json();
+
+      expect(expired.answer).toBe(`That question has been open too long, so I dropped it. ${billStays}`);
+      expect(lastStored(conversationId).followup).toBeNull();
+      expectBillKept(debt.id);
+    });
+
+    it("names both when the run also saved a debt", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Cara", amount: "300" })));
+      const first = await (await POST(assistantRequest("Cara owes me 300"))).json();
+      expect(lastStored(first.conversationId).followup).toBe("debt_transaction");
+      vi.stubGlobal("fetch", vi.fn(async () => billSpec()));
+      const saved = await (await POST(assistantRequest(billPrompt, first.conversationId))).json();
+      expect(saved.bill).toMatchObject({ name: "Netflix" });
+      vi.stubGlobal("fetch", vi.fn());
+
+      const cancelled = await (await POST(assistantRequest("cancel", first.conversationId))).json();
+
+      expect(cancelled.answer).toBe("Okay, I dropped that question. The debt stays in Debts and the bill stays in Bills.");
+    });
+  });
+
   // A bill action that saves the bill answers the bill question it was asked, so that question ends with the save.
   const netflixPrompt = "I have a Netflix bill under Entertainment. It is monthly, starts today, and ends December 15.";
   async function askNetflixAmount() {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
+import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSaved, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -90,12 +90,13 @@ describe("how long an open question run may grow", () => {
     }
   });
 
-  it("says the question was dropped and that nothing was recorded", () => {
-    expect(expiredReply(false)).toBe("That question has been open too long, so I dropped it. Nothing was recorded. Please send the details again.");
-  });
-
-  it("says the debt stays in Debts when the run already saved one", () => {
-    expect(expiredReply(true)).toBe("That question has been open too long, so I dropped it. The debt stays in Debts, and nothing was added to Transactions.");
+  it.each([
+    [{ debt: false, bill: false }, "Nothing was recorded. Please send the details again."],
+    [{ debt: true, bill: false }, "The debt stays in Debts, and nothing was added to Transactions."],
+    [{ debt: false, bill: true }, "The bill stays in Bills, and nothing else was recorded."],
+    [{ debt: true, bill: true }, "The debt stays in Debts and the bill stays in Bills."],
+  ])("says what the run saved for %j", (saved, rest) => {
+    expect(expiredReply(saved)).toBe(`That question has been open too long, so I dropped it. ${rest}`);
   });
 });
 
@@ -183,34 +184,47 @@ describe("a turn commits only if the conversation is where it read it", () => {
 });
 
 describe("what a cancel says about the dropped question", () => {
+  const nothing = { debt: false, bill: false };
+  const debtOnly = { debt: true, bill: false };
+  const billOnly = { debt: false, bill: true };
+  const both = { debt: true, bill: true };
   const nothingRecorded = "Okay, I dropped that question. Nothing was recorded.";
   const debtStays = "Okay, I dropped that question. The debt stays in Debts, and nothing was added to Transactions.";
+  const billStays = "Okay, I dropped that question. The bill stays in Bills, and nothing else was recorded.";
+  const bothStay = "Okay, I dropped that question. The debt stays in Debts and the bill stays in Bills.";
 
-  it("says the debt stays for the offer to add a just-saved debt to Transactions", () => {
-    expect(cancelReply("debt_transaction", true)).toBe(debtStays);
-    expect(cancelReply("debt_transaction", false)).toBe(debtStays);
+  it("says the debt stays for the offer to add a just-saved debt to Transactions, whatever else the run saved", () => {
+    expect(cancelReply("debt_transaction", debtOnly)).toBe(debtStays);
+    expect(cancelReply("debt_transaction", nothing)).toBe(debtStays);
+    expect(cancelReply("debt_transaction", both)).toBe(bothStay);
+    expect(cancelReply("debt_transaction", billOnly)).toBe(bothStay);
   });
 
   // None of these asks anything after saving. The repayment, income, account or date, bill and generic questions
-  // are all asked before the write they wait for, so nothing was recorded unless a debt came earlier in the run.
+  // are all asked before the write they wait for, so nothing was recorded unless something came earlier in the run.
   for (const kind of FOLLOWUP_KINDS.filter((item) => item !== "debt_transaction")) {
-    it(`says nothing was recorded for ${kind} when no debt was saved in the run`, () => {
-      expect(cancelReply(kind, false)).toBe(nothingRecorded);
-    });
-    it(`says the debt stays for ${kind} when an earlier reply of the run saved one`, () => {
-      expect(cancelReply(kind, true)).toBe(debtStays);
+    it.each([
+      [nothing, nothingRecorded],
+      [debtOnly, debtStays],
+      [billOnly, billStays],
+      [both, bothStay],
+    ])(`says what the run saved for ${kind}, %j`, (saved, reply) => {
+      expect(cancelReply(kind, saved)).toBe(reply);
     });
   }
 
-  it("finds a debt saved by any reply of the open run, and none before a reply that asked nothing", () => {
+  it("finds a debt or a bill saved by any reply of the open run, and none before a reply that asked nothing", () => {
     const saved = { role: "assistant", followup: "debt_transaction", debtId: "debt-1" } as const;
+    const billed = { role: "assistant", followup: "repayment_amount", billId: "bill-1" } as const;
     const ask = { role: "assistant", followup: "account_or_date", debtId: null } as const;
-    const done = { role: "assistant", followup: null, debtId: "debt-0" } as const;
+    const done = { role: "assistant", followup: null, debtId: "debt-0", billId: "bill-0" } as const;
     const user = { role: "user" } as const;
-    expect(runSavedDebt([user, saved])).toBe(true);
-    expect(runSavedDebt([user, saved, user, ask])).toBe(true);
-    expect(runSavedDebt([user, ask])).toBe(false);
-    expect(runSavedDebt([user, done, user, ask])).toBe(false);
-    expect(runSavedDebt([])).toBe(false);
+    expect(runSaved([user, saved])).toEqual(debtOnly);
+    expect(runSaved([user, saved, user, ask])).toEqual(debtOnly);
+    expect(runSaved([user, billed, user, ask])).toEqual(billOnly);
+    expect(runSaved([user, saved, user, billed])).toEqual(both);
+    expect(runSaved([user, ask])).toEqual(nothing);
+    expect(runSaved([user, done, user, ask])).toEqual(nothing);
+    expect(runSaved([])).toEqual(nothing);
   });
 });

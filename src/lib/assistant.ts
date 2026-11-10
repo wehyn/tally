@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { cancelHint, cancelReply, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSavedDebt, turnMayCommit } from "@/lib/machines/assistant";
+import { cancelHint, cancelReply, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSaved, turnMayCommit } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -694,8 +694,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const pending = openRun.at(-1)?.followup ?? null;
     const outcome = pendingOutcome(pending, input.prompt);
     if (pending && (outcome === "cancel" || runExpired(openRun.length, outcome))) {
-      const debtSaved = runSavedDebt(conversationMessages);
-      const answer = outcome === "cancel" ? cancelReply(pending, debtSaved) : expiredReply(debtSaved);
+      const saved = runSaved(conversationMessages);
+      const answer = outcome === "cancel" ? cancelReply(pending, saved) : expiredReply(saved);
       return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
@@ -1128,7 +1128,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const hint = cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
       const stored = followupAfterTurn(lastFollowup, followup, guarded ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
-      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined));
+      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined), undefined, bill?.id);
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });
 }
