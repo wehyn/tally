@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { pendingOutcome } from "@/lib/machines/assistant";
+import { cancelHint, pendingOutcome } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -1107,6 +1107,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
 
       if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
       else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; followup = null; }
+      const hint = cancelHint(lastFollowup, followup);
+      if (hint) answer = `${answer} ${hint}`;
       store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, followup, debt?.id);
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });

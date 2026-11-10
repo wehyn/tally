@@ -2113,8 +2113,8 @@ describe("assistant turn commit", () => {
     expect(asked.answer).toBe("What amount should I use for the repayment?");
     return { debt, conversationId: asked.conversationId as string };
   }
-  const amountReask = "What amount should I use for the repayment?";
-  const incomeReask = "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded.";
+  const amountReask = "What amount should I use for the repayment? Reply with the amount, or say cancel to drop this.";
+  const incomeReask = "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded. Or say cancel to drop this.";
   async function askZedPaidMe() {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
     const asked = await (await POST(assistantRequest("Zed paid me 500"))).json();
@@ -2342,7 +2342,7 @@ describe("assistant turn commit", () => {
   const repaymentGuess = () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" });
   for (const reply of categoryReplies) {
     for (const [guess, response] of [["an expense", expenseGuess], ["a repayment", repaymentGuess]] as const) {
-      it(`keeps the repayment amount question and writes nothing for "${reply}" when the model guesses ${guess}`, async () => {
+      it(`keeps the repayment amount question, writes nothing and offers cancel for "${reply}" when the model guesses ${guess}`, async () => {
         store.createAccount(user.id, { name: "Food Wallet", type: "cash", openingMinor: 0 });
         const { debt, conversationId } = await askAnaPaidMe();
 
@@ -2364,7 +2364,7 @@ describe("assistant turn commit", () => {
 
   it.each([
     "siguro Other income 500", "siguro Food 500", "I guess Food 500", "Food about 500", "to Food Wallet 500", "Coffee 120", "lunch 250",
-  ])("keeps the ordinary income question and writes nothing for %s", async (reply) => {
+  ])("keeps the ordinary income question, writes nothing and offers cancel for %s", async (reply) => {
     store.createAccount(user.id, { name: "Food Wallet", type: "cash", openingMinor: 0 });
     const conversationId = await askZedPaidMe();
 
@@ -2380,17 +2380,18 @@ describe("assistant turn commit", () => {
   });
 
   it.each(["He paid back the food money, 500", "she paid back the food money, 500", "She paid 500 for lunch"])(
-    "writes nothing when %s answers the ordinary income question", async (reply) => {
+    "writes nothing and offers cancel when %s answers the ordinary income question", async (reply) => {
       const conversationId = await askZedPaidMe();
 
       vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Food", kind: "expense", category: "Food" })));
       const result = await (await POST(assistantRequest(reply, conversationId))).json();
 
+      expect(result.answer).toMatch(/say cancel to drop this\.$/);
       expect(result.transaction).toBeNull();
       expect(store.listTransactions(user.id)).toHaveLength(0);
     });
 
-  it("keeps the repayment payer question and writes nothing when more than one payer is named", async () => {
+  it("keeps the repayment payer question, writes nothing and offers cancel when more than one payer is named", async () => {
     const momDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
     store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
@@ -2400,7 +2401,7 @@ describe("assistant turn commit", () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
     const result = await (await POST(assistantRequest("Mom and Dad", asked.conversationId))).json();
 
-    expect(result.answer).toBe("Which person's open debt should I apply this payment to?");
+    expect(result.answer).toBe("Which person's open debt should I apply this payment to? Reply with the person's name, or say cancel to drop this.");
     expect(result.transaction).toBeNull();
     expect(store.listTransactions(user.id)).toHaveLength(0);
     expect(store.listDebts(user.id).find((item) => item.id === momDebt.id)).toMatchObject({ amountMinor: 20_000, status: "open" });
@@ -2486,13 +2487,15 @@ describe("assistant turn commit", () => {
     expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBeNull();
   });
 
-  it("drops an account question on cancel", async () => {
+  it("offers cancel when an account question is asked again, and drops it on cancel", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Missing" })));
     const asked = await (await POST(assistantRequest("Coffee 120 from Missing"))).json();
     expect(asked.answer).toContain("Missing");
+    expect(asked.answer).not.toContain("cancel");
 
     const again = await (await POST(assistantRequest("lunch 250", asked.conversationId))).json();
     expect(again.answer).toContain("Missing");
+    expect(again.answer).toMatch(/Or say cancel to drop this\.$/);
     expect(store.listTransactions(user.id)).toHaveLength(0);
 
     const provider = vi.fn(async () => providerTool("log_transaction", { amount: "1", kind: "expense", category: "Food" }));
@@ -2501,6 +2504,34 @@ describe("assistant turn commit", () => {
     expect(provider).not.toHaveBeenCalled();
     expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
     expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+
+  it("does not offer cancel on the first ask of a repayment question", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+    expect(asked.answer).toBe("What amount should I use for the repayment?");
+  });
+
+  it("offers cancel when a bill question is asked again, and drops it on cancel", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
+      name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-10-20",
+    })));
+    const first = await (await POST(assistantRequest("I have a monthly Internet bill for ₱500."))).json();
+    expect(first.answer).not.toContain("cancel");
+
+    const again = await (await POST(assistantRequest("Coffee 120", first.conversationId))).json();
+    expect(again.answer).toMatch(/Or say cancel to drop this\.$/);
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    const provider = vi.fn(async () => providerTool("create_bill", { name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-20" }));
+    vi.stubGlobal("fetch", provider);
+    const cancelled = await (await POST(assistantRequest("cancel", first.conversationId))).json();
+    expect(provider).not.toHaveBeenCalled();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(store.listBills(user.id)).toEqual([]);
+    expect(store.getConversation(user.id, first.conversationId)!.messages.at(-1)!.followup).toBeNull();
   });
 
   it("treats no as a decline of the ordinary income question, not as a cancel", async () => {

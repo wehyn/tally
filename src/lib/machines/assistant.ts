@@ -40,3 +40,17 @@ export function pendingOutcome(pending: FollowupKind | null, prompt: string): Pe
   const phrase = prompt.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   return CANCEL_PHRASES.has(phrase) ? "cancel" : "answer";
 }
+
+// The way out, appended when the code asks a question again while one is pending. The repayment and income
+// questions the code forces on the user lead to each other, so any of them asked right after any of them
+// carries it. Every other kind carries it only when the same question repeats. A first ask has none, and
+// neither does a model-worded clarification or the offer to add a debt to Transactions.
+const LINKED_QUESTIONS: ReadonlySet<FollowupKind> = new Set<FollowupKind>(["repayment_amount", "repayment_payer", "ordinary_income"]);
+
+export function cancelHint(pending: FollowupKind | null, asked: FollowupKind | null): string | null {
+  if (pending === null || asked === null || asked === "clarification" || asked === "debt_transaction") return null;
+  if (pending !== asked && !(LINKED_QUESTIONS.has(pending) && LINKED_QUESTIONS.has(asked))) return null;
+  if (asked === "repayment_amount") return "Reply with the amount, or say cancel to drop this.";
+  if (asked === "repayment_payer") return "Reply with the person's name, or say cancel to drop this.";
+  return "Or say cancel to drop this.";
+}

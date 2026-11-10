@@ -195,7 +195,7 @@ describe("regressions: the findings stay fixed", () => {
       const bodies = provider(tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
       const second = await (await ask(reply, conversationId)).json();
       expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
-      expect(second.answer).toBe("What amount should I use for the repayment?");
+      expect(second.answer).toBe("What amount should I use for the repayment? Reply with the amount, or say cancel to drop this.");
       expect(second.transaction).toBeNull();
     }
     expect(txCount()).toBe(0);

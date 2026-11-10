@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNDO_WINDOW_MS, canUndo, pendingOutcome, undoUntilFor } from "../src/lib/machines/assistant";
+import { UNDO_WINDOW_MS, cancelHint, canUndo, pendingOutcome, undoUntilFor } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -63,4 +63,33 @@ describe("pending follow-up outcome", () => {
       for (const pending of FOLLOWUP_KINDS) expect(pendingOutcome(pending, reply)).toBe("answer");
     });
   }
+});
+
+describe("cancel hint on a question asked again", () => {
+  it("names the way out for each question the code asks again", () => {
+    expect(cancelHint("repayment_amount", "repayment_amount")).toBe("Reply with the amount, or say cancel to drop this.");
+    expect(cancelHint("repayment_payer", "repayment_payer")).toBe("Reply with the person's name, or say cancel to drop this.");
+    for (const kind of ["ordinary_income", "account_or_date", "bill_name", "bill_amount", "bill_amount_account", "bill_start_date", "bill_end_date", "bill_dates", "bill_several", "bill_duplicate", "bill_schedule", "bill_account", "bill_details"] as const) {
+      expect(cancelHint(kind, kind)).toBe("Or say cancel to drop this.");
+    }
+  });
+
+  it("has no hint on a first ask, which no question preceded", () => {
+    for (const kind of FOLLOWUP_KINDS) expect(cancelHint(null, kind)).toBeNull();
+  });
+
+  it("has no hint when the code asks nothing, or for a model-worded or offered question", () => {
+    for (const pending of FOLLOWUP_KINDS) expect(cancelHint(pending, null)).toBeNull();
+    expect(cancelHint("clarification", "clarification")).toBeNull();
+    expect(cancelHint("debt_transaction", "debt_transaction")).toBeNull();
+    expect(cancelHint("repayment_amount", "clarification")).toBeNull();
+  });
+
+  it("has a hint when the repayment and income questions lead to each other, and not across other kinds", () => {
+    const linked = ["repayment_amount", "repayment_payer", "ordinary_income"] as const;
+    for (const pending of linked) for (const asked of linked) expect(cancelHint(pending, asked)).not.toBeNull();
+    expect(cancelHint("bill_name", "bill_amount")).toBeNull();
+    expect(cancelHint("account_or_date", "repayment_amount")).toBeNull();
+    expect(cancelHint("repayment_amount", "account_or_date")).toBeNull();
+  });
 });
