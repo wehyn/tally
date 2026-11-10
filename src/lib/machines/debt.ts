@@ -32,17 +32,23 @@ export function nextDebtStatus(current: DebtStatus, requested: DebtStatus | unde
   return requested ?? current;
 }
 
+export type HistoryAdjustment = { deltaMinor: number; reason: "manual amount edit" | "reopened" };
+
 // The payment history must add up to the amount while a debt is open. A reopened debt gets an adjustment
 // to that amount, because its history was not kept while settled. An edit to a settled debt writes nothing.
+// Older versions could leave a history negative, and moving that to a large amount can pass the exact integer
+// range in one step. The move then goes through zero as two adjustments that are each exact.
 export function historyAdjustmentForUpdate(
   before: { status: DebtStatus; amountMinor: number },
   after: { status: DebtStatus; amountMinor: number },
   historyBalanceMinor: number,
-): { deltaMinor: number; reason: "manual amount edit" | "reopened" } | null {
+): HistoryAdjustment[] {
   const reopened = before.status === "settled" && after.status === "open";
   const edited = before.amountMinor !== after.amountMinor && (before.status === "open" || after.status === "open");
-  if (!reopened && !edited) return null;
+  if (!reopened && !edited) return [];
+  const reason = reopened ? "reopened" : "manual amount edit";
   const deltaMinor = after.amountMinor - historyBalanceMinor;
-  if (deltaMinor === 0) return null;
-  return { deltaMinor, reason: reopened ? "reopened" : "manual amount edit" };
+  if (deltaMinor === 0) return [];
+  if (!Number.isSafeInteger(deltaMinor)) return [{ deltaMinor: -historyBalanceMinor, reason }, { deltaMinor: after.amountMinor, reason }];
+  return [{ deltaMinor, reason }];
 }

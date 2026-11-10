@@ -36,23 +36,37 @@ describe("debt history adjustment", () => {
   const open = (amountMinor: number) => ({ status: "open" as const, amountMinor });
   const settled = (amountMinor: number) => ({ status: "settled" as const, amountMinor });
   it("moves an open debt's history to its edited amount", () => {
-    expect(historyAdjustmentForUpdate(open(1000), open(1400), 1000)).toEqual({ deltaMinor: 400, reason: "manual amount edit" });
+    expect(historyAdjustmentForUpdate(open(1000), open(1400), 1000)).toEqual([{ deltaMinor: 400, reason: "manual amount edit" }]);
   });
   it("writes nothing for a note-only or unchanged update", () => {
-    expect(historyAdjustmentForUpdate(open(1000), open(1000), 1000)).toBeNull();
-    expect(historyAdjustmentForUpdate(settled(1000), settled(1000), 0)).toBeNull();
+    expect(historyAdjustmentForUpdate(open(1000), open(1000), 1000)).toEqual([]);
+    expect(historyAdjustmentForUpdate(settled(1000), settled(1000), 0)).toEqual([]);
   });
   it("brings a reopened debt's history to its amount", () => {
-    expect(historyAdjustmentForUpdate(settled(1000), open(1000), 0)).toEqual({ deltaMinor: 1000, reason: "reopened" });
-    expect(historyAdjustmentForUpdate(settled(1000), open(700), 0)).toEqual({ deltaMinor: 700, reason: "reopened" });
+    expect(historyAdjustmentForUpdate(settled(1000), open(1000), 0)).toEqual([{ deltaMinor: 1000, reason: "reopened" }]);
+    expect(historyAdjustmentForUpdate(settled(1000), open(700), 0)).toEqual([{ deltaMinor: 700, reason: "reopened" }]);
   });
   it("writes nothing when a reopened debt's history already matches", () => {
-    expect(historyAdjustmentForUpdate(settled(1000), open(1000), 1000)).toBeNull();
+    expect(historyAdjustmentForUpdate(settled(1000), open(1000), 1000)).toEqual([]);
   });
   it("writes nothing for an amount edit on a settled debt", () => {
-    expect(historyAdjustmentForUpdate(settled(1000), settled(600), 0)).toBeNull();
+    expect(historyAdjustmentForUpdate(settled(1000), settled(600), 0)).toEqual([]);
   });
   it("brings the history to the new amount when an open debt is settled with an edit", () => {
-    expect(historyAdjustmentForUpdate(open(1000), settled(1400), 1000)).toEqual({ deltaMinor: 400, reason: "manual amount edit" });
+    expect(historyAdjustmentForUpdate(open(1000), settled(1400), 1000)).toEqual([{ deltaMinor: 400, reason: "manual amount edit" }]);
+  });
+  it("moves a negative legacy history to the largest safe amount through zero, each row exact", () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    const rows = historyAdjustmentForUpdate(settled(50_000), open(max), -100_000);
+
+    expect(rows).toEqual([{ deltaMinor: 100_000, reason: "reopened" }, { deltaMinor: max, reason: "reopened" }]);
+    expect(rows.every((row) => Number.isSafeInteger(row.deltaMinor))).toBe(true);
+    expect(rows.reduce((total, row) => total + BigInt(row.deltaMinor), -100_000n)).toBe(BigInt(max));
+  });
+  it("keeps one adjustment when the move to a large amount stays exact", () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    expect(historyAdjustmentForUpdate(settled(50_000), open(max), 0)).toEqual([{ deltaMinor: max, reason: "reopened" }]);
+    expect(historyAdjustmentForUpdate(settled(50_000), open(max - 100_000), -100_000)).toEqual([{ deltaMinor: max, reason: "reopened" }]);
+    expect(historyAdjustmentForUpdate(open(1000), open(1), max)).toEqual([{ deltaMinor: 1 - max, reason: "manual amount edit" }]);
   });
 });

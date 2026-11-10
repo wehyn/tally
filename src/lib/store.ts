@@ -650,9 +650,9 @@ export function createStore(db: Database.Database) {
       throw new Error("A debt with linked activity cannot change direction.");
     }
     const updatedAt = stamp();
-    const adjustment = addAdjustment
+    const adjustments = addAdjustment
       ? historyAdjustmentForUpdate(current, { status, amountMinor: value.amountMinor }, debtBalanceFromPayments(userId, current))
-      : null;
+      : [];
     const counterpartyId = ensureCounterparty(userId, value.counterparty);
     db.prepare(`UPDATE debts SET direction=?,counterparty=?,counterparty_id=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
       WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, counterpartyId, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
@@ -661,7 +661,7 @@ export function createStore(db: Database.Database) {
         SELECT 1 FROM debts WHERE counterparty_id=?
       )`).run(row.counterparty_id, userId, row.counterparty_id);
     }
-    if (adjustment) {
+    for (const adjustment of adjustments) {
       db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
         VALUES(?,?,?,?,'adjustment',?,?,?,NULL,?)`).run(randomUUID(), userId, debtId, value.direction,
         Math.abs(adjustment.deltaMinor), adjustment.deltaMinor, adjustment.reason, stamp());

@@ -636,6 +636,29 @@ describe("personal debt register", () => {
     expect(store.debtBalanceFromPayments(owner.id, debt)).toBe(Number.MAX_SAFE_INTEGER - 1);
   });
 
+  it("reopens a legacy debt whose history went negative at the largest safe amount and keeps every row exact", () => {
+    const owner = store.registerUser("debt_legacy_negative_history", "hash");
+    const debt = store.createDebt(owner.id, { direction: "owed_to_you", counterparty: "Legacy", amountMinor: 100_000 });
+    // The history main left behind: paid in full, reopened at 50,000 with one adjustment, then paid in full again.
+    const insert = database.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
+      VALUES(?,?,?,'owed_to_you',?,?,?,?,NULL,?)`);
+    insert.run("legacy-paid", owner.id, debt.id, "payment", 100_000, -100_000, null, "2026-10-01T00:00:00.000Z");
+    insert.run("legacy-edit", owner.id, debt.id, "adjustment", 50_000, -50_000, "manual amount edit", "2026-10-02T00:00:00.000Z");
+    insert.run("legacy-paid-again", owner.id, debt.id, "payment", 50_000, -50_000, null, "2026-10-03T00:00:00.000Z");
+    database.prepare("UPDATE debts SET status='settled', amount_minor=50000 WHERE id=?").run(debt.id);
+    expect(store.debtBalanceFromPayments(owner.id, store.listDebts(owner.id)[0])).toBe(-100_000);
+
+    const reopened = store.updateDebt(owner.id, debt.id, { status: "open", amountMinor: Number.MAX_SAFE_INTEGER });
+
+    expect(store.debtBalanceFromPayments(owner.id, reopened)).toBe(Number.MAX_SAFE_INTEGER);
+    const rows = store.listDebtPayments(owner.id, debt.id);
+    expect(rows.slice(0, 3).map((row) => row.id)).toEqual(["legacy-paid", "legacy-edit", "legacy-paid-again"]);
+    expect(rows.slice(3).every((row) => row.kind === "adjustment" && row.reason === "reopened")).toBe(true);
+    expect(rows.reduce((total, row) => total + BigInt(row.deltaMinor), 100_000n)).toBe(BigInt(Number.MAX_SAFE_INTEGER));
+    expect(store.updateDebt(owner.id, debt.id, { note: "still editable" })).toMatchObject({ note: "still editable", amountMinor: Number.MAX_SAFE_INTEGER });
+    expect(store.updateDebt(owner.id, debt.id, { amountMinor: Number.MAX_SAFE_INTEGER - 1 }).amountMinor).toBe(Number.MAX_SAFE_INTEGER - 1);
+  });
+
   it("reopening a payment-settled debt writes an adjustment so history matches the reopened amount", () => {
     const owner = store.registerUser("debt_reopen_history", "hash");
     const account = store.createAccount(owner.id, { name: "Cash", type: "cash", openingMinor: 0 });
