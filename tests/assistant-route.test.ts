@@ -2470,6 +2470,26 @@ describe("assistant turn commit", () => {
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
   });
 
+  it("asks the ordinary income question again for a finance question instead of answering it, and answers a debt list locally, leaving the question pending either way", async () => {
+    const conversationId = await askZedPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+    const asked = await (await POST(assistantRequest("How much did I spend this month?", conversationId))).json();
+
+    expect(asked.answer).toBe(incomeReask);
+    expect(asked.transaction).toBeNull();
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+
+    const local = vi.fn();
+    vi.stubGlobal("fetch", local);
+    const listed = await (await POST(assistantRequest("List my debts", conversationId))).json();
+
+    expect(local).not.toHaveBeenCalled();
+    expect(listed.answer).not.toBe(incomeReask);
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+
   it.each(["maybe", "I think so", "not sure", "maybe 500"])("asks the ordinary income question again, with the way out, when the hedged reply %s answers it", async (reply) => {
     const conversationId = await askZedPaidMe();
 

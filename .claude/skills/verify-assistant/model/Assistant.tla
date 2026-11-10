@@ -67,7 +67,9 @@ AllIntents == {"plain", "cancel", "uncertainPay", "debtPay", "debtPayNoAmount", 
 \* yes              a bare "yes"
 \* readOnly         "List my debts" or "How much did I spend this month?", answered from the ledger. It writes nothing
 \*                  and asks nothing. It is not an answer and not a cancel, so a pending question stays pending. With
-\*                  nothing pending it is an ordinary turn.
+\*                  nothing pending it is an ordinary turn. A finance question at a pending income question is the one
+\*                  case that is asked about again instead of answered (ordinaryIncomeFlow), and it leaves the question
+\*                  pending as well, so this intent covers it.
 Kinds == {"none", "clarification", "ordinary_income", "repayment_amount", "repayment_payer"}
 
 VARIABLES
