@@ -2517,7 +2517,7 @@ describe("assistant turn commit", () => {
     expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
     const stored = store.getConversation(user.id, conversationId)!.messages;
     expect(stored.at(-1)).toMatchObject({ role: "assistant", followup: null });
-    expect(stored.at(-2)).toMatchObject({ role: "user", content: "cancel", contextStart: true });
+    expect(stored.at(-2)).toMatchObject({ role: "user", content: "cancel" });
 
     const third = vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" }));
     vi.stubGlobal("fetch", third);
@@ -2703,7 +2703,7 @@ describe("assistant turn commit", () => {
 
     expect(provider).toHaveBeenCalledTimes(1);
     expect(first.answer).toBe("What would you like me to cancel?");
-    expect(store.getConversation(user.id, first.conversationId)!.messages.map((message) => message.contextStart)).toEqual([false, false]);
+    expect(store.getConversation(user.id, first.conversationId)!.messages.map((message) => message.content)).toEqual(["cancel", "What would you like me to cancel?"]);
 
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
     const saved = await (await POST(assistantRequest("Coffee 120", first.conversationId))).json();

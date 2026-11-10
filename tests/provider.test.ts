@@ -41,23 +41,18 @@ describe("assistant data minimization", () => {
     ]);
   });
 
-  it("starts the follow-up run at the message that replaced an earlier question", () => {
+  it("starts the follow-up run after the reply that dropped an earlier question, because that reply asked nothing", () => {
     expect(minimalFollowUpContext([
       { role: "user", content: "Ana paid me" },
       { role: "assistant", content: "What amount should I use for the repayment?", followup: "repayment_amount" as const },
-      { role: "user", content: "Coffee 120 from Missing", contextStart: true },
+      { role: "user", content: "cancel" },
+      { role: "assistant", content: "Okay, I dropped that question. Nothing was recorded." },
+      { role: "user", content: "Coffee 120 from Missing" },
       { role: "assistant", content: "Which account?", followup: "account_or_date" as const },
     ])).toEqual([
-      { role: "user", content: "Coffee 120 from Missing", followup: null, contextStart: true },
+      { role: "user", content: "Coffee 120 from Missing", followup: null },
       { role: "assistant", content: "Which account?", followup: "account_or_date" },
     ]);
-  });
-
-  it("ignores a replacement boundary that an answered reply already ended", () => {
-    expect(minimalFollowUpContext([
-      { role: "user", content: "Coffee 120", contextStart: true },
-      { role: "assistant", content: "Saved." },
-    ])).toEqual([]);
   });
 
   it("retains the original transaction details through a multi-turn follow-up", async () => {

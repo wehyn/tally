@@ -308,7 +308,39 @@ describe("owner-scoped ledger", () => {
     }]);
   });
 
-  it("adds the context-start flag to legacy assistant messages as off, and migrating again changes nothing", () => {
+  it("keeps no context column in assistant messages and does not put one in a conversation's messages", () => {
+    const user = store.registerUser("no_context_column", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    store.addMessage(user.id, conversationId, "user", "Ana paid me");
+    store.addMessage(user.id, conversationId, "assistant", "What amount?", undefined, "repayment_amount");
+
+    const columns = (database.pragma("table_info(assistant_messages)") as { name: string }[]).map((column) => column.name);
+    expect(columns).not.toContain("context_start");
+    for (const message of store.getConversation(user.id, conversationId)!.messages) expect(Object.keys(message)).not.toContain("contextStart");
+  });
+
+  it("opens a database whose assistant messages already have a context_start column, and stores and reads messages", () => {
+    const user = store.registerUser("existing_context_column", "hash");
+    const conversationId = store.createConversation(user.id, "Dev chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
+      context_start INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,context_start,created_at) VALUES('old-cancel',?,?,'user','cancel',1,'2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+
+    store.migrate();
+    store.addMessage(user.id, conversationId, "assistant", "Okay, I dropped that question. Nothing was recorded.");
+
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.content)).toEqual(["cancel", "Okay, I dropped that question. Nothing was recorded."]);
+    expect(store.lastMessageId(user.id, conversationId)).toBe(store.getConversation(user.id, conversationId)!.messages[1].id);
+  });
+
+  it("migrates legacy assistant messages without adding a context column, and migrating again changes nothing", () => {
     const user = store.registerUser("legacy_message_context", "hash");
     const conversationId = store.createConversation(user.id, "Old chat");
     database.exec("DROP TABLE assistant_messages");
@@ -324,16 +356,8 @@ describe("owner-scoped ledger", () => {
     store.migrate();
     store.migrate();
 
-    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ id: "old-message", content: "Lunch", contextStart: false }]);
-  });
-
-  it("stores a context start on the message that was added with it", () => {
-    const user = store.registerUser("context_start_message", "hash");
-    const conversationId = store.createConversation(user.id, "Chat");
-    store.addMessage(user.id, conversationId, "user", "Ana paid me");
-    store.addMessage(user.id, conversationId, "user", "Coffee 120", undefined, null, undefined, true);
-
-    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.contextStart)).toEqual([false, true]);
+    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ id: "old-message", content: "Lunch" }]);
+    expect((database.pragma("table_info(assistant_messages)") as { name: string }[]).map((column) => column.name)).not.toContain("context_start");
   });
 
   it("names the last stored message of a conversation by insertion order, and null when it has none", () => {
@@ -342,9 +366,9 @@ describe("owner-scoped ledger", () => {
     const conversationId = store.createConversation(user.id, "Chat");
     expect(store.lastMessageId(user.id, conversationId)).toBeNull();
 
-    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, false, "2999-01-01T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, "2999-01-01T00:00:00.000Z");
     store.addMessage(user.id, conversationId, "assistant", "reply", undefined, "clarification");
-    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, false, "2026-10-09T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, "2026-10-09T00:00:00.000Z");
 
     const messages = store.getConversation(user.id, conversationId)!.messages;
     expect(store.lastMessageId(user.id, conversationId)).toBe(messages[2].id);
@@ -355,7 +379,7 @@ describe("owner-scoped ledger", () => {
   it("stamps a message with the time it was received and keeps a later reply after it", () => {
     const user = store.registerUser("received_time_message", "hash");
     const conversationId = store.createConversation(user.id, "Chat");
-    store.addMessage(user.id, conversationId, "user", "lunch today", undefined, null, undefined, false, "2026-10-09T15:59:59.000Z");
+    store.addMessage(user.id, conversationId, "user", "lunch today", undefined, null, undefined, "2026-10-09T15:59:59.000Z");
     store.addMessage(user.id, conversationId, "assistant", "How much?");
 
     const messages = store.getConversation(user.id, conversationId)!.messages;
@@ -366,9 +390,9 @@ describe("owner-scoped ledger", () => {
   it("keeps each message's own time and lists a conversation in insertion order when the clock goes backwards", () => {
     const user = store.registerUser("backwards_clock_messages", "hash");
     const conversationId = store.createConversation(user.id, "Chat");
-    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, false, "2999-01-01T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, "2999-01-01T00:00:00.000Z");
     store.addMessage(user.id, conversationId, "assistant", "reply");
-    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, false, "2026-10-09T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, "2026-10-09T00:00:00.000Z");
 
     const messages = store.getConversation(user.id, conversationId)!.messages;
     expect(messages.map((message) => message.content)).toEqual(["first", "reply", "second"]);

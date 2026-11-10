@@ -162,8 +162,7 @@ export function createStore(db: Database.Database) {
         id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
         content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
-        needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
-        context_start INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+        needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS goals (
         id TEXT PRIMARY KEY, manager_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -306,8 +305,6 @@ export function createStore(db: Database.Database) {
     if (!messageColumns.some((column) => column.name === "needs_followup")) db.exec("ALTER TABLE assistant_messages ADD COLUMN needs_followup INTEGER NOT NULL DEFAULT 0");
     // Older rows only have needs_followup = 1; read them back as a generic clarification.
     if (!messageColumns.some((column) => column.name === "followup_kind")) db.exec("ALTER TABLE assistant_messages ADD COLUMN followup_kind TEXT");
-    // A user message that replaced a pending question starts a new follow-up run; older rows never did.
-    if (!messageColumns.some((column) => column.name === "context_start")) db.exec("ALTER TABLE assistant_messages ADD COLUMN context_start INTEGER NOT NULL DEFAULT 0");
   }
 
   function registerUser(username: string, passwordHash: string): PublicUser & { sessionVersion: number } {
@@ -1091,13 +1088,13 @@ export function createStore(db: Database.Database) {
   function getConversation(userId: string, id: string) {
     const conversation = db.prepare("SELECT id,title FROM conversations WHERE user_id=? AND id=?").get(userId, id) as { id: string; title: string } | undefined;
     if (!conversation) return null;
-    const messages = db.prepare(`SELECT m.id,m.role,m.content,m.created_at AS createdAt,m.transaction_id AS transactionId,m.needs_followup AS needsFollowup,m.followup_kind AS followupKind,m.debt_id AS messageDebtId,m.context_start AS contextStart,
+    const messages = db.prepare(`SELECT m.id,m.role,m.content,m.created_at AS createdAt,m.transaction_id AS transactionId,m.needs_followup AS needsFollowup,m.followup_kind AS followupKind,m.debt_id AS messageDebtId,
       t.kind,t.amount_minor AS amountMinor,t.account_id AS accountId,t.category_id AS categoryId,t.debt_id AS debtId,t.description AS transactionDescription,
       t.date AS transactionDate,t.time AS transactionTime,c.name AS categoryName,a.name AS accountName,t.source,t.undo_until AS undoUntil
       FROM assistant_messages m LEFT JOIN transactions t ON t.id=m.transaction_id
       LEFT JOIN categories c ON c.id=t.category_id LEFT JOIN financial_accounts a ON a.id=t.account_id
       WHERE m.user_id=? AND m.conversation_id=? ORDER BY m.rowid`).all(userId, id) as Record<string, unknown>[];
-    return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), followup: followupFromRow(message), debtId: message.messageDebtId ? String(message.messageDebtId) : null, contextStart: Boolean(message.contextStart),
+    return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), followup: followupFromRow(message), debtId: message.messageDebtId ? String(message.messageDebtId) : null,
       transaction: message.transactionId ? {
         id: String(message.transactionId), kind: message.kind as TransactionKind, amountMinor: Number(message.amountMinor), accountId: String(message.accountId),
         categoryId: message.categoryId ? String(message.categoryId) : undefined, debtId: message.debtId ? String(message.debtId) : undefined,
@@ -1111,12 +1108,12 @@ export function createStore(db: Database.Database) {
     const row = db.prepare("SELECT id FROM assistant_messages WHERE conversation_id=? AND user_id=? ORDER BY rowid DESC LIMIT 1").get(conversationId, userId) as { id: string } | undefined;
     return row?.id ?? null;
   }
-  function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, followup: FollowupKind | null = null, debtId?: string, contextStart = false, createdAt?: string): void {
+  function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, followup: FollowupKind | null = null, debtId?: string, createdAt?: string): void {
     if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");
     const now = stamp();
     // A user message keeps the time its request was received, which relative dates in later follow-ups read.
     // The turn commits prompt then reply in one transaction, so rowid order is their order whatever the clock did.
-    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,context_start,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, contextStart ? 1 : 0, createdAt ?? now);
+    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, createdAt ?? now);
     db.prepare("UPDATE conversations SET updated_at=? WHERE id=? AND user_id=?").run(now, conversationId, userId);
   }
   function deleteConversation(userId: string, id: string): void {

@@ -669,17 +669,15 @@ function directDebtCapture(prompt: string): { name: string; args: Record<string,
 // Every turn that stores anything goes through here, so neither recheck below can be skipped by a branch.
 // readLastMessageId is the last message the turn saw when it read the pending question. A turn whose
 // conversation has moved on since (another request answered or cancelled that question) stores nothing.
-// startsContext marks the user message as the start of a new follow-up run, so later turns never
-// reload what came before it (a prompt that replaced a pending question). receivedAt is stored as the
-// user message's time, because a later follow-up reads relative dates ("today") from it.
-function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, readLastMessageId: string | null, prompt: string, startsContext: boolean, receivedAt: string, work: (conversationId: string) => T): T {
+// receivedAt is stored as the user message's time, because a later follow-up reads relative dates ("today") from it.
+function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, readLastMessageId: string | null, prompt: string, receivedAt: string, work: (conversationId: string) => T): T {
   return store.transaction(() => {
     assertAssistantAccess(store, userId);
     if (conversationId && !turnMayCommit(readLastMessageId, store.lastMessageId(userId, conversationId))) {
       throw new HttpError(409, "Your conversation changed while this ran. Send that again.");
     }
     const id = conversationId ?? store.createConversation(userId, prompt.slice(0, 80));
-    store.addMessage(userId, id, "user", prompt, undefined, null, undefined, startsContext, receivedAt);
+    store.addMessage(userId, id, "user", prompt, undefined, null, undefined, receivedAt);
     return work(id);
   });
 }
@@ -696,7 +694,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const pending = openRun.at(-1)?.followup ?? null;
     if (pending && pendingOutcome(pending, input.prompt) === "cancel") {
       const answer = cancelReply(pending, runSavedDebt(conversationMessages));
-      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, true, receivedAt, (conversationId) => {
+      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
@@ -712,7 +710,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
     if (debtQuestion(input.prompt, requestedMetrics)) {
       const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
-      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, false, receivedAt, (conversationId) => {
+      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
@@ -773,7 +771,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
-    return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, false, receivedAt, (conversationId) => {
+    return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
       let call = providerCall;
       // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
       let clarificationKind: FollowupKind | null = null;

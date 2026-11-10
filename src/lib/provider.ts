@@ -183,18 +183,19 @@ const clarificationTool = {
   },
 } as const;
 export type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
-export type AssistantContextMessage = { role: "user" | "assistant"; content: string; createdAt?: string; followup?: FollowupKind | null; contextStart?: boolean };
-// Returns the open follow-up run: the messages since the last reply that did not ask for anything,
-// or since the user message that replaced an earlier question, whichever is later.
+export type AssistantContextMessage = { role: "user" | "assistant"; content: string; createdAt?: string; followup?: FollowupKind | null };
+// Returns the open follow-up run: the messages since the last reply that did not ask for anything.
 export function minimalFollowUpContext(messages: AssistantContextMessage[]): (AssistantContextMessage & { role: "user" | "assistant"; content: string })[] {
   const last = messages.at(-1);
   if (last?.role !== "assistant" || !last.followup) return [];
-  let runStart = 0;
+  let lastCompletedReply = -1;
   for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index].contextStart) { runStart = index; break; }
-    if (messages[index].role === "assistant" && !messages[index].followup) { runStart = index + 1; break; }
+    if (messages[index].role === "assistant" && !messages[index].followup) {
+      lastCompletedReply = index;
+      break;
+    }
   }
-  return messages.slice(runStart).slice(-12).map(({ role, content, createdAt, followup, contextStart }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null, ...(contextStart ? { contextStart } : {}) }));
+  return messages.slice(lastCompletedReply + 1).slice(-12).map(({ role, content, createdAt, followup }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null }));
 }
 
 async function readProviderJson(response: Response, maxBytes: number): Promise<unknown> {
