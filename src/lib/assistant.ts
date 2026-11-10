@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { pendingOutcome, type PromptFacts } from "@/lib/machines/assistant";
+import { pendingOutcome } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -547,26 +547,6 @@ function guessCategory(text: string, categories: AssistantCategory[]): Assistant
   const rule = CATEGORY_KEYWORD_RULES.find(([pattern]) => pattern.test(text));
   return rule ? categories.find((category) => category.type === rule[2] && normalizeCategoryName(category.name) === normalizeCategoryName(rule[1])) : undefined;
 }
-// Positive evidence that a prompt is a request of its own: it names one of the user's categories or a word the
-// keyword map knows ("Coffee 120"). An account name never counts, nor does the catch-all "Other", a common word.
-function namesCategory(prompt: string, categories: AssistantCategory[], accounts: readonly { name: string }[]): boolean {
-  const text = accounts.reduce((rest, account) => {
-    const name = normalizeWords(account.name);
-    return name ? rest.replace(new RegExp(`(?<![\\p{L}\\p{N}])${name}(?![\\p{L}\\p{N}])`, "gu"), " ") : rest;
-  }, normalizeWords(prompt));
-  const own = categories.filter((category) => normalizeWords(category.name) !== "other");
-  return findCategoryInText(text, own) !== undefined || CATEGORY_KEYWORD_RULES.some(([pattern]) => pattern.test(text));
-}
-export function promptFacts(prompt: string, openCounterparties: string[], categories: AssistantCategory[], accounts: readonly { name: string }[]): PromptFacts {
-  return {
-    yesOrNo: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that|no|nope|nah)\b/i.test(prompt),
-    paymentWording: hasIncomingDebtRepaymentWording(prompt) || hasOutgoingDebtRepaymentWording(prompt),
-    hasNumber: /\d/.test(prompt),
-    categoryEvidence: namesCategory(prompt, categories, accounts),
-    hedged: isUncertainStatement(prompt),
-    namesOpenDebt: openCounterparties.some((counterparty) => containsCounterparty(prompt, counterparty)),
-  };
-}
 function explicitTransactionKind(text: string): AssistantCategory["type"] | undefined {
   const mentionsExpense = /\b(expense|spent|spend|paid|purchase|bought|buy|cost|charged|charge)\b/i.test(text);
   const mentionsIncome = /\b(income|earned|earn|received|receive|deposit|paycheck)\b/i.test(text);
@@ -707,9 +687,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     if (input.conversationId && !conversation) throw new HttpError(404, "Conversation not found.");
     const conversationMessages = conversation?.messages ?? [];
     const openRun = minimalFollowUpContext(conversationMessages);
-    const openCounterparties = store.listDebts(user.id).filter((debt) => debt.status === "open").map((debt) => debt.counterparty);
-    const replacesPending = pendingOutcome(openRun.at(-1)?.followup ?? null, promptFacts(input.prompt, openCounterparties, categories, accounts)) === "replace";
-    const history = replacesPending ? [] : openRun;
+    if (pendingOutcome(openRun.at(-1)?.followup ?? null, input.prompt) === "cancel") {
+      const answer = "Okay, I dropped that question. Nothing was recorded.";
+      return commitTurn(store, user.id, input.conversationId, input.prompt, true, receivedAt, (conversationId) => {
+        store.addMessage(user.id, conversationId, "assistant", answer);
+        return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
+      });
+    }
+    const history = openRun;
     const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
     const userMessages = [
       ...history.filter((message) => message.role === "user").map((message) => ({ content: message.content, createdAt: message.createdAt })),
@@ -720,7 +705,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
     if (debtQuestion(input.prompt, requestedMetrics)) {
       const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
-      return commitTurn(store, user.id, input.conversationId, input.prompt, replacesPending, receivedAt, (conversationId) => {
+      return commitTurn(store, user.id, input.conversationId, input.prompt, false, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
@@ -781,7 +766,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
-    return commitTurn(store, user.id, input.conversationId, input.prompt, replacesPending, receivedAt, (conversationId) => {
+    return commitTurn(store, user.id, input.conversationId, input.prompt, false, receivedAt, (conversationId) => {
       let call = providerCall;
       // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
       let clarificationKind: FollowupKind | null = null;

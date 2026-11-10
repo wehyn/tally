@@ -22,28 +22,21 @@ export function canWrite(consent: ConsentState): boolean {
   return consent === "on";
 }
 
-// Pending follow-up: what a new prompt does to the question the last reply asked. "answer" resolves
-// it, or leaves it to the existing answer handling, which asks again and writes nothing when the reply
-// is not a usable answer. "replace" means the prompt is a complete request of its own, so the question
-// is dropped and the prompt is handled as if it began a new chat. A wrong "replace" throws the user's
-// context away, and with it the guards that read that context, and writes money to the wrong place;
-// a wrong "answer" only re-asks. So "replace" needs positive evidence and everything else answers.
-export type PendingOutcome = "none" | "answer" | "replace";
+// Pending follow-up: what a new prompt does to the question the last reply asked. The only way to drop
+// a question is to say so: a prompt that, trimmed, case-folded and stripped of punctuation, equals one of
+// these phrases. Everything else is an "answer", which keeps the pending context and leaves the reply to the
+// existing handling, and that asks again and writes nothing when the reply is not a usable answer. Guessing
+// from free text that a reply is a new request was abandoned: a wrong guess drops the context and the guards
+// that read it and writes money to the wrong place, while a wrong "answer" only asks again. "no" is not here:
+// it already answers a yes or no question.
+export type PendingOutcome = "none" | "answer" | "cancel";
 
-export type PromptFacts = {
-  yesOrNo: boolean; // starts with yes or no
-  paymentWording: boolean; // incoming or outgoing debt repayment wording
-  hasNumber: boolean; // carries a number
-  categoryEvidence: boolean; // names one of the user's categories or a word the category keyword map knows ("Coffee 120")
-  hedged: boolean; // hedges or negates ("maybe 500", "not 500", "500?")
-  namesOpenDebt: boolean; // names a person with an open debt, which answers a payer question
-};
+const CANCEL_PHRASES: ReadonlySet<string> = new Set([
+  "cancel", "never mind", "nevermind", "skip", "forget it", "stop", "ayoko na", "wag na", "huwag na", "di na",
+]);
 
-const REPLACEABLE_QUESTIONS: ReadonlySet<FollowupKind> = new Set<FollowupKind>(["repayment_amount", "repayment_payer", "ordinary_income"]);
-
-export function pendingOutcome(pending: FollowupKind | null, prompt: PromptFacts): PendingOutcome {
+export function pendingOutcome(pending: FollowupKind | null, prompt: string): PendingOutcome {
   if (pending === null) return "none";
-  if (!REPLACEABLE_QUESTIONS.has(pending)) return "answer";
-  if (prompt.yesOrNo || prompt.paymentWording || prompt.namesOpenDebt || prompt.hedged) return "answer";
-  return prompt.hasNumber && prompt.categoryEvidence ? "replace" : "answer";
+  const phrase = prompt.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return CANCEL_PHRASES.has(phrase) ? "cancel" : "answer";
 }

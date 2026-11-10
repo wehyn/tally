@@ -143,14 +143,24 @@ describe("regressions: the findings stay fixed", () => {
     expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
   });
 
-  it("PlainPromptNotTrapped (fixed): a complete unrelated prompt is not swallowed by a pending repayment-amount question", async () => {
+  it("PlainPromptNotTrapped (fixed): an unrelated prompt re-asks and writes nothing, an explicit cancel clears the question, and the next prompt runs in a clean context", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
-    provider(tool("record_debt_payment", { counterparty: "Ana" }), tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" }));
+    const coffee = () => tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }), coffee());
     const { conversationId } = await (await ask("Ana paid me")).json();
-    const second = await (await ask("Coffee 120", conversationId)).json();
-    expect(second.answer).not.toBe("What amount should I use for the repayment?");
-    expect(second.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    const reasked = await (await ask("Coffee 120", conversationId)).json();
+    expect(reasked.answer).toContain("What amount should I use for the repayment?");
+    expect(reasked.transaction).toBeNull();
+    expect(txCount()).toBe(0);
+    const cancelled = await (await ask("cancel", conversationId)).json();
+    expect(cancelled).toMatchObject({ answer: "Okay, I dropped that question. Nothing was recorded.", transaction: null });
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
+    const bodies = provider(coffee());
+    const saved = await (await ask("Coffee 120", conversationId)).json();
+    expect(JSON.stringify(bodies[0].messages)).not.toContain("Ana paid me");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
     expect(txCount()).toBe(1);
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
   });
 
   it("PlainPromptNotTrapped (amount forms): an amount-only reply with a peso sign or word answers the pending amount question instead of replacing it", async () => {
@@ -192,24 +202,52 @@ describe("regressions: the findings stay fixed", () => {
     expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
   });
 
-  it("PlainPromptNotTrapped (stays replaced): the abandoned question is not reloaded by a later turn of the new request", async () => {
+  it("AnswerNotReplaced (category word): a reply with a category word, a hedge or an account named like a category keeps the question and writes nothing", async () => {
+    store.createAccount(user.id, { name: "Food Wallet", type: "cash", openingMinor: 0 });
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    for (const reply of ["she paid back the food money, 500", "for the food, 500", "bayad sa food 500", "I guess Food 500", "siguro Food 500", "to Food Wallet 500", "She paid 500 for lunch"]) {
+      provider(tool("record_debt_payment", { counterparty: "Ana" }));
+      const { conversationId } = await (await ask("Ana paid me")).json();
+      const bodies = provider(tool("log_transaction", { amount: "500", kind: "expense", category: "Food", account: "Food Wallet" }));
+      const second = await (await ask(reply, conversationId)).json();
+      expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
+      expect(second.transaction).toBeNull();
+      expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("repayment_amount");
+    }
+    expect(txCount()).toBe(0);
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
+  });
+
+  it("PlainPromptNotTrapped (stays cancelled): the dropped question is not reloaded by a later turn of the new request", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     const coffee = (account: string) => tool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account });
-    provider(tool("record_debt_payment", { counterparty: "Ana" }), coffee("Missing"), coffee("Wallet"));
+    provider(tool("record_debt_payment", { counterparty: "Ana" }));
     const { conversationId } = await (await ask("Ana paid me")).json();
+    await ask("never mind", conversationId);
+    provider(coffee("Missing"), coffee("Wallet"));
     await ask("Coffee 120 from Missing", conversationId);
     const third = await (await ask("Wallet", conversationId)).json();
     expect(third.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
     expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
   });
 
-  it("PlainPromptNotTrapped (payer): a complete unrelated prompt is not swallowed by a pending payer question", async () => {
+  it("PlainPromptNotTrapped (payer): an unrelated prompt re-asks and an explicit cancel clears a pending payer question", async () => {
     store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
     store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
     provider(tool("record_debt_repayment", { counterparty: "Mom", amount: "100" }), tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" }));
     const { conversationId } = await (await ask("I paid Mom and Dad 100")).json();
     const second = await (await ask("Coffee 120", conversationId)).json();
-    expect(second.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
-    expect(txCount()).toBe(1);
+    expect(second.transaction).toBeNull();
+    expect(txCount()).toBe(0);
+    const cancelled = await (await ask("cancel", conversationId)).json();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  it("NoPendingNoCancel: cancel with no pending question is an ordinary prompt", async () => {
+    const bodies = provider(tool("ask_clarification", { question: "What should I cancel?" }));
+    const result = await (await ask("cancel")).json();
+    expect(bodies).toHaveLength(1);
+    expect(result.answer).toBe("What should I cancel?");
   });
 });

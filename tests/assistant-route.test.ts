@@ -2113,6 +2113,17 @@ describe("assistant turn commit", () => {
     expect(asked.answer).toBe("What amount should I use for the repayment?");
     return { debt, conversationId: asked.conversationId as string };
   }
+  const amountReask = "What amount should I use for the repayment?";
+  const incomeReask = "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded.";
+  async function askZedPaidMe() {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
+    const asked = await (await POST(assistantRequest("Zed paid me 500"))).json();
+    expect(asked.answer).toContain("ordinary income");
+    return asked.conversationId as string;
+  }
+  function sentTo(call: unknown) {
+    return (JSON.parse(String((call as [string, RequestInit])[1].body)) as ProviderRequest).messages.map((message) => message.content);
+  }
 
   it("saves nothing when the chat is deleted during the model call, so a retry saves once", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "What else?" })));
@@ -2282,7 +2293,7 @@ describe("assistant turn commit", () => {
 
         const sent = JSON.parse(String((second.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
         expect(sent.messages.map((message) => message.content)).toContain("Ana paid me");
-        expect(result.answer).toBe("What amount should I use for the repayment?");
+        expect(result.answer).toBe(amountReask);
         expect(result.transaction).toBeNull();
         expect(store.listTransactions(user.id)).toHaveLength(0);
         expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
@@ -2299,7 +2310,7 @@ describe("assistant turn commit", () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "income", category: "Other income" })));
     const result = await (await POST(assistantRequest(reply, asked.conversationId))).json();
 
-    expect(result.answer).toContain("answer yes");
+    expect(result.answer).toBe(incomeReask);
     expect(result.transaction).toBeNull();
     expect(store.listTransactions(user.id)).toHaveLength(0);
     expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
@@ -2320,52 +2331,207 @@ describe("assistant turn commit", () => {
     expect(store.listDebts(user.id).find((item) => item.id === momDebt.id)).toMatchObject({ amountMinor: 20_000, status: "open" });
   });
 
-  it.each([
-    ["Coffee 120", 12_000, "Coffee", "Food"], ["lunch 250", 25_000, "lunch", "Food"], ["Grab 180", 18_000, "Grab", "Transport"], ["bought coffee 120", 12_000, "coffee", "Food"],
-  ])("saves %s as a new expense while the repayment amount question is pending", async (reply, amountMinor, description, category) => {
-    const { debt, conversationId } = await askAnaPaidMe();
+  // Round 4: replies with a category word that are real answers or payment statements, hedges with a category,
+  // and an account whose name holds a category word. None may write, and each re-asks with the way out.
+  const categoryReplies = [
+    "she paid back the food money, 500", "for the food, 500", "bayad sa food 500", "binayaran nya yung food 500", "She paid for the Transport 200", "She paid 500 for lunch",
+    "I guess Food 500", "Food about 500", "siguro Food 500", "hindi Food 500", "to Food Wallet 500", "500 to Food Wallet",
+    "Coffee 120", "lunch 250", "Grab 180", "bought coffee 120",
+  ];
+  const expenseGuess = () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "expense", category: "Food", account: "Food Wallet" });
+  const repaymentGuess = () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" });
+  for (const reply of categoryReplies) {
+    for (const [guess, response] of [["an expense", expenseGuess], ["a repayment", repaymentGuess]] as const) {
+      it(`keeps the repayment amount question and writes nothing for "${reply}" when the model guesses ${guess}`, async () => {
+        store.createAccount(user.id, { name: "Food Wallet", type: "cash", openingMinor: 0 });
+        const { debt, conversationId } = await askAnaPaidMe();
 
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: String(amountMinor / 100), description, kind: "expense", category })));
+        const second = vi.fn(async () => response());
+        vi.stubGlobal("fetch", second);
+        const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+        expect(sentTo(second.mock.calls[0])).toContain("Ana paid me");
+        expect(result.answer).toBe(amountReask);
+        expect(result.transaction).toBeNull();
+        expect(result.undoUntil).toBeNull();
+        expect(store.listTransactions(user.id)).toHaveLength(0);
+        expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+        expect(store.listAccounts(user.id).every((account) => account.balanceMinor === 0)).toBe(true);
+        expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("repayment_amount");
+      });
+    }
+  }
+
+  it.each([
+    "siguro Other income 500", "siguro Food 500", "I guess Food 500", "Food about 500", "to Food Wallet 500", "Coffee 120", "lunch 250",
+  ])("keeps the ordinary income question and writes nothing for %s", async (reply) => {
+    store.createAccount(user.id, { name: "Food Wallet", type: "cash", openingMinor: 0 });
+    const conversationId = await askZedPaidMe();
+
+    const second = vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "income", category: "Other income" }));
+    vi.stubGlobal("fetch", second);
     const result = await (await POST(assistantRequest(reply, conversationId))).json();
 
-    expect(result.answer).not.toContain("repayment");
-    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor, categoryName: category });
-    expect(store.listTransactions(user.id)).toHaveLength(1);
-    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    expect(sentTo(second.mock.calls[0])).toContain("Zed paid me 500");
+    expect(result.answer).toBe(incomeReask);
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
   });
 
-  it("keeps a replaced repayment question out of every later turn of the new request", async () => {
-    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
-    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
+  it.each(["He paid back the food money, 500", "she paid back the food money, 500", "She paid 500 for lunch"])(
+    "writes nothing when %s answers the ordinary income question", async (reply) => {
+      const conversationId = await askZedPaidMe();
 
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Missing" })));
-    const replaced = await (await POST(assistantRequest("Coffee 120 from Missing", asked.conversationId))).json();
-    expect(replaced.answer).toContain("Missing");
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Food", kind: "expense", category: "Food" })));
+      const result = await (await POST(assistantRequest(reply, conversationId))).json();
 
-    const third = vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Wallet" }));
-    vi.stubGlobal("fetch", third);
-    const saved = await (await POST(assistantRequest("Wallet", asked.conversationId))).json();
+      expect(result.transaction).toBeNull();
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+    });
 
-    const sent = JSON.parse(String((third.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as ProviderRequest;
-    expect(sent.messages.map((message) => message.content)).not.toContain("Ana paid me");
-    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
-    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
-    expect(store.listTransactions(user.id)).toHaveLength(1);
+  it("keeps the repayment payer question and writes nothing when more than one payer is named", async () => {
+    const momDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
+    const asked = await (await POST(assistantRequest("I paid Mom and Dad 100"))).json();
+    expect(asked.answer).toBe("Which person's open debt should I apply this payment to?");
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
+    const result = await (await POST(assistantRequest("Mom and Dad", asked.conversationId))).json();
+
+    expect(result.answer).toBe("Which person's open debt should I apply this payment to?");
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.listDebts(user.id).find((item) => item.id === momDebt.id)).toMatchObject({ amountMinor: 20_000, status: "open" });
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("repayment_payer");
   });
 
-  it("handles a complete unrelated prompt as a new request while a repayment amount is pending", async () => {
-    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
-    const asked = await (await POST(assistantRequest("Ana paid me"))).json();
-    expect(asked.answer).toBe("What amount should I use for the repayment?");
+  it("answers Coffee 120 by asking again, then drops the question on cancel and saves Coffee 120 in a clean context", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
 
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
-    const result = await (await POST(assistantRequest("Coffee 120", asked.conversationId))).json();
+    const reasked = await (await POST(assistantRequest("Coffee 120", conversationId))).json();
+    expect(reasked.answer).toBe(amountReask);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
 
-    expect(result.answer).not.toContain("repayment");
-    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    const provider = vi.fn(async () => providerTool("log_transaction", { amount: "999", kind: "expense", category: "Other" }));
+    vi.stubGlobal("fetch", provider);
+    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+    expect(provider).not.toHaveBeenCalled();
+    expect(cancelled).toMatchObject({ conversationId, transaction: null, debt: null, undoUntil: null });
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
     expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    const stored = store.getConversation(user.id, conversationId)!.messages;
+    expect(stored.at(-1)).toMatchObject({ role: "assistant", followup: null });
+    expect(stored.at(-2)).toMatchObject({ role: "user", content: "cancel", contextStart: true });
+
+    const third = vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" }));
+    vi.stubGlobal("fetch", third);
+    const saved = await (await POST(assistantRequest("Coffee 120", conversationId))).json();
+
+    expect(sentTo(third.mock.calls[0])).not.toContain("Ana paid me");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000, categoryName: "Food" });
+    expect(saved.answer).not.toContain("repayment");
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+  });
+
+  it("never reloads a cancelled question into a later turn of the same chat", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Missing" })));
+    await POST(assistantRequest("never mind", conversationId));
+
+    const next = vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Missing" }));
+    vi.stubGlobal("fetch", next);
+    const asked = await (await POST(assistantRequest("Coffee 120 from Missing", conversationId))).json();
+    expect(asked.answer).toContain("Missing");
+
+    const last = vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Wallet" }));
+    vi.stubGlobal("fetch", last);
+    const saved = await (await POST(assistantRequest("Wallet", conversationId))).json();
+
+    expect(sentTo(last.mock.calls[0])).not.toContain("Ana paid me");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+  });
+
+  it.each(["cancel", "Never mind.", "skip", "forget it", "stop", "ayoko na", "wag na", "huwag na", "di na"])("drops a pending ordinary income question on %s", async (reply) => {
+    const conversationId = await askZedPaidMe();
+    const provider = vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "income", category: "Other income" }));
+    vi.stubGlobal("fetch", provider);
+
+    const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(result.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  it("drops a pending repayment payer question on cancel", async () => {
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+    store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
+    const asked = await (await POST(assistantRequest("I paid Mom and Dad 100"))).json();
+    const provider = vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" }));
+    vi.stubGlobal("fetch", provider);
+
+    const result = await (await POST(assistantRequest("cancel", asked.conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(result.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  it("drops an account question on cancel", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account: "Missing" })));
+    const asked = await (await POST(assistantRequest("Coffee 120 from Missing"))).json();
+    expect(asked.answer).toContain("Missing");
+
+    const again = await (await POST(assistantRequest("lunch 250", asked.conversationId))).json();
+    expect(again.answer).toContain("Missing");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    const provider = vi.fn(async () => providerTool("log_transaction", { amount: "1", kind: "expense", category: "Food" }));
+    vi.stubGlobal("fetch", provider);
+    const cancelled = await (await POST(assistantRequest("cancel", asked.conversationId))).json();
+    expect(provider).not.toHaveBeenCalled();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+
+  it("treats no as a decline of the ordinary income question, not as a cancel", async () => {
+    const conversationId = await askZedPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "income", category: "Other income" })));
+
+    const result = await (await POST(assistantRequest("no", conversationId))).json();
+
+    expect(result.answer).toBe("Okay, I won't record the money.");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+
+  it("treats cancel with no pending question as an ordinary prompt", async () => {
+    const provider = vi.fn(async () => providerTool("ask_clarification", { question: "What would you like me to cancel?" }));
+    vi.stubGlobal("fetch", provider);
+
+    const first = await (await POST(assistantRequest("cancel"))).json();
+
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(first.answer).toBe("What would you like me to cancel?");
+    expect(store.getConversation(user.id, first.conversationId)!.messages.map((message) => message.contextStart)).toEqual([false, false]);
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
+    const saved = await (await POST(assistantRequest("Coffee 120", first.conversationId))).json();
+    const afterSave = vi.fn(async () => providerTool("ask_clarification", { question: "Nothing is pending to cancel." }));
+    vi.stubGlobal("fetch", afterSave);
+    const second = await (await POST(assistantRequest("cancel", saved.conversationId))).json();
+
+    expect(afterSave).toHaveBeenCalledTimes(1);
+    expect(second.answer).toBe("Nothing is pending to cancel.");
+    expect(store.listTransactions(user.id)).toHaveLength(1);
   });
 
   it("answers a pending repayment amount with a bare amount and records the repayment", async () => {
@@ -2378,33 +2544,5 @@ describe("assistant turn commit", () => {
 
     expect(result.transaction).toMatchObject({ amountMinor: 50_000 });
     expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
-  });
-
-  it("handles a complete unrelated prompt as a new request while an ordinary income question is pending", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
-    const asked = await (await POST(assistantRequest("Zed paid me 500"))).json();
-    expect(asked.answer).toContain("ordinary income");
-
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
-    const result = await (await POST(assistantRequest("Coffee 120", asked.conversationId))).json();
-
-    expect(result.answer).not.toContain("ordinary income");
-    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
-    expect(store.listTransactions(user.id)).toHaveLength(1);
-  });
-
-  it("handles a complete unrelated prompt as a new request while a repayment payer is pending", async () => {
-    const momDebt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
-    store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_repayment", { counterparty: "Mom", amount: "100" })));
-    const asked = await (await POST(assistantRequest("I paid Mom and Dad 100"))).json();
-    expect(asked.answer).toContain("Which person's open debt");
-
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
-    const result = await (await POST(assistantRequest("Coffee 120", asked.conversationId))).json();
-
-    expect(result.answer).not.toContain("repayment");
-    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
-    expect(store.listDebts(user.id).find((item) => item.id === momDebt.id)).toMatchObject({ amountMinor: 20_000, status: "open" });
   });
 });
