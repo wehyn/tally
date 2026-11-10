@@ -87,24 +87,24 @@ Outcome(i, p) ==
     THEN "replace" ELSE "answer"
 Effective(i, p) == IF Outcome(i, p) = "replace" THEN "none" ELSE p
 
-\* What the code decides for (intent, follow-up the turn answers). Mirrors the override chain at
-\* assistant.ts:775-812 and the per-tool branches below it.
+\* What the code decides for (intent, follow-up the turn answers). Mirrors the override chain in assistant.ts
+\* runAssistantPrompt (ordinaryIncomeFlow, uncertainRepayment, repaymentIntent) and the per-tool branches below it.
 Decision(i, p) ==
     CASE i = "plain" ->
             IF p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
-            THEN [out |-> "ask", next |-> p]                          \* :775-796 re-asks the question and writes nothing
+            THEN [out |-> "ask", next |-> p]                          \* ordinaryIncomeFlow or the bare amount re-asks the question and writes nothing
             ELSE [out |-> "wplain", next |-> "none"]
       [] i = "cancel" ->
             IF p = "none" THEN [out |-> "ask", next |-> "clarification"]   \* nothing pending: an ordinary prompt
             ELSE IF Legacy THEN [out |-> "ask", next |-> p]                \* before the fix nothing could drop a question
             ELSE [out |-> "cancelled", next |-> "none"]                    \* no model call, nothing written, question cleared
-      [] i = "uncertainPay"   -> [out |-> "ask",    next |-> "none"]                \* :787-788, :1108
-      [] i = "debtPay"        -> [out |-> "wrepay", next |-> "none"]                \* :807-808, :947
-      [] i = "debtPayNoAmount"-> [out |-> "ask",    next |-> "repayment_amount"]    \* :793-794
-      [] i = "noMatchPay"     -> [out |-> "ask",    next |-> "ordinary_income"]     \* :797-798
+      [] i = "uncertainPay"   -> [out |-> "ask",    next |-> "none"]                \* uncertainRepayment branch
+      [] i = "debtPay"        -> [out |-> "wrepay", next |-> "none"]                \* repaymentIntent branch, record_debt_repayment
+      [] i = "debtPayNoAmount"-> [out |-> "ask",    next |-> "repayment_amount"]    \* repaymentIntent branch, no stated amount
+      [] i = "noMatchPay"     -> [out |-> "ask",    next |-> "ordinary_income"]     \* repaymentIntent branch, no matching debt
       [] i = "amount"         ->
             IF p = "repayment_amount"
-            THEN [out |-> "wrepay", next |-> "none"]                   \* :766 (bareAmountFromPrompt)
+            THEN [out |-> "wrepay", next |-> "none"]                   \* bareAmountFromPrompt
             ELSE [out |-> "ask", next |-> "clarification"]
       [] i = "amountDetail"   ->
             IF p = "repayment_amount"
@@ -120,7 +120,7 @@ Decision(i, p) ==
             ELSE [out |-> "ask", next |-> "clarification"]
       [] i = "yes"            ->
             IF p = "ordinary_income"
-            THEN [out |-> "word", next |-> "none"]                     \* :775-786
+            THEN [out |-> "word", next |-> "none"]                     \* ordinaryIncomeFlow branch
             ELSE [out |-> "ask", next |-> "clarification"]
 
 \* store.ts deleteTransaction(undoOnly): a debt-linked row never deletes; otherwise only
