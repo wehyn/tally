@@ -7,8 +7,9 @@
 \*
 \* Legacy = TRUE replays the rules before the fixes (user message stored before the call, no re-check
 \* at commit, no replacement of a pending question). findings.cfg runs that variant and must fail.
-\* Doubt = TRUE replays the first replacement rule (232f564), which let any word beyond amount filler
-\* replace a pending question. doubt.cfg runs that variant and must fail.
+\* Doubt = TRUE replays the replacement rule at 232f564 (kept until b35b71b), which let any word beyond
+\* an amount, its peso marker and answer filler replace a pending question, so "maybe 500" and
+\* "500 cash" dropped it. doubt.cfg runs that variant and must fail on AnswerNotReplaced.
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS
@@ -18,17 +19,22 @@ CONSTANTS
     Clock,      \* TRUE: the ten-second Undo window may expire
     Fails,      \* TRUE: the provider call may fail
     Legacy,     \* TRUE: the pre-fix rules (see the header)
-    Doubt       \* TRUE: a hedged or detailed amount reply replaces a pending question (see the header)
+    Doubt       \* TRUE: a hedged or detailed amount reply replaces a pending question, as at 232f564 (see the header)
 
 AllIntents == {"plain", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPay", "amount", "amountDetail", "hedgedAnswer", "yes"}
-\* plain            "Jollibee lunch 250": a complete transaction, no payer named
+\* plain            "Jollibee lunch 250": a number and a category (one of the user's own or a keyword the
+\*                  category map knows), no hedge, no payment wording, not a yes or no, no open debtor named.
+\*                  This is the only intent that carries the positive signal that replaces a question.
 \* uncertainPay     "maybe Ana paid me?": negated or uncertain payment wording
 \* debtPay          "Ana paid me 500" and Ana has one open debt: confirmed repayment
 \* debtPayNoAmount  "Ana paid me": payer known, amount missing
 \* noMatchPay       "Zed paid me 500", no open debt for Zed
-\* amount           an amount-only reply: "500", "P500", "PHP 500", "500 po", "it was 500", "1,000.50"
-\* amountDetail     an amount with a detail that is not a request: "500 cash", "500 to Wallet", "500 yesterday", "5k", "500 daw"
-\* hedgedAnswer     an amount reply that hedges or negates: "maybe 500", "I think 500", "not 500"
+\* amount           an amount the strict reading accepts: digits with an optional peso sign or word and
+\*                  nothing else ("500", "1,000.50", "500 pesos")
+\* amountDetail     any other reply with a number and no category evidence and no hedge: "500 cash", "5k",
+\*                  "P500", "500 sa GCash", "about 500", "500 last night". It answers. After a repayment
+\*                  amount question it is not read as an amount, so the question is asked again.
+\* hedgedAnswer     a reply that hedges or negates: "maybe 500", "I think 500", "not 500", "500?"
 \* yes              a bare "yes"
 Kinds == {"none", "clarification", "ordinary_income", "repayment_amount", "repayment_payer"}
 
@@ -49,10 +55,12 @@ VARIABLES
 vars == <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs,
           wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
 
-\* pendingOutcome (src/lib/machines/assistant.ts): a complete prompt that names no open debt, carries its
-\* own subject beside the number ("Coffee 120") and does not hedge replaces a pending repayment or income
-\* question, and the turn runs with no prior context. An amount-only reply in any common peso form never
-\* does, nor does an amount with a detail (date, owned account, shorthand, filler) or a hedged reply.
+\* pendingOutcome (src/lib/machines/assistant.ts), closed world: a prompt replaces a pending repayment or
+\* income question only on a positive signal. It has a number, names a category (one of the user's own or a
+\* word in the category keyword map, never an account name or the catch-all Other), hedges nothing, is not
+\* payment wording or a yes or no, and names nobody with an open debt. The turn then runs with no prior
+\* context. Every other reply answers, whatever its wording, so an amount reply, an amount with a detail
+\* and a hedged reply never replace. A wrong answer only asks again and writes nothing.
 Outcome(i, p) ==
     IF ~Legacy /\ (i = "plain" \/ (Doubt /\ i \in {"amountDetail", "hedgedAnswer"}))
        /\ p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
@@ -60,25 +68,25 @@ Outcome(i, p) ==
 Effective(i, p) == IF Outcome(i, p) = "replace" THEN "none" ELSE p
 
 \* What the code decides for (intent, follow-up the turn answers). Mirrors the override chain at
-\* assistant.ts:749-803 and the per-tool branches below it.
+\* assistant.ts:790-827 and the per-tool branches below it.
 Decision(i, p) ==
     CASE i = "plain" ->
             IF p \in {"repayment_amount", "repayment_payer"}
-            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:763-770 re-asks
+            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:808-811 re-asks
             ELSE IF p = "ordinary_income"
-            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:752-757 re-asks
+            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:790-801 re-asks
             ELSE [out |-> "wplain", next |-> "none", trap |-> FALSE]
-      [] i = "uncertainPay"   -> [out |-> "ask",    next |-> "none",             trap |-> FALSE]  \* :725, :1084
-      [] i = "debtPay"        -> [out |-> "wrepay", next |-> "none",             trap |-> FALSE]  \* :784-785, :966
-      [] i = "debtPayNoAmount"-> [out |-> "ask",    next |-> "repayment_amount", trap |-> FALSE]  \* :769-770
-      [] i = "noMatchPay"     -> [out |-> "ask",    next |-> "ordinary_income",  trap |-> FALSE]  \* :773-774
+      [] i = "uncertainPay"   -> [out |-> "ask",    next |-> "none",             trap |-> FALSE]  \* :802-803, :1123
+      [] i = "debtPay"        -> [out |-> "wrepay", next |-> "none",             trap |-> FALSE]  \* :823-824, :962
+      [] i = "debtPayNoAmount"-> [out |-> "ask",    next |-> "repayment_amount", trap |-> FALSE]  \* :808-809
+      [] i = "noMatchPay"     -> [out |-> "ask",    next |-> "ordinary_income",  trap |-> FALSE]  \* :812-813
       [] i = "amount"         ->
             IF p = "repayment_amount"
-            THEN [out |-> "wrepay", next |-> "none", trap |-> FALSE]   \* :742-743
+            THEN [out |-> "wrepay", next |-> "none", trap |-> FALSE]   \* :781 (bareAmountFromPrompt)
             ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
       [] i = "amountDetail"   ->
             IF p = "repayment_amount"
-            THEN [out |-> "wrepay", next |-> "none", trap |-> FALSE]   \* answeredAmountFromPrompt
+            THEN [out |-> "ask", next |-> p, trap |-> FALSE]           \* strict amount reading fails: asks again, writes nothing
             ELSE IF p = "ordinary_income"
             THEN [out |-> "ask", next |-> p, trap |-> FALSE]           \* re-asks the income question
             ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
@@ -90,7 +98,7 @@ Decision(i, p) ==
             ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
       [] i = "yes"            ->
             IF p = "ordinary_income"
-            THEN [out |-> "word", next |-> "none", trap |-> FALSE]     \* :710, :752-757
+            THEN [out |-> "word", next |-> "none", trap |-> FALSE]     \* :790-801
             ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
 
 \* store.ts deleteTransaction(undoOnly): a debt-linked row never deletes; otherwise only
@@ -213,7 +221,7 @@ NoDuplicateIntentWrite == written <= 1       \* one user intent, at most one tra
 WriteNeedsConsent      == ~wroteNoConsent    \* no transaction after consent was withdrawn
 FollowupSurvivesError  == ~lostFollowup      \* a failed provider call keeps the pending question
 PlainPromptNotTrapped  == ~trapped           \* an unrelated complete prompt is not swallowed by a pending question
-AnswerNotReplaced      == ~answerReplaced    \* a reply that only answers (amount, detail, hedge) never drops the pending question
+AnswerNotReplaced      == ~answerReplaced    \* a reply without the positive signal (amount, detail, hedge) never drops the pending question
 TypeOK == /\ access \in {"on", "off", "stale"} /\ conv \in {"live", "gone"} /\ pend \in Kinds
           /\ last \in {"reply", "wrote", "orphan"} /\ phase \in {"idle", "saved", "errored"}
           /\ undo \in {"none", "open", "expired", "used"} /\ ledger \in 0..MaxReqs
