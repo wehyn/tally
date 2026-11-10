@@ -2740,4 +2740,171 @@ describe("assistant turn commit", () => {
     expect(result.transaction).toMatchObject({ amountMinor: 50_000 });
     expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
   });
+
+  // A turn that only reads, the debt list or a finance answer, answers its own request and leaves a pending question where it was.
+  const expenseGuess500 = () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "expense", category: "Other" });
+  const lastStored = (conversationId: string) => store.getConversation(user.id, conversationId)!.messages.at(-1)!;
+  async function expectAnaRepaid500(conversationId: string, debtId: string) {
+    const provider = vi.fn(async () => expenseGuess500());
+    vi.stubGlobal("fetch", provider);
+    const result = await (await POST(assistantRequest("500", conversationId))).json();
+
+    expect(sentTo(provider.mock.calls[0])).toContain("Ana paid me");
+    expect(result.answer).toContain("repayment from Ana");
+    expect(result.transaction).toMatchObject({ amountMinor: 50_000, kind: "debt_repayment", categoryName: null, debtId });
+    expect(store.listTransactions(user.id).filter((item) => item.debtId === debtId)).toHaveLength(1);
+    expect(store.listTransactions(user.id).filter((item) => item.kind === "expense" && item.description === "Payment")).toEqual([]);
+    expect(store.listDebts(user.id).find((item) => item.id === debtId)).toMatchObject({ amountMinor: 50_000, status: "open" });
+    expect(lastStored(conversationId).followup).toBeNull();
+  }
+
+  it.each(["List my debts", "Who owes me?"])("keeps the pending repayment question when %s is answered locally, so 500 still repays Ana", async (prompt) => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    const local = vi.fn();
+    vi.stubGlobal("fetch", local);
+
+    const listed = await (await POST(assistantRequest(prompt, conversationId))).json();
+
+    expect(local).not.toHaveBeenCalled();
+    expect(listed.answer).toContain("Ana: ₱1,000.00");
+    expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+    await expectAnaRepaid500(conversationId, debt.id);
+  });
+
+  it.each(["How much did I spend this month?", "Show my spending this month"])(
+    "keeps the pending repayment question when the finance question %s is answered, so 500 still repays Ana", async (prompt) => {
+      seedDebtFinanceFacts();
+      const { debt, conversationId } = await askAnaPaidMe();
+      vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+      const answered = await (await POST(assistantRequest(prompt, conversationId))).json();
+
+      expect(answered.answer).toContain("Total Spent");
+      expect(answered.answer).not.toContain("I didn't record anything");
+      expect(answered).toMatchObject({ transaction: null, undoUntil: null });
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+      await expectAnaRepaid500(conversationId, debt.id);
+    });
+
+  it("answers a repayments report and keeps the pending repayment question, without the uncertain-payment reply", async () => {
+    seedDebtFinanceFacts();
+    const { conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+    const answered = await (await POST(assistantRequest("How much have people paid me back this month?", conversationId))).json();
+
+    expect(answered.answer).toContain("Repayments received");
+    expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+  });
+
+  it("keeps the pending ordinary income question through a local debt list, so yes still records the income", async () => {
+    const conversationId = await askZedPaidMe();
+    vi.stubGlobal("fetch", vi.fn());
+    await POST(assistantRequest("List my debts", conversationId));
+    expect(lastStored(conversationId).followup).toBe("ordinary_income");
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
+    const result = await (await POST(assistantRequest("yes", conversationId))).json();
+
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, categoryName: "Other income" });
+  });
+
+  it("keeps a model-worded clarification through a finance answer, so the answer still completes the transaction", async () => {
+    seedDebtFinanceFacts();
+    store.createAccount(user.id, { name: "Spare", type: "cash", openingMinor: 0 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "How much was the coffee?" })));
+    const asked = await (await POST(assistantRequest("I bought coffee"))).json();
+    expect(lastStored(asked.conversationId).followup).toBe("clarification");
+
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+    await POST(assistantRequest("Show my spending this month", asked.conversationId));
+    expect(lastStored(asked.conversationId).followup).toBe("clarification");
+
+    const provider = vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" }));
+    vi.stubGlobal("fetch", provider);
+    const saved = await (await POST(assistantRequest("120", asked.conversationId))).json();
+
+    expect(sentTo(provider.mock.calls[0])).toContain("I bought coffee");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000, categoryName: "Food" });
+  });
+
+  it("keeps the offer to add a saved debt to Transactions, and its debt, through a local debt list", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27", note: "Jollibee", recordTransaction: true })));
+    const first = await (await POST(assistantRequest("Mom owes me 27"))).json();
+    expect(lastStored(first.conversationId).followup).toBe("debt_transaction");
+
+    await POST(assistantRequest("List my debts", first.conversationId));
+    expect(lastStored(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
+
+    const result = await (await POST(assistantRequest("Add it to Transactions; it was Jollibee", first.conversationId))).json();
+
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(result.transaction).toMatchObject({ kind: "expense", amountMinor: 2_700 });
+    expect(result.debt).toMatchObject({ id: first.debt.id });
+  });
+
+  it("still drops the question on cancel after a read-only answer, and the next prompt starts clean", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn());
+    await POST(assistantRequest("List my debts", conversationId));
+
+    const provider = vi.fn(async () => expenseGuess500());
+    vi.stubGlobal("fetch", provider);
+    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(lastStored(conversationId).followup).toBeNull();
+
+    const next = vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "expense", category: "Other" }));
+    vi.stubGlobal("fetch", next);
+    const saved = await (await POST(assistantRequest("500", conversationId))).json();
+
+    expect(sentTo(next.mock.calls[0])).not.toContain("Ana paid me");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 50_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+  });
+
+  it("stores no pending question for a read-only turn when none was pending, and after a repayment that completed", async () => {
+    seedDebtFinanceFacts();
+    vi.stubGlobal("fetch", vi.fn());
+    const listed = await (await POST(assistantRequest("List my debts"))).json();
+    expect(lastStored(listed.conversationId).followup).toBeNull();
+
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+    await POST(assistantRequest("How much did I spend this month?", listed.conversationId));
+    expect(lastStored(listed.conversationId)).toMatchObject({ followup: null });
+
+    const { conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })));
+    await POST(assistantRequest("500", conversationId));
+    expect(lastStored(conversationId).followup).toBeNull();
+    vi.stubGlobal("fetch", vi.fn());
+    await POST(assistantRequest("List my debts", conversationId));
+    expect(lastStored(conversationId).followup).toBeNull();
+  });
+
+  const billSpec = () => providerTool("create_bill", { name: "Netflix", amount: "549", frequency: "monthly", nextDueDate: "2026-10-09", endDate: "2026-12-15", category: "Entertainment" });
+  const billPrompt = "I have a Netflix bill under Entertainment. It is ₱549 monthly, started today, and ends December 15.";
+
+  it("keeps the pending repayment question when a bill is saved without asking anything", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => billSpec()));
+
+    const saved = await (await POST(assistantRequest(billPrompt, conversationId))).json();
+
+    expect(saved.bill).toMatchObject({ name: "Netflix", amountMinor: 54_900 });
+    expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+    await expectAnaRepaid500(conversationId, debt.id);
+  });
+
+  it("lets a bill action that asks its own question take over the pending slot, which is a known limit", async () => {
+    const { conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", { name: "Internet" })));
+
+    const asked = await (await POST(assistantRequest("I have an Internet bill.", conversationId))).json();
+
+    expect(asked.bill).toBeNull();
+    expect(lastStored(conversationId).followup).toMatch(/^bill_/);
+  });
 });

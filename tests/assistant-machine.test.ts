@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, pendingOutcome, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
+import { UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, followupAfterTurn, pendingOutcome, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -63,6 +63,29 @@ describe("pending follow-up outcome", () => {
       for (const pending of FOLLOWUP_KINDS) expect(pendingOutcome(pending, reply)).toBe("answer");
     });
   }
+});
+
+describe("the pending question a turn stores", () => {
+  it("keeps the pending question for a turn that only reads or saved a bill and asked nothing", () => {
+    for (const pending of FOLLOWUP_KINDS) expect(followupAfterTurn(pending, null, true)).toBe(pending);
+  });
+
+  it("ends the pending question for any other turn that asked nothing, such as a completed write", () => {
+    for (const pending of FOLLOWUP_KINDS) expect(followupAfterTurn(pending, null, false)).toBeNull();
+  });
+
+  it("lets a turn that asks its own question replace the pending one, whether or not it read anything", () => {
+    for (const pending of FOLLOWUP_KINDS) {
+      expect(followupAfterTurn(pending, "bill_name", true)).toBe("bill_name");
+      expect(followupAfterTurn(pending, "clarification", false)).toBe("clarification");
+    }
+  });
+
+  it("stores no question when none was pending and the turn asked nothing", () => {
+    expect(followupAfterTurn(null, null, true)).toBeNull();
+    expect(followupAfterTurn(null, null, false)).toBeNull();
+    expect(followupAfterTurn(null, "repayment_amount", false)).toBe("repayment_amount");
+  });
 });
 
 describe("cancel hint on a question asked again", () => {

@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { cancelHint, cancelReply, pendingOutcome, runSavedDebt, turnMayCommit } from "@/lib/machines/assistant";
+import { cancelHint, cancelReply, followupAfterTurn, pendingOutcome, runSavedDebt, turnMayCommit } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -710,8 +710,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
     if (debtQuestion(input.prompt, requestedMetrics)) {
       const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
+      // Reading the debt list is not an answer to a pending question, so the question and the debt it offered stay.
+      const stored = followupAfterTurn(pending, null, true);
       return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
-        store.addMessage(user.id, conversationId, "assistant", answer);
+        store.addMessage(user.id, conversationId, "assistant", answer, undefined, stored, stored ? recordedDebtId : undefined);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
     }
@@ -777,6 +779,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       let clarificationKind: FollowupKind | null = null;
       // True when the question is the model's own wording, which never carries the cancel hint.
       let modelWorded = false;
+      // True when the turn only read the ledger, which a pending question survives.
+      let answeredReadOnly = false;
       if (repaymentReportQuestion) {
         call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
       } else if (ordinaryIncomeFlow) {
@@ -858,6 +862,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
           const facts = store.getFinanceFacts(user.id, start, end, category);
           answer = answerForFacts(facts, input.prompt, requestedMetrics);
+          answeredReadOnly = true;
         }
       } else if (call.name === "log_debt") {
         const direction = call.args.direction === "owed_to_you" || call.args.direction === "you_owe" ? call.args.direction : statedDebtIntent?.direction ?? null;
@@ -1113,11 +1118,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         }
       } else answer = "I couldn't complete that request. Please rephrase it.";
 
-      if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
+      // A finance answer writes nothing, so the uncertainty guard has nothing to protect and must not replace it
+      // while a question is pending. A bill that was saved without a question leaves that question pending too.
+      const guarded = uncertainRepayment && !(answeredReadOnly && lastFollowup !== null);
+      if (guarded) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
       else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; followup = null; }
       const hint = cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
-      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, followup, debt?.id);
+      const leavesPending = !guarded && (answeredReadOnly || call.name === "create_bill" || call.name === "update_bill");
+      const stored = followupAfterTurn(lastFollowup, followup, leavesPending);
+      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined));
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });
 }

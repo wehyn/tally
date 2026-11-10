@@ -48,6 +48,14 @@ export function pendingOutcome(pending: FollowupKind | null, prompt: string): Pe
   return CANCEL_PHRASES.has(phrase) ? "cancel" : "answer";
 }
 
+// The pending question a turn stores with its reply. A turn that asks a question of its own replaces the
+// pending one. A turn that only reads (the debt list, a finance answer) or saved a bill and asked nothing is not
+// an answer to the pending question and not a cancel of it, so the question stays exactly as it was and the next
+// reply still answers it. Every other turn that asks nothing ends the pending question.
+export function followupAfterTurn(pending: FollowupKind | null, asked: FollowupKind | null, leavesPending: boolean): FollowupKind | null {
+  return asked ?? (leavesPending ? pending : null);
+}
+
 // What a cancel tells the user about what happened to the dropped question. Most questions are asked before
 // anything is saved, so nothing was recorded. The offer to add a just-saved debt to Transactions is different,
 // because the debt is already in Debts, and so is every question that continues it ("add it to Transactions"
