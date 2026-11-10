@@ -43,9 +43,12 @@ export function contributionRefusal(goal: GoalStatus): ContributionRefusal | nul
   return goal;
 }
 
-// Succession: when the manager leaves or is disabled, the earliest accepted, enabled member other
-// than the outgoing one takes over. No such member means the goal archives. The store also closes
+// Succession: when the manager leaves, is removed or deletes their account ("leave") or is disabled
+// ("disable"), the earliest accepted, enabled member other than the outgoing one takes over. With no
+// such member a leaving manager archives the goal, but a disabled one changes nothing: the admin can
+// re-enable them, so the goal, its manager and its memberships wait for that. The store also closes
 // every accepted membership on archive, so an archived goal has no accepted member.
+export type SuccessionCause = "leave" | "disable";
 export type SuccessionMember = {
   userId: string;
   status: MembershipStatus;
@@ -53,13 +56,14 @@ export type SuccessionMember = {
   invitedAt: string;
   enabled: boolean;
 };
-export type Succession = { managerId: string } | { archive: true };
+export type Succession = { managerId: string } | { archive: true } | { keep: true };
 
-export function decideSuccession(outgoingUserId: string, members: readonly SuccessionMember[]): Succession {
+export function decideSuccession(outgoingUserId: string, members: readonly SuccessionMember[], cause: SuccessionCause): Succession {
   const successor = members
     .filter((member) => member.status === "accepted" && member.enabled && member.userId !== outgoingUserId)
     .sort((a, b) => compareNullableAsc(a.acceptedAt, b.acceptedAt) || compareNullableAsc(a.invitedAt, b.invitedAt))[0];
-  return successor ? { managerId: successor.userId } : { archive: true };
+  if (successor) return { managerId: successor.userId };
+  return cause === "disable" ? { keep: true } : { archive: true };
 }
 
 function compareNullableAsc(a: string | null, b: string | null): number {

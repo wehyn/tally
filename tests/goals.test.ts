@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createStore } from "../src/lib/store";
 
 let store: ReturnType<typeof createStore>;
-beforeEach(() => { store = createStore(new Database(":memory:")); store.migrate(); });
+let db: Database.Database;
+beforeEach(() => { db = new Database(":memory:"); store = createStore(db); store.migrate(); });
 
 const admin = () => store.registerUser("goal_admin", "hash");
 
@@ -50,15 +51,66 @@ describe("goal rules fixed from the TLA+ findings (Goals.tla)", () => {
   });
 });
 
+const goalRow = (id: string) => db.prepare("SELECT status,manager_id AS managerId FROM goals WHERE id=?").get(id);
+const memberStatuses = (id: string) => (db.prepare("SELECT username_snapshot AS name,status FROM goal_members WHERE goal_id=?").all(id) as { name: string; status: string }[])
+  .map((row) => `${row.name}:${row.status}`).sort();
+
 describe("goal decisions when the manager is disabled or an invitation is answered", () => {
-  it("disabling the only enabled member archives the goal and closes the disabled members too", () => {
+  it("a goal only the disabled user belongs to comes back whole when they are re-enabled", () => {
+    const a = admin(); const bob = store.registerUser("goal_bob", "hash");
+    const g = store.createGoal(bob.id, { name: "Emergency fund", targetMinor: 100_000 });
+    store.addContribution(bob.id, g, { amountMinor: 40_000, date: "2026-11-01" });
+    store.setUserEnabled(a.id, bob.id, false);
+    store.setUserEnabled(a.id, bob.id, true);
+    expect(store.listGoals(bob.id)).toMatchObject([{ id: g, name: "Emergency fund", status: "active", managerId: bob.id, raisedMinor: 40_000 }]);
+    expect(() => store.addContribution(bob.id, g, { amountMinor: 1, date: "2026-11-02" })).not.toThrow();
+    expect(() => store.updateGoal(bob.id, g, { name: "Rainy day fund" })).not.toThrow();
+  });
+  it("disabling the only enabled member keeps the goal, its manager and every membership, so re-enabling restores it", () => {
     const a = admin(); const b = store.registerUser("goal_b", "hash"); const c = store.registerUser("goal_c", "hash");
     const g = store.createGoal(b.id, { name: "Trip", targetMinor: 1000 });
     store.inviteToGoal(b.id, g, "goal_c");
     store.respondInvitation(c.id, (store.listInvitations(c.id)[0] as { id: string }).id, true);
     store.setUserEnabled(a.id, c.id, false);
     store.setUserEnabled(a.id, b.id, false);
-    expect(store.listGoals(c.id)).toHaveLength(0);
+    expect(goalRow(g)).toEqual({ status: "active", managerId: b.id });
+    expect(memberStatuses(g)).toEqual(["goal_b:accepted", "goal_c:accepted"]);
+    store.setUserEnabled(a.id, b.id, true);
+    expect(store.listGoals(b.id)[0]).toMatchObject({ id: g, managerId: b.id });
+    store.setUserEnabled(a.id, c.id, true);
+    expect(store.listGoals(c.id)[0]).toMatchObject({ id: g, managerId: b.id });
+  });
+  it("enabling a member hands a goal held by a disabled manager to them", () => {
+    const a = admin(); const b = store.registerUser("goal_b", "hash"); const c = store.registerUser("goal_c", "hash");
+    const g = store.createGoal(b.id, { name: "Trip", targetMinor: 1000 });
+    store.inviteToGoal(b.id, g, "goal_c");
+    store.respondInvitation(c.id, (store.listInvitations(c.id)[0] as { id: string }).id, true);
+    store.setUserEnabled(a.id, c.id, false);
+    store.setUserEnabled(a.id, b.id, false);
+    store.setUserEnabled(a.id, c.id, true);
+    expect(goalRow(g)).toEqual({ status: "active", managerId: c.id });
+    store.setUserEnabled(a.id, b.id, true);
+    expect(goalRow(g)).toEqual({ status: "active", managerId: c.id });
+    expect(memberStatuses(g)).toEqual(["goal_b:accepted", "goal_c:accepted"]);
+  });
+  it("accepting an invitation hands a goal held by a disabled manager to the new member", () => {
+    const a = admin(); const b = store.registerUser("goal_b", "hash"); const c = store.registerUser("goal_c", "hash");
+    const g = store.createGoal(b.id, { name: "Trip", targetMinor: 1000 });
+    store.inviteToGoal(b.id, g, "goal_c");
+    store.setUserEnabled(a.id, b.id, false);
+    expect(goalRow(g)).toEqual({ status: "active", managerId: b.id });
+    store.respondInvitation(c.id, (store.listInvitations(c.id)[0] as { id: string }).id, true);
+    expect(goalRow(g)).toEqual({ status: "active", managerId: c.id });
+  });
+  it("deleting the account of the only enabled member still archives the goal and closes the disabled members", () => {
+    const a = admin(); const b = store.registerUser("goal_b", "hash"); const c = store.registerUser("goal_c", "hash");
+    const g = store.createGoal(b.id, { name: "Trip", targetMinor: 1000 });
+    store.inviteToGoal(b.id, g, "goal_c");
+    store.respondInvitation(c.id, (store.listInvitations(c.id)[0] as { id: string }).id, true);
+    store.setUserEnabled(a.id, c.id, false);
+    store.deleteAccountOwner(b.id);
+    expect(goalRow(g)).toEqual({ status: "archived", managerId: null });
+    expect(memberStatuses(g)).toEqual(["Former member:former", "goal_c:left"]);
     store.setUserEnabled(a.id, c.id, true);
     expect(store.listGoals(c.id)).toHaveLength(0);
   });

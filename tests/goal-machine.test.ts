@@ -51,9 +51,21 @@ describe("goal invitations, contributions and succession", () => {
   it("hands over to the earliest accepted, enabled member other than the outgoing one", () => {
     const member = (userId: string, acceptedAt: string | null, enabled = true, status: SuccessionMember["status"] = "accepted") =>
       ({ userId, status, acceptedAt, invitedAt: "2026-01-01", enabled });
-    expect(decideSuccession("a", [member("a", "2026-01-01"), member("b", "2026-02-01"), member("c", "2026-03-01")])).toEqual({ managerId: "b" });
-    expect(decideSuccession("a", [member("a", "2026-01-01"), member("b", "2026-02-01", false), member("c", "2026-03-01")])).toEqual({ managerId: "c" });
-    expect(decideSuccession("a", [member("a", "2026-01-01"), member("b", "2026-02-01", true, "invited")])).toEqual({ archive: true });
-    expect(decideSuccession("a", [member("a", "2026-01-01")])).toEqual({ archive: true });
+    expect(decideSuccession("a", [member("a", "2026-01-01"), member("b", "2026-02-01"), member("c", "2026-03-01")], "leave")).toEqual({ managerId: "b" });
+    expect(decideSuccession("a", [member("a", "2026-01-01"), member("b", "2026-02-01", false), member("c", "2026-03-01")], "leave")).toEqual({ managerId: "c" });
+    expect(decideSuccession("a", [member("a", "2026-01-01"), member("b", "2026-02-01", true, "invited")], "leave")).toEqual({ archive: true });
+    expect(decideSuccession("a", [member("a", "2026-01-01")], "leave")).toEqual({ archive: true });
+  });
+  it("keeps a goal whose disabled manager has no enabled accepted member to hand it to, and archives it when a leaving manager has none", () => {
+    const member = (userId: string, enabled = true, status: SuccessionMember["status"] = "accepted") =>
+      ({ userId, status, acceptedAt: "2026-01-01", invitedAt: "2026-01-01", enabled });
+    const alone = [member("a", false)];
+    const withDisabledPeer = [member("a", false), member("b", false)];
+    const withInvitedPeer = [member("a", false), member("b", true, "invited")];
+    for (const members of [alone, withDisabledPeer, withInvitedPeer]) {
+      expect(decideSuccession("a", members, "disable")).toEqual({ keep: true });
+      expect(decideSuccession("a", members, "leave")).toEqual({ archive: true });
+    }
+    expect(decideSuccession("a", [member("a", false), member("b")], "disable")).toEqual({ managerId: "b" });
   });
 });

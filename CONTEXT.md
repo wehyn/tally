@@ -47,7 +47,7 @@ Tally is a self-hosted personal finance tracker for people using the same home-s
 
 ## Shared goals
 
-- A **shared goal** has a PHP target, an optional deadline, and an explicit membership list. The goal manager invites a registered user; the invitee must accept before joining. When a manager leaves, is removed, or deletes their account, management passes to the first currently active accepted invitee; if no accepted invitee remains, the goal is archived and its history is preserved.
+- A **shared goal** has a PHP target, an optional deadline, and an explicit membership list. The goal manager invites a registered user; the invitee must accept before joining. When a manager leaves, is removed, or deletes their account, management passes to the first currently active accepted invitee; if no accepted invitee remains, the goal is archived and its history is preserved. Disabling a manager's account passes management on the same way, but with no active accepted member the goal stays as it is, so re-enabling the account restores it. An admin disabling or re-enabling an account never archives a goal.
 - A **contribution** is a manual goal record attributed to a member. It is separate from personal transactions and does not change any financial account balance.
 - Members can see combined progress and how much each member contributed. A member may edit or delete only their own contributions. Past contributions remain in goal history when membership ends and retain that member's username. Account deletion changes only that user's contribution display name to exactly **Former member**.
 - A goal reaches its completed state when contributions meet its target. Its manager can raise the target to continue it.

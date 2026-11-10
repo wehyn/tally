@@ -10,8 +10,8 @@ States: **absent**, **active** (`enabled=1`), **disabled** (`enabled=0`). Role i
 | Move | From → to | Guard | Code |
 |---|---|---|---|
 | register | absent → active | username 3–32 `[A-Za-z0-9_]`, unique (NOCASE); role = admin iff no admin row exists (`roleForRegistration`), inside one `immediate` transaction | `store.ts:307` |
-| disable | active → disabled | caller is admin and not the target; drops any outstanding reset code | `store.ts:357`, `api/admin/users/route.ts` |
-| enable | disabled → active | caller is admin | `store.ts:357`, `api/admin/users/route.ts` |
+| disable | active → disabled | caller is admin and not the target; drops any outstanding reset code; a goal the user manages passes to its earliest enabled accepted member, and with none stays as it is (see [goals.md](goals.md)) | `store.ts:357`, `api/admin/users/route.ts` |
+| enable | disabled → active | caller is admin; a goal held by a disabled manager passes to the enabled user if they are an accepted member and no earlier one exists | `store.ts:357`, `api/admin/users/route.ts` |
 | delete | active → absent | correct password; an admin must name another *enabled* user when one exists, who becomes admin (`deleteRefusal`); with no other enabled user the admin may delete and no admin remains | `store.ts:1224`, `api/account/route.ts` |
 
 ### 2. Reset credential (`reset_token_hash`, `reset_expires_at`)

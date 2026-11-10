@@ -1,10 +1,11 @@
 ---- MODULE Goals ----
 \* Model of one shared goal in Tally. Code: src/lib/machines/goal.ts and src/lib/store.ts
-\* (createGoal, inviteToGoal, respondInvitation, updateGoal, succession, changeMembership,
-\* addContribution, updateContribution, deleteContribution, deleteAccountOwner, setUserEnabled).
+\* (createGoal, inviteToGoal, respondInvitation, updateGoal, succession, handOverFromDisabledManager,
+\* changeMembership, addContribution, updateContribution, deleteContribution, deleteAccountOwner, setUserEnabled).
 EXTENDS Naturals
 
 CONSTANTS NUsers, NSlots, MaxAmount, MaxTarget, Churn   \* Churn = FALSE leaves out edits, deletes, disabling and account deletion (smaller model for charts)
+CONSTANT DisableRule   \* "keep" is the code. "archive" and "ignore" replay broken rules (goals-archive-on-disable.cfg, goals-no-handover.cfg)
 
 Users == 1..NUsers          \* user 1 creates the goal and starts as manager
 Slots == 1..NSlots          \* at most two contributions exist at once
@@ -33,10 +34,12 @@ Raised == SumOf(Slots)
 NextStatus(cur, raised, tgt) ==
   IF cur = "archived" THEN "archived" ELSE IF raised >= tgt THEN "completed" ELSE "active"
 
-\* machines/goal.ts decideSuccession: first enabled accepted member other than the outgoing one, else archive.
+\* machines/goal.ts decideSuccession: first enabled accepted member other than the outgoing one.
+\* None means a leaving, removed or deleted manager archives the goal and a disabled manager changes nothing.
 \* The model picks any such member; the code picks the earliest accepted. Which one does not
 \* change any rule checked here.
-Successors(out, ms) == {u \in Users : u # out /\ ms[u] = "accepted" /\ enabled[u] /\ alive[u]}
+SuccessorsIn(out, ms, en) == {u \in Users : u # out /\ ms[u] = "accepted" /\ en[u] /\ alive[u]}
+Successors(out, ms) == SuccessorsIn(out, ms, enabled)
 
 \* store.ts succession, archive branch: every accepted membership closes ("left").
 \* Only the archive branch changes membership; a hand-over leaves memberships alone.
@@ -55,12 +58,17 @@ Invite(m, u) ==
   /\ mstat' = [mstat EXCEPT ![u] = "invited"]
   /\ UNCHANGED <<gstatus, manager, enabled, alive, target, contrib>>
 
-\* store.ts respondInvitation: the row must still be 'invited'; accept is refused once the goal is archived
+\* store.ts respondInvitation: the row must still be 'invited'; accept is refused once the goal is archived.
+\* An accept can give a disabled manager an enabled accepted member, who then takes over (handOverFromDisabledManager).
 Respond(u, accept) ==
-  /\ mstat[u] = "invited" /\ alive[u]
-  /\ ~(accept /\ gstatus = "archived")
-  /\ mstat' = [mstat EXCEPT ![u] = Move("invited", IF accept THEN "accept" ELSE "decline")]
-  /\ UNCHANGED <<gstatus, manager, enabled, alive, target, contrib>>
+  LET ms == [mstat EXCEPT ![u] = Move("invited", IF accept THEN "accept" ELSE "decline")]
+  IN /\ mstat[u] = "invited" /\ alive[u]
+     /\ ~(accept /\ gstatus = "archived")
+     /\ mstat' = ms
+     /\ IF accept /\ gstatus # "archived" /\ ~enabled[manager] /\ SuccessorsIn(manager, ms, enabled) # {}
+          THEN \E n \in SuccessorsIn(manager, ms, enabled) : manager' = n
+          ELSE manager' = manager
+     /\ UNCHANGED <<gstatus, enabled, alive, target, contrib>>
 
 \* store.ts changeMembership: actor must be an accepted member; remove needs the manager
 Change(actor, u, act) ==
@@ -106,16 +114,21 @@ RaiseOrLowerTarget(m, t) ==
   /\ gstatus' = NextStatus(gstatus, Raised, t)
   /\ UNCHANGED <<manager, mstat, enabled, alive, contrib>>
 
-\* store.ts setUserEnabled: disabling a manager runs the same succession as leaving. Enabling runs nothing.
+\* store.ts setUserEnabled: flips the flag, then handOverFromDisabledManager. A disabled manager hands the goal to an
+\* enabled accepted member when one exists, after a disable and after an enable. With none, nothing changes: the goal,
+\* its manager and its memberships wait for the re-enable. DisableRule "archive" replays the earlier rule, which archived
+\* the goal and closed every accepted membership; "ignore" replays the rule before that, which did nothing at all.
 ToggleEnabled(u) ==
-  /\ alive[u] /\ enabled' = [enabled EXCEPT ![u] = ~@]
-  /\ IF enabled[u] /\ manager = u
-       THEN /\ IF Successors(u, mstat) # {}
-                 THEN \E n \in Successors(u, mstat) : manager' = n /\ gstatus' = gstatus
-                 ELSE manager' = 0 /\ gstatus' = "archived"
-            /\ mstat' = [v \in Users |-> IF Successors(u, mstat) = {} THEN Close(u, mstat)[v] ELSE mstat[v]]
-       ELSE UNCHANGED <<manager, gstatus, mstat>>
-  /\ UNCHANGED <<alive, target, contrib>>
+  LET en == [enabled EXCEPT ![u] = ~enabled[u]]
+  IN /\ alive[u]
+     /\ enabled' = en
+     /\ IF DisableRule = "archive" /\ enabled[u] /\ manager = u /\ gstatus # "archived" /\ SuccessorsIn(u, mstat, en) = {}
+          THEN /\ manager' = 0 /\ gstatus' = "archived" /\ mstat' = Close(u, mstat)
+          ELSE /\ IF DisableRule # "ignore" /\ gstatus # "archived" /\ ~en[manager] /\ SuccessorsIn(manager, mstat, en) # {}
+                    THEN \E n \in SuccessorsIn(manager, mstat, en) : manager' = n
+                    ELSE manager' = manager
+               /\ UNCHANGED <<gstatus, mstat>>
+     /\ UNCHANGED <<alive, target, contrib>>
 
 \* store.ts deleteAccountOwner: succession for a managed non-archived goal, contributions and
 \* membership become "Former member"
@@ -173,8 +186,10 @@ FormerMembersOwnNothing ==
     /\ \A s \in Slots : contrib[s].owner # u
 
 \* ---- Rules that hold after the fixes (see SKILL.md, Findings) ----
-\* A live goal's manager is an enabled user.
-ManagerIsEnabled == gstatus # "archived" => enabled[manager]
+\* A live goal's manager is enabled, unless nobody else can take over: disabling a manager with no enabled
+\* accepted member to hand to leaves the goal untouched, so enabling them restores it.
+ManagerIsEnabledUnlessAlone ==
+  gstatus # "archived" => (enabled[manager] \/ SuccessorsIn(manager, mstat, enabled) = {})
 
 \* An archived goal has no accepted members: nobody can join a goal that no longer has a manager.
 ArchivedGoalHasNoAcceptedMember ==
@@ -192,4 +207,8 @@ NoContributionUnlessActive ==
   [][\A s \in Slots : (contrib[s].amt = 0 /\ contrib'[s].amt > 0) => gstatus = "active"]_vars
 
 ArchivedIsTerminal == [][gstatus = "archived" => gstatus' = "archived"]_vars
+
+\* Disabling or enabling a user never archives a goal or closes a membership. A goal archives only when its manager
+\* leaves, is removed by the manager or deletes their account (and the goal has no one to hand to).
+TogglingNeverArchives == [][enabled' # enabled => (gstatus' = gstatus /\ mstat' = mstat)]_vars
 ====

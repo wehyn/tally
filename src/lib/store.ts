@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { answerInvitation, contributionRefusal, decideSuccession, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus, type SuccessionMember } from "./machines/goal";
+import { answerInvitation, contributionRefusal, decideSuccession, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus, type SuccessionCause, type SuccessionMember } from "./machines/goal";
 import { acceptsAdvance, acceptsPayment, canChangeDirection, debtAfterPayment, historyAdjustmentForUpdate, nextDebtStatus, type DebtDirection, type DebtStatus } from "./machines/debt";
 import { deleteRefusal, nextAccountState, roleForRegistration, type AccountState } from "./machines/identity";
 import type Database from "better-sqlite3";
@@ -365,9 +365,9 @@ export function createStore(db: Database.Database) {
       const next = nextAccountState(state, enabled ? "enable" : "disable");
       if (!next) throw new Error("This account cannot change state.");
       saveAccountState(userId, next);
-      if (enabled) return;
-      const managed = db.prepare("SELECT id FROM goals WHERE manager_id=? AND status!='archived'").all(userId) as { id: string }[];
-      for (const goal of managed) succession(goal.id, userId);
+      const belongs = db.prepare(`SELECT g.id FROM goals g JOIN goal_members m ON m.goal_id=g.id
+        WHERE m.user_id=? AND m.status='accepted' AND g.status!='archived'`).all(userId) as { id: string }[];
+      for (const goal of belongs) handOverFromDisabledManager(goal.id);
     }).immediate();
   }
   function setResetCredential(userId: string, hash: string, expiresAt: string): void {
@@ -1165,12 +1165,13 @@ export function createStore(db: Database.Database) {
   }
   function respondInvitation(userId: string, membershipId: string, accept: boolean): void {
     db.transaction(() => {
-      const row = db.prepare("SELECT g.status FROM goal_members m JOIN goals g ON g.id=m.goal_id WHERE m.id=? AND m.user_id=? AND m.status='invited'")
-        .get(membershipId, userId) as { status: GoalStatus } | undefined;
+      const row = db.prepare("SELECT g.id AS goalId,g.status FROM goal_members m JOIN goals g ON g.id=m.goal_id WHERE m.id=? AND m.user_id=? AND m.status='invited'")
+        .get(membershipId, userId) as { goalId: string; status: GoalStatus } | undefined;
       if (!row) throw new Error("Invitation not found or already answered.");
       const next = answerInvitation(row.status, accept);
       if (!next) throw new Error("This goal is archived.");
       db.prepare("UPDATE goal_members SET status=?,accepted_at=? WHERE id=?").run(next, accept ? stamp() : null, membershipId);
+      if (accept) handOverFromDisabledManager(row.goalId);
     }).immediate();
   }
   function listInvitations(userId: string) {
@@ -1194,17 +1195,25 @@ export function createStore(db: Database.Database) {
     updates.push("status=?"); args.push(nextGoalStatus(goal.status as GoalStatus, raised, target));
     db.prepare(`UPDATE goals SET ${updates.join(",")} WHERE id=?`).run(...args, goalId);
   }
-  function succession(goalId: string, outgoingUserId: string): void {
+  function succession(goalId: string, outgoingUserId: string, cause: SuccessionCause): void {
     const members = (db.prepare(`SELECT m.user_id AS userId,m.status,m.accepted_at AS acceptedAt,m.invited_at AS invitedAt,u.enabled
       FROM goal_members m JOIN users u ON u.id=m.user_id WHERE m.goal_id=? AND m.user_id IS NOT NULL`).all(goalId) as (Omit<SuccessionMember, "enabled"> & { enabled: number })[])
       .map((row): SuccessionMember => ({ ...row, enabled: row.enabled === 1 }));
-    const next = decideSuccession(outgoingUserId, members);
+    const next = decideSuccession(outgoingUserId, members, cause);
+    if ("keep" in next) return;
     if ("managerId" in next) {
       db.prepare("UPDATE goals SET manager_id=? WHERE id=?").run(next.managerId, goalId);
       return;
     }
     db.prepare("UPDATE goals SET manager_id=NULL,status='archived' WHERE id=?").run(goalId);
     db.prepare("UPDATE goal_members SET status='left' WHERE goal_id=? AND status='accepted'").run(goalId);
+  }
+  // A disabled manager hands a live goal on as soon as an enabled accepted member exists. Run after anything
+  // that can create one: a user is disabled or enabled, or an invitation is accepted.
+  function handOverFromDisabledManager(goalId: string): void {
+    const goal = db.prepare("SELECT g.manager_id AS managerId FROM goals g JOIN users u ON u.id=g.manager_id WHERE g.id=? AND g.status!='archived' AND u.enabled=0")
+      .get(goalId) as { managerId: string } | undefined;
+    if (goal) succession(goalId, goal.managerId, "disable");
   }
   function changeMembership(actorId: string, goalId: string, targetUserId: string, action: "leave" | "remove"): void {
     const goal = requireGoalMember(actorId, goalId);
@@ -1213,7 +1222,7 @@ export function createStore(db: Database.Database) {
     const target = db.prepare("SELECT status FROM goal_members WHERE goal_id=? AND user_id=?").get(goalId, targetUserId) as { status: MembershipStatus } | undefined;
     const nextStatus = target ? nextMembershipStatus(target.status, action) : null;
     if (!nextStatus) throw new Error("Member not found.");
-    if (goal.manager_id === targetUserId) succession(goalId, targetUserId);
+    if (goal.manager_id === targetUserId) succession(goalId, targetUserId, "leave");
     db.prepare("UPDATE goal_members SET status=? WHERE goal_id=? AND user_id=?").run(nextStatus, goalId, targetUserId);
   }
   function addContribution(userId: string, goalId: string, input: { amountMinor: number; note?: string; date: string }): string {
@@ -1275,7 +1284,7 @@ export function createStore(db: Database.Database) {
         db.prepare("UPDATE users SET role='admin' WHERE id=? AND enabled=1").run(adminHandoffTo);
       }
       const managed = db.prepare("SELECT id FROM goals WHERE manager_id=? AND status!='archived'").all(userId) as { id: string }[];
-      for (const goal of managed) succession(goal.id, userId);
+      for (const goal of managed) succession(goal.id, userId, "leave");
       db.prepare("UPDATE goal_contributions SET user_id=NULL,member_name='Former member' WHERE user_id=?").run(userId);
       db.prepare("UPDATE goal_members SET user_id=NULL,username_snapshot='Former member',status='former' WHERE user_id=?").run(userId);
       db.prepare("DELETE FROM bills WHERE user_id=?").run(userId);
