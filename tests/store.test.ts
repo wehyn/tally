@@ -336,6 +336,22 @@ describe("owner-scoped ledger", () => {
     expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.contextStart)).toEqual([false, true]);
   });
 
+  it("names the last stored message of a conversation by insertion order, and null when it has none", () => {
+    const user = store.registerUser("last_message_id", "hash");
+    const other = store.registerUser("last_message_other", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    expect(store.lastMessageId(user.id, conversationId)).toBeNull();
+
+    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, false, "2999-01-01T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "assistant", "reply", undefined, "clarification");
+    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, false, "2026-10-09T00:00:00.000Z");
+
+    const messages = store.getConversation(user.id, conversationId)!.messages;
+    expect(store.lastMessageId(user.id, conversationId)).toBe(messages[2].id);
+    expect(() => store.lastMessageId(other.id, conversationId)).toThrow("Conversation not found.");
+    expect(() => store.lastMessageId(user.id, "00000000-0000-4000-8000-000000000000")).toThrow("Conversation not found.");
+  });
+
   it("stamps a message with the time it was received and keeps a later reply after it", () => {
     const user = store.registerUser("received_time_message", "hash");
     const conversationId = store.createConversation(user.id, "Chat");

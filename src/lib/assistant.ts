@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { cancelHint, pendingOutcome } from "@/lib/machines/assistant";
+import { cancelHint, pendingOutcome, turnMayCommit } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -666,13 +666,18 @@ function directDebtCapture(prompt: string): { name: string; args: Record<string,
 
 // The user message, the write and the reply commit together. A new chat is created in the same step,
 // so a turn that fails (provider error, consent withdrawn, chat deleted) leaves nothing behind.
-// Every turn that stores anything goes through here, so the consent recheck cannot be skipped by a branch.
+// Every turn that stores anything goes through here, so neither recheck below can be skipped by a branch.
+// readLastMessageId is the last message the turn saw when it read the pending question. A turn whose
+// conversation has moved on since (another request answered or cancelled that question) stores nothing.
 // startsContext marks the user message as the start of a new follow-up run, so later turns never
 // reload what came before it (a prompt that replaced a pending question). receivedAt is stored as the
 // user message's time, because a later follow-up reads relative dates ("today") from it.
-function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, prompt: string, startsContext: boolean, receivedAt: string, work: (conversationId: string) => T): T {
+function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, readLastMessageId: string | null, prompt: string, startsContext: boolean, receivedAt: string, work: (conversationId: string) => T): T {
   return store.transaction(() => {
     assertAssistantAccess(store, userId);
+    if (conversationId && !turnMayCommit(readLastMessageId, store.lastMessageId(userId, conversationId))) {
+      throw new HttpError(409, "Your conversation changed while this ran. Send that again.");
+    }
     const id = conversationId ?? store.createConversation(userId, prompt.slice(0, 80));
     store.addMessage(userId, id, "user", prompt, undefined, null, undefined, startsContext, receivedAt);
     return work(id);
@@ -686,10 +691,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const conversation = input.conversationId ? store.getConversation(user.id, input.conversationId) : null;
     if (input.conversationId && !conversation) throw new HttpError(404, "Conversation not found.");
     const conversationMessages = conversation?.messages ?? [];
+    const readLastMessageId = conversationMessages.at(-1)?.id ?? null;
     const openRun = minimalFollowUpContext(conversationMessages);
     if (pendingOutcome(openRun.at(-1)?.followup ?? null, input.prompt) === "cancel") {
       const answer = "Okay, I dropped that question. Nothing was recorded.";
-      return commitTurn(store, user.id, input.conversationId, input.prompt, true, receivedAt, (conversationId) => {
+      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, true, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
@@ -705,7 +711,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
     if (debtQuestion(input.prompt, requestedMetrics)) {
       const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
-      return commitTurn(store, user.id, input.conversationId, input.prompt, false, receivedAt, (conversationId) => {
+      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, false, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
@@ -766,7 +772,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
       ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
-    return commitTurn(store, user.id, input.conversationId, input.prompt, false, receivedAt, (conversationId) => {
+    return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, false, receivedAt, (conversationId) => {
       let call = providerCall;
       // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
       let clarificationKind: FollowupKind | null = null;

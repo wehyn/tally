@@ -2124,6 +2124,97 @@ describe("assistant turn commit", () => {
   function sentTo(call: unknown) {
     return (JSON.parse(String((call as [string, RequestInit])[1].body)) as ProviderRequest).messages.map((message) => message.content);
   }
+  // A model call that waits for release(), so a test decides which turn commits first.
+  function gatedProvider(answer: () => Response) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const provider = vi.fn(async () => { await gate; return answer(); });
+    vi.stubGlobal("fetch", provider);
+    return { release, waitForCalls: (count: number) => vi.waitFor(() => expect(provider).toHaveBeenCalledTimes(count)) };
+  }
+  const conversationChanged = "Your conversation changed while this ran. Send that again.";
+  const storedTexts = (conversationId: string) => store.getConversation(user.id, conversationId)!.messages.map((message) => `${message.role}: ${message.content}`);
+
+  it("writes a repayment once when the same answer is sent twice while the first is still waiting on the model", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    const model = gatedProvider(() => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+    const first = POST(assistantRequest("500", conversationId));
+    const second = POST(assistantRequest("500", conversationId));
+    await model.waitForCalls(2);
+    model.release();
+    const [saved, repeated] = await Promise.all([first, second]);
+
+    expect(saved.status).toBe(200);
+    expect(repeated.status).toBe(409);
+    expect(await repeated.json()).toEqual({ error: conversationChanged });
+    expect(store.listTransactions(user.id).filter((transaction) => transaction.kind === "debt_repayment")).toHaveLength(1);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(50_000);
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
+    expect(storedTexts(conversationId).filter((text) => text === "user: 500")).toHaveLength(1);
+  });
+
+  it("drops a late answer when the question was cancelled while the model call was running", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    const model = gatedProvider(() => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+    const late = POST(assistantRequest("500", conversationId));
+    await model.waitForCalls(1);
+    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    model.release();
+    const response = await late;
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: conversationChanged });
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    expect(storedTexts(conversationId)).toEqual([
+      "user: Ana paid me", "assistant: What amount should I use for the repayment?",
+      "user: cancel", "assistant: Okay, I dropped that question. Nothing was recorded.",
+    ]);
+  });
+
+  it("keeps the pending question and writes once when the model call fails and the answer is sent again", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 502 })));
+    expect((await POST(assistantRequest("500", conversationId))).status).toBe(400);
+    expect(storedTexts(conversationId)).toHaveLength(2);
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })));
+    const retried = await POST(assistantRequest("500", conversationId));
+
+    expect(retried.status).toBe(200);
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
+  });
+
+  it("lets turns in different chats run at the same time", async () => {
+    const first = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "What would you like to record?" })));
+    const other = await (await POST(assistantRequest("hello"))).json();
+    const model = gatedProvider(() => providerTool("ask_clarification", { question: "Anything else?" }));
+    const inFirst = POST(assistantRequest("hello again", first.conversationId));
+    const inOther = POST(assistantRequest("hello again", other.conversationId));
+    await model.waitForCalls(2);
+    model.release();
+
+    expect([(await inFirst).status, (await inOther).status]).toEqual([200, 200]);
+  });
+
+  it("refuses a first turn in an empty chat that gained a message during the model call", async () => {
+    const conversationId = store.createConversation(user.id, "Empty");
+    const model = gatedProvider(() => providerTool("log_transaction", { amount: "250", description: "lunch", kind: "expense", category: "Food" }));
+    const turn = POST(assistantRequest("Jollibee lunch 250", conversationId));
+    await model.waitForCalls(1);
+    store.addMessage(user.id, conversationId, "assistant", "Hello");
+    model.release();
+    const response = await turn;
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: conversationChanged });
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(storedTexts(conversationId)).toEqual(["assistant: Hello"]);
+  });
 
   it("saves nothing when the chat is deleted during the model call, so a retry saves once", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "What else?" })));

@@ -22,6 +22,13 @@ export function canWrite(consent: ConsentState): boolean {
   return consent === "on";
 }
 
+// A turn reads the stored question before the model call and stores nothing until it commits, so by then
+// another request may have answered or cancelled that question. The turn may commit only while the
+// conversation still ends at the message it read (null for a chat with none). A refused turn stores nothing.
+export function turnMayCommit(readLastMessageId: string | null, currentLastMessageId: string | null): boolean {
+  return readLastMessageId === currentLastMessageId;
+}
+
 // Pending follow-up: what a new prompt does to the question the last reply asked. The only way to drop
 // a question is to say so: a prompt that, trimmed, case-folded and stripped of punctuation, equals one of
 // these phrases. Everything else is an "answer", which keeps the pending context and leaves the reply to the

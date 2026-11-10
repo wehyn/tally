@@ -1106,6 +1106,11 @@ export function createStore(db: Database.Database) {
         accountName: message.accountName ? String(message.accountName) : "", undoUntil: message.undoUntil ? String(message.undoUntil) : null,
       } : null })) };
   }
+  function lastMessageId(userId: string, conversationId: string): string | null {
+    if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");
+    const row = db.prepare("SELECT id FROM assistant_messages WHERE conversation_id=? AND user_id=? ORDER BY rowid DESC LIMIT 1").get(conversationId, userId) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
   function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, followup: FollowupKind | null = null, debtId?: string, contextStart = false, createdAt?: string): void {
     if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");
     const now = stamp();
@@ -1294,7 +1299,7 @@ export function createStore(db: Database.Database) {
     listDebts, listDebtPayments, debtBalanceFromPayments, createDebt, updateDebt, deleteDebt, recordDebtAdvance, recordDebtAdvanceTransaction, recordDebtPayment, recordDebtRepayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
-    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations, transaction,
+    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, lastMessageId, addMessage, deleteConversation, deleteAllConversations, transaction,
     createGoal, listGoals, inviteToGoal, respondInvitation, listInvitations, updateGoal, changeMembership, addContribution, updateContribution,
     deleteContribution, deleteAccountOwner,
   };

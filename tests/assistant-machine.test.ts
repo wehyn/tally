@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNDO_WINDOW_MS, cancelHint, canUndo, pendingOutcome, undoUntilFor } from "../src/lib/machines/assistant";
+import { UNDO_WINDOW_MS, cancelHint, canUndo, pendingOutcome, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -91,5 +91,17 @@ describe("cancel hint on a question asked again", () => {
     expect(cancelHint("bill_name", "bill_amount")).toBeNull();
     expect(cancelHint("account_or_date", "repayment_amount")).toBeNull();
     expect(cancelHint("repayment_amount", "account_or_date")).toBeNull();
+  });
+});
+
+describe("a turn commits only if the conversation is where it read it", () => {
+  it("commits while the last message is the one the turn read", () => {
+    expect(turnMayCommit("message-7", "message-7")).toBe(true);
+    expect(turnMayCommit(null, null)).toBe(true);
+  });
+
+  it("refuses when another request stored a message in between, however it ended", () => {
+    expect(turnMayCommit("message-7", "message-9")).toBe(false);
+    expect(turnMayCommit(null, "message-1")).toBe(false);
   });
 });
