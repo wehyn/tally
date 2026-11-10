@@ -75,6 +75,24 @@ export function runExpired(runLength: number, outcome: PendingOutcome): boolean 
   return outcome === "answer" && runLength >= MAX_OPEN_RUN_MESSAGES;
 }
 
+// A message of the open run, as stored. readOnly marks a reply that only read the ledger.
+export type RunMessage = { role: "user" | "assistant"; followup?: FollowupKind | null; billId?: string | null; readOnly?: boolean };
+
+// A reply is quiet when it handled its own request and left the pending question pending: a bill saved without
+// a question (the reply carries the bill) or a read-only answer. The user message it answered says nothing about
+// the pending question.
+export function isQuietReply(reply: RunMessage): boolean {
+  return reply.role === "assistant" && !!reply.followup && (!!reply.billId || !!reply.readOnly);
+}
+
+// The user messages of the open run that belong to the pending question: the statement that started it and the
+// answers, re-asks and corrections addressed to it. The account and the date that override the model's fields
+// are read from these alone, so a bill or a finance question answered in between cannot move a repayment. The
+// model still gets the whole run, since it can tell a handled turn from the question by its reply.
+export function ownUserMessages<T extends RunMessage>(run: readonly T[]): T[] {
+  return run.filter((message, index) => message.role === "user" && !(index + 1 < run.length && isQuietReply(run[index + 1])));
+}
+
 // What the open question run already saved. A debt is in Debts and a bill is in Bills, so a reply that drops the
 // question must not say nothing was recorded when either exists.
 export type RunSaved = { debt: boolean; bill: boolean };

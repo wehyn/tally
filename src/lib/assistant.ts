@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { cancelHint, cancelReply, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSaved, turnMayCommit } from "@/lib/machines/assistant";
+import { cancelHint, cancelReply, expiredReply, followupAfterTurn, ownUserMessages, pendingOutcome, runExpired, runSaved, turnMayCommit } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -703,8 +703,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     }
     const history = openRun;
     const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
+    // Everything the code reads from what the user said, the account and date hints included, comes from the
+    // messages that belong to the pending question. The model still gets the whole run in history.
+    const ownMessages = ownUserMessages(openRun.length ? conversationMessages.slice(-openRun.length) : []);
     const userMessages = [
-      ...history.filter((message) => message.role === "user").map((message) => ({ content: message.content, createdAt: message.createdAt })),
+      ...ownMessages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
       { content: input.prompt, createdAt: receivedAt },
     ];
     const userMessageText = userMessages.map((message) => message.content);
@@ -715,7 +718,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       // Reading the debt list is not an answer to a pending question, so the question and the debt it offered stay.
       const stored = followupAfterTurn(pending, null, "read");
       return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
-        store.addMessage(user.id, conversationId, "assistant", answer, undefined, stored, stored ? recordedDebtId : undefined);
+        store.addMessage(user.id, conversationId, "assistant", answer, undefined, stored, stored ? recordedDebtId : undefined, undefined, undefined, stored !== null);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
     }
@@ -768,8 +771,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       : [];
     const repaymentDebt = repaymentCandidates[0];
     const accountOrDateClarificationPending = lastFollowup === "account_or_date";
-    const latestRepaymentPrompt = [...history].reverse().find((message) => message.role === "user"
-      && (hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
+    const latestRepaymentPrompt = [...ownMessages].reverse().find((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content));
     const currentAmountFollowup = lastFollowup === "repayment_amount";
     const statedRepaymentAmount = repaymentAmountFromPrompt(input.prompt)
       ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
@@ -1128,7 +1130,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const hint = cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
       const stored = followupAfterTurn(lastFollowup, followup, guarded ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
-      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined), undefined, bill?.id);
+      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined), undefined, bill?.id, answeredReadOnly && stored !== null);
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });
 }

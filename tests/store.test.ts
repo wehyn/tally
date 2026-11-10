@@ -380,6 +380,26 @@ describe("owner-scoped ledger", () => {
     expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ content: "Saved the bill.", billId: bill.id }]);
   });
 
+  it("adds the read-only column to legacy assistant messages, reads old rows as not read-only, and stores the flag", () => {
+    const user = store.registerUser("message_read_only_column", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,needs_followup,followup_kind,created_at) VALUES('old-reply',?,?,'assistant','Listed',1,'repayment_amount','2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+    store.migrate();
+
+    store.addMessage(user.id, conversationId, "assistant", "Listed again", undefined, "repayment_amount", undefined, undefined, undefined, true);
+    store.addMessage(user.id, conversationId, "assistant", "Asked again", undefined, "repayment_amount");
+
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.readOnly)).toEqual([false, true, false]);
+  });
+
   it("names the last stored message of a conversation by insertion order, and null when it has none", () => {
     const user = store.registerUser("last_message_id", "hash");
     const other = store.registerUser("last_message_other", "hash");

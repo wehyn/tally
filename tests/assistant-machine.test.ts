@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSaved, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
+import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, isQuietReply, ownUserMessages, pendingOutcome, runExpired, runSaved, turnMayCommit, undoUntilFor, type RunMessage } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -134,6 +134,44 @@ describe("the pending question a turn stores", () => {
       expect(followupAfterTurn(null, null, turn)).toBeNull();
       expect(followupAfterTurn(null, "repayment_amount", turn)).toBe("repayment_amount");
     }
+  });
+});
+
+describe("which user messages belong to the pending question", () => {
+  const ask = { role: "assistant" as const, followup: "repayment_amount" as const };
+  const user = (content: string) => ({ role: "user" as const, content });
+
+  it.each([
+    ["a question asked", { ...ask }, false],
+    ["a read-only answer that kept the question", { ...ask, readOnly: true }, true],
+    ["a bill saved that kept the question", { ...ask, billId: "bill-1" }, true],
+    ["a bill saved that kept the question, and a read-only flag too", { ...ask, billId: "bill-1", readOnly: true }, true],
+    ["a bill carried on a reply that ended the question", { role: "assistant" as const, followup: null, billId: "bill-1" }, false],
+    ["a read-only reply with no pending question", { role: "assistant" as const, followup: null, readOnly: true }, false],
+    ["a user message", { role: "user" as const, readOnly: true, billId: "bill-1", followup: "repayment_amount" as const }, false],
+  ])("%s: quiet is %s", (_name, reply, quiet) => {
+    expect(isQuietReply(reply)).toBe(quiet);
+  });
+
+  it("drops the user message of every quiet turn and keeps the statement, answers, re-asks and corrections", () => {
+    const run: (RunMessage & { content?: string })[] = [
+      user("Ana paid me"), { ...ask },
+      user("Netflix using Savings, starts tomorrow"), { ...ask, billId: "bill-1" },
+      user("Actually into Savings"), { ...ask },
+      user("How much did I spend on 2026-09-30?"), { ...ask, readOnly: true },
+      user("List my debts"), { ...ask, readOnly: true },
+    ];
+
+    expect(ownUserMessages(run).map((message) => message.content)).toEqual(["Ana paid me", "Actually into Savings"]);
+  });
+
+  it("keeps a user message that has no reply yet, and returns nothing for an empty run", () => {
+    expect(ownUserMessages([user("Ana paid me")])).toEqual([user("Ana paid me")]);
+    expect(ownUserMessages([])).toEqual([]);
+  });
+
+  it("never returns an assistant message", () => {
+    expect(ownUserMessages([{ ...ask }, { ...ask, readOnly: true }])).toEqual([]);
   });
 });
 

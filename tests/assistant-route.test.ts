@@ -2975,6 +2975,87 @@ describe("assistant turn commit", () => {
     });
   });
 
+  // A turn that handled something else and left the question pending says nothing about that question, so the
+  // account and the date it mentions must not reach the repayment. The model still sees the whole run.
+  describe("quiet turns inside a pending repayment run", () => {
+    const savingsBillPrompt = "I have a Netflix bill under Entertainment using Savings. It is ₱549 monthly, starts tomorrow, and ends December 15.";
+    const repaymentCall = (args: Record<string, unknown>) => vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", ...args }));
+    async function send(prompt: string, conversationId: string, provider: ReturnType<typeof vi.fn>) {
+      vi.stubGlobal("fetch", provider);
+      return (await POST(assistantRequest(prompt, conversationId))).json();
+    }
+    beforeEach(() => { store.createAccount(user.id, { name: "Savings", type: "bank", openingMinor: 0 }); });
+
+    it("credits the model's account and date, not the ones in a bill saved under the question", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      const bill = await send(savingsBillPrompt, conversationId, vi.fn(async () => providerTool("create_bill", {
+        name: "Netflix", amount: "549", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-15", category: "Entertainment", account: "Savings",
+      })));
+      expect(bill.bill).toMatchObject({ name: "Netflix", accountName: "Savings", nextDueDate: "2026-10-10" });
+      const provider = repaymentCall({ amount: "500", account: "Wallet", date: "2026-10-09" });
+
+      const result = await send("Ana paid me 500", conversationId, provider);
+
+      expect(sentTo(provider.mock.calls[0])).toContain(savingsBillPrompt);
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, amountMinor: 50_000, accountName: "Wallet", date: "2026-10-09" });
+    });
+
+    it("credits the model's date and account, not the ones in a finance question answered under the question", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      await send("How much did I spend on 2026-09-30 using Savings?", conversationId, vi.fn(async () => providerTool("finance_question", { start: "2026-09-30", end: "2026-09-30" })));
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+      const provider = repaymentCall({ amount: "500", account: "Wallet", date: "2026-10-09" });
+
+      const result = await send("Ana paid me 500", conversationId, provider);
+
+      expect(sentTo(provider.mock.calls[0])).toContain("How much did I spend on 2026-09-30 using Savings?");
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, accountName: "Wallet", date: "2026-10-09" });
+    });
+
+    it("credits the model's account and date after a debt list answered under the question", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      await send("Who owes me? Answer for 2026-09-30 in Savings account", conversationId, vi.fn());
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+
+      const result = await send("500", conversationId, repaymentCall({ amount: "500", account: "Wallet", date: "2026-10-09" }));
+
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, accountName: "Wallet", date: "2026-10-09" });
+    });
+
+    it("still credits the account a user names in an answer to the question", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      const reasked = await send("Actually into Savings", conversationId, repaymentCall({}));
+      expect(reasked.transaction).toBeNull();
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+
+      const result = await send("500", conversationId, repaymentCall({ amount: "500", account: "Wallet" }));
+
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, accountName: "Savings" });
+    });
+
+    it("still takes a date corrected after a quiet turn", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      await send("How much did I spend on 2026-09-30?", conversationId, vi.fn(async () => providerTool("finance_question", { start: "2026-09-30", end: "2026-09-30" })));
+      await send("Actually yesterday", conversationId, repaymentCall({}));
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount" });
+
+      const result = await send("500", conversationId, repaymentCall({ amount: "500", date: "2026-10-09" }));
+
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, date: "2026-10-08" });
+    });
+
+    it("still takes the account named in the statement that started the question", async () => {
+      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+      const first = await send("Ana paid me into my Savings account", "", repaymentCall({}));
+      const conversationId = first.conversationId as string;
+      await send(savingsBillPrompt.replace("Savings", "Wallet"), conversationId, vi.fn(async () => billSpec()));
+
+      const result = await send("500", conversationId, repaymentCall({ amount: "500", account: "Wallet" }));
+
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, accountName: "Savings" });
+    });
+  });
+
   // A bill action that saves the bill answers the bill question it was asked, so that question ends with the save.
   const netflixPrompt = "I have a Netflix bill under Entertainment. It is monthly, starts today, and ends December 15.";
   async function askNetflixAmount() {
