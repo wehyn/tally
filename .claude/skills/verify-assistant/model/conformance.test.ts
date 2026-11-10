@@ -24,6 +24,16 @@ const provider = (...responses: Response[]) => {
   return bodies;
 };
 
+// A model call that waits for release(), so a test decides which of two requests commits first.
+const gated = (answer: () => Response) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const calls = vi.fn(async () => { await gate; return answer(); });
+  vi.stubGlobal("fetch", calls);
+  return { release, entered: (count: number) => vi.waitFor(() => expect(calls).toHaveBeenCalledTimes(count)) };
+};
+const conversationChanged = { error: "Your conversation changed while this ran. Send that again." };
+
 let database: Database.Database;
 let store: ReturnType<typeof createStore>;
 let user: ReturnType<ReturnType<typeof createStore>["registerUser"]>;
@@ -242,6 +252,43 @@ describe("regressions: the findings stay fixed", () => {
     const cancelled = await (await ask("cancel", conversationId)).json();
     expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  it("OneWritePerQuestion (fixed): the same answer sent twice while the first waits on the model writes once, and the second is told to send it again", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    const model = gated(() => tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+    const first = ask("500", conversationId);
+    const second = ask("500", conversationId);
+    await model.entered(2);
+    model.release();
+    const [saved, repeated] = await Promise.all([first, second]);
+    expect(saved.status).toBe(200);
+    expect(repeated.status).toBe(409);
+    expect(await repeated.json()).toEqual(conversationChanged);
+    expect(txCount()).toBe(1);
+    expect(store.listAccounts(user.id)[0].balanceMinor).toBe(50_000);
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
+    expect(store.getConversation(user.id, conversationId)!.messages.filter((message) => message.content === "500")).toHaveLength(1);
+  });
+
+  it("CancelledNeverAnswered (fixed): an answer still waiting on the model when the question is cancelled stores nothing", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    const model = gated(() => tool("record_debt_payment", { counterparty: "Ana", amount: "500" }));
+    const late = ask("500", conversationId);
+    await model.entered(1);
+    const cancelled = await (await ask("cancel", conversationId)).json();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    model.release();
+    const response = await late;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual(conversationChanged);
+    expect(txCount()).toBe(0);
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.content)).not.toContain("500");
   });
 
   it("NoPendingNoCancel: cancel with no pending question is an ordinary prompt", async () => {
