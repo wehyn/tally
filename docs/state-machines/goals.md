@@ -1,6 +1,6 @@
 # Goals state machines
 
-Verified by `.claude/skills/verify-goals` (TLA+ model, sync commit `1e42762`).
+Verified by `.claude/skills/verify-goals` (TLA+ model, sync commit `2f82a72`).
 
 ## Inventory
 

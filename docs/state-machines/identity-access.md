@@ -1,6 +1,6 @@
 # Identity and access: state machines
 
-Verified by `.claude/skills/verify-identity-access` (TLA+). The model matches the code at commit `ea526d7`, which moved the account rules into `src/lib/machines/identity.ts`. Line numbers are for that commit.
+Verified by `.claude/skills/verify-identity-access` (TLA+). The model matches the code at commit `2f82a72`. The account rules live in `src/lib/machines/identity.ts`. The goal handover that `setUserEnabled` performs is modelled by `verify-goals`, not here.
 
 ## Inventory
 

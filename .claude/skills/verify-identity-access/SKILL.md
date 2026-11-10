@@ -14,7 +14,7 @@ description: Model-check Tally's sign-in, admin, reset-credential, Shortcut-cred
 
 ## Coverage record
 
-Last confirmed to describe the code at commit **ea526d7**. The doc and skill commits that follow it do not change covered code.
+Last confirmed to describe the code at commit **2f82a72**, which changed only the goal handover inside `setUserEnabled` (modelled by `verify-goals`). The doc and skill commits that follow it do not change covered code.
 
 | Model action | Code |
 |---|---|
@@ -27,7 +27,7 @@ Last confirmed to describe the code at commit **ea526d7**. The doc and skill com
 
 The pure rules are in `src/lib/machines/identity.ts`. The store reads the row, asks the machine for the next state, and writes it back. Indivisible steps: each store function is one SQLite transaction or one UPDATE, so each is one model action. Route-level checks (same-origin, rate limits, bcrypt) are not modeled.
 
-To see whether the covered code changed since the sync commit: `git diff ea526d7 -- src/lib/machines/identity.ts src/lib/store.ts src/lib/auth.ts src/lib/shortcut-credential.ts src/app/api/auth src/app/api/admin src/app/api/account src/app/api/settings/shortcut-credential src/app/api/shortcuts`. Move the sync commit above forward only after you have confirmed the model still matches the code at the new commit.
+To see whether the covered code changed since the sync commit: `git diff 2f82a72 -- src/lib/machines/identity.ts src/lib/store.ts src/lib/auth.ts src/lib/shortcut-credential.ts src/app/api/auth src/app/api/admin src/app/api/account src/app/api/settings/shortcut-credential src/app/api/shortcuts`. Move the sync commit above forward only after you have confirmed the model still matches the code at the new commit.
 
 ## Run it
 

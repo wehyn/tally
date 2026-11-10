@@ -8,7 +8,7 @@ description: Model-check Tally's shared-goal rules (goal status, membership move
 **Rule checked, in one sentence:** a live goal has an enabled accepted manager unless nobody else can take over, is completed exactly when contributions meet the target, takes no new contribution unless it is active, an archived goal has no accepted member, disabling or enabling a user never archives a goal, and members move only along the legal membership table.
 **Harm if broken:** a goal nobody can manage, a goal that vanishes when its only member is disabled and re-enabled, a goal stuck "completed" or "active" against its numbers, or a person who can join or contribute to a goal that should be closed.
 
-## Coverage (sync commit: `1e42762`)
+## Coverage (sync commit: `2f82a72`)
 
 | Code | Model action in `model/Goals.tla` |
 |---|---|
@@ -23,7 +23,7 @@ description: Model-check Tally's shared-goal rules (goal status, membership move
 | `setUserEnabled` (a disabled manager hands the goal on, or the goal is left alone) | `ToggleEnabled`, `DisableRule` |
 | Routes under `src/app/api/goals`, `invitations`, `contributions` | call the store; not modeled separately |
 
-Move the sync commit forward only after you confirm the model still describes these functions at the new commit. `git diff 1e42762 -- src/lib/machines/goal.ts src/lib/store.ts src/app/api/goals src/app/api/invitations src/app/api/contributions` shows what changed; if anything in the table moved, update the model first.
+Move the sync commit forward only after you confirm the model still describes these functions at the new commit. `git diff 2f82a72 -- src/lib/machines/goal.ts src/lib/store.ts src/app/api/goals src/app/api/invitations src/app/api/contributions` shows what changed; if anything in the table moved, update the model first.
 
 ## Run it
 

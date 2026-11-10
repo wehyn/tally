@@ -23,7 +23,7 @@ Model: `model/Assistant.tla`, one conversation. A hand model proves nothing abou
 
 Not covered: bill follow-ups (`bill_*`), debt creation and `debt_transaction`, `account_or_date`, category/date/account inference, finance questions apart from their effect on a pending question (the `readOnly` intent), the widget UI, Shortcut credential auth (see `verify-identity-access`), debt balance rules (see `verify-debts`). Undo is modeled for the latest transaction only. One conversation, one user. The uncertain-wording abandon path (`uncertainRepayment` in `assistant.ts`) is not in the machine; the model covers its effect (`UncertainNeverWrites`) only. The cancel hint sentence on a re-ask and the wording of a cancel reply are text and are not modeled. A cancel is modeled for the four question kinds only; route tests cover it for an account and a bill question, and for the offer to add a debt to Transactions. A bill request that saves a bill and asks nothing leaves a pending question pending, and one that asks its own question takes over the pending slot (a known limit); neither is modeled, and route tests pin both. The 12-message cap is not modeled, because the model has no messages; a replay, a route test and a machine test pin it.
 
-**Sync commit: `6793ed8`.** If `git diff 6793ed8 -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
+**Sync commit: `4857caa`.** If `git diff 4857caa -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
 
 ## Run it
 
