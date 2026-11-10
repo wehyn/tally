@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OPEN_RUN_LIMIT, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, capOpenRun, followupAfterTurn, pendingOutcome, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
+import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -65,25 +65,37 @@ describe("pending follow-up outcome", () => {
   }
 });
 
-describe("the open run that reaches the model", () => {
-  const run = (length: number) => Array.from({ length }, (_, index) => `m${index}`);
+// Replaces the capOpenRun tests, which pinned a trim of the middle of a long run. No run is trimmed any more.
+// A run that would grow past the limit ends its question instead.
+describe("how long an open question run may grow", () => {
+  const lengths = [0, 1, 2, 22, 23, 24, 25, 26, 100];
+  const outcomes = ["none", "answer", "cancel"] as const;
 
-  it("keeps a run whole up to the limit", () => {
-    expect(OPEN_RUN_LIMIT).toBe(12);
-    for (const length of [0, 1, 2, 11, 12]) expect(capOpenRun(run(length))).toEqual(run(length));
+  it("allows 24 messages", () => {
+    expect(MAX_OPEN_RUN_MESSAGES).toBe(24);
   });
 
-  it("keeps the first message and the most recent ones, and drops the oldest of the middle", () => {
-    expect(capOpenRun(run(13))).toEqual(["m0", ...run(13).slice(2)]);
-    expect(capOpenRun(run(40))).toEqual(["m0", ...run(40).slice(29)]);
-    expect(capOpenRun(run(40))).toHaveLength(OPEN_RUN_LIMIT);
-    expect(capOpenRun(run(5), 3)).toEqual(["m0", "m3", "m4"]);
+  for (const outcome of outcomes) {
+    it(`expires a run of each length for a prompt that is a(n) ${outcome}`, () => {
+      for (const length of lengths) {
+        expect(runExpired(length, outcome), `${outcome} at ${length}`).toBe(outcome === "answer" && length >= MAX_OPEN_RUN_MESSAGES);
+      }
+    });
+  }
+
+  it("never expires an exact cancel or a prompt with nothing pending, however long the run", () => {
+    for (const length of lengths) {
+      expect(runExpired(length, "cancel")).toBe(false);
+      expect(runExpired(length, "none")).toBe(false);
+    }
   });
 
-  it("does not change the run it is given", () => {
-    const original = run(20);
-    capOpenRun(original);
-    expect(original).toEqual(run(20));
+  it("says the question was dropped and that nothing was recorded", () => {
+    expect(expiredReply(false)).toBe("That question has been open too long, so I dropped it. Nothing was recorded. Please send the details again.");
+  });
+
+  it("says the debt stays in Debts when the run already saved one", () => {
+    expect(expiredReply(true)).toBe("That question has been open too long, so I dropped it. The debt stays in Debts, and nothing was added to Transactions.");
   });
 });
 

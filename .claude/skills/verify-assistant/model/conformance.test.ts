@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStore } from "../../../../src/lib/store";
 import { providerDisclosureHash } from "../../../../src/lib/provider";
+import { MAX_OPEN_RUN_MESSAGES } from "../../../../src/lib/machines/assistant";
 import { POST } from "../../../../src/app/api/assistant/route";
 
 const mocks = vi.hoisted(() => ({ getStore: vi.fn(), requireUser: vi.fn() }));
@@ -278,6 +279,68 @@ describe("regressions: the findings stay fixed", () => {
     expect(repaid.answer).toContain("repayment from Ana");
     expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
     expect(txCount()).toBe(1);
+  });
+
+  // The model counts the turns of an open run and RunMax stands for MAX_OPEN_RUN_MESSAGES / 2 of them. The run here
+  // holds two questions, the coffee one and then Ana's repayment, and grows by one re-ask per turn.
+  const expiredReply = "That question has been open too long, so I dropped it. Nothing was recorded. Please send the details again.";
+  async function growRun(messages: number) {
+    if (!store.listDebts(user.id).length) store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    provider(tool("ask_clarification", { question: "How much was the coffee?" }));
+    const { conversationId } = await (await ask("Coffee")).json();
+    provider(tool("record_debt_payment", { counterparty: "Ana" }));
+    await ask("Actually, Ana paid me", conversationId);
+    while (store.getConversation(user.id, conversationId)!.messages.length < messages) {
+      provider(tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" }));
+      expect((await (await ask("Coffee 120", conversationId)).json()).transaction).toBeNull();
+    }
+    expect(store.getConversation(user.id, conversationId)!.messages).toHaveLength(messages);
+    return conversationId;
+  }
+  const lastFollowup = (conversationId: string) => store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup;
+
+  it("OpenRunBounded (fixed): a run two messages under the limit is not cut, so the amount still repays Ana", async () => {
+    const conversationId = await growRun(MAX_OPEN_RUN_MESSAGES - 2);
+    const bodies = provider(tool("log_transaction", { amount: "500", kind: "expense", category: "Other" }));
+    const repaid = await (await ask("500", conversationId)).json();
+    expect(JSON.stringify(bodies[0].messages)).toContain("Actually, Ana paid me");
+    expect(repaid.answer).toContain("repayment from Ana");
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
+    expect(txCount()).toBe(1);
+  });
+
+  it("OpenRunBounded (fixed): a turn that would extend a run at the limit ends the question without calling the model, and the next prompt runs in a clean context", async () => {
+    const conversationId = await growRun(MAX_OPEN_RUN_MESSAGES);
+    const bodies = provider();
+    const expired = await (await ask("Coffee 120", conversationId)).json();
+    expect(bodies).toHaveLength(0);
+    expect(expired).toMatchObject({ answer: expiredReply, transaction: null });
+    expect(lastFollowup(conversationId)).toBeNull();
+    expect(store.getConversation(user.id, conversationId)!.messages).toHaveLength(MAX_OPEN_RUN_MESSAGES + 2);
+
+    const next = provider(tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" }));
+    const saved = await (await ask("Coffee 120", conversationId)).json();
+    expect(JSON.stringify(next[0].messages)).not.toContain("Ana paid me");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000 });
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
+  });
+
+  it("ExpiryWritesNothing (fixed): at the limit an amount, a payment statement and a read-only question write nothing, and an exact cancel still gets the cancel reply", async () => {
+    for (const prompt of ["500", "Ana paid me 500", "List my debts"]) {
+      const conversationId = await growRun(MAX_OPEN_RUN_MESSAGES);
+      const bodies = provider();
+      const expired = await (await ask(prompt, conversationId)).json();
+      expect(bodies).toHaveLength(0);
+      expect(expired).toMatchObject({ answer: expiredReply, transaction: null, debt: null });
+      expect(lastFollowup(conversationId)).toBeNull();
+      expect(txCount()).toBe(0);
+      expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
+      store.deleteConversation(user.id, conversationId);
+    }
+    const conversationId = await growRun(MAX_OPEN_RUN_MESSAGES);
+    const cancelled = await (await ask("cancel", conversationId)).json();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(lastFollowup(conversationId)).toBeNull();
   });
 
   it("PlainPromptNotTrapped (stays cancelled): the dropped question is not reloaded by a later turn of the new request", async () => {

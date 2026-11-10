@@ -5,12 +5,21 @@
 \* reply commit in one store transaction (commitTurn). Consent and the chat are checked again at commit.
 \* The only interleaving points are the awaited provider call and separate HTTP requests.
 \*
-\* A pending question ends in three ways. An exact cancel drops it (pendingOutcome, src/lib/machines/assistant.ts):
+\* A pending question ends in four ways. An exact cancel drops it (pendingOutcome, src/lib/machines/assistant.ts):
 \* the whole prompt, normalized, equals one of a few phrases. An answer that resolves it ends it, and so does a
 \* completed write. Every other reply keeps the question and runs the existing cautious handling, which asks again
 \* and writes nothing when the reply is not a clean answer. A turn that only reads (the debt list, a finance
-\* answer) is none of the three, so it leaves the question exactly as it was (followupAfterTurn, same file).
+\* answer) is none of those, so it leaves the question exactly as it was (followupAfterTurn, same file).
 \* Deciding from free text that a reply was a new request was tried four times and abandoned (see the doc).
+\*
+\* The fourth way is expiry. The open run, the messages since the last reply that asked nothing, reaches the model
+\* whole and is never trimmed, because choosing which messages to keep was a guess that kept dropping the statement
+\* or the correction a later answer depends on. Its length is bounded instead (MAX_OPEN_RUN_MESSAGES, runExpired).
+\* A turn that would extend a run already at the limit, and that is not an exact cancel, makes no model call, writes
+\* nothing and ends the question. The model has no messages, so runLen counts the turns of the open run (two messages
+\* each) and RunMax is a small stand-in for the code's 12 turns. Unbounded = TRUE lets an expired run keep going, as
+\* the code did before the limit (the cap at 4857caa trimmed the run instead of ending it). unbounded.cfg runs that
+\* variant and must fail on OpenRunBounded and on ExpiryWritesNothing.
 \*
 \* A turn may commit only while the conversation still ends at the message it read (turnMayCommit). A second
 \* request that commits first, an answer sent twice or a cancel that finishes while the model is still answering,
@@ -34,7 +43,9 @@ CONSTANTS
     Legacy,     \* TRUE: the pre-fix rules (see the header)
     Doubt,      \* TRUE: a text-classified reply replaces a pending question, as at 232f564 and 7f0e42f (see the header)
     Rivals,     \* TRUE: another request on the same conversation may commit while a turn waits on the model
-    Unchecked   \* TRUE: a turn commits without checking that the conversation is where it read it (326d565, see the header)
+    Unchecked,  \* TRUE: a turn commits without checking that the conversation is where it read it (326d565, see the header)
+    RunMax,     \* the most turns an open run may hold. A turn that would extend a run already at RunMax ends the question
+    Unbounded   \* TRUE: an open run is never ended by its length (the code before the limit, see the header)
 
 AllIntents == {"plain", "cancel", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPay", "amount", "amountDetail", "hedgedAnswer", "yes", "readOnly"}
 \* plain            "Jollibee lunch 250", "she paid back the food money, 500", "siguro Food 500": any prompt that
@@ -66,6 +77,8 @@ VARIABLES
     last,          \* "reply": last stored message is an assistant question or answer; "wrote": a reply that saved a transaction; "orphan": last is the user's (Legacy only)
     phase,         \* "idle" | "saved" (provider in flight) | "errored"
     intent, pendAtStart,
+    runLen,        \* turns in the open run, which is the question the last reply asked and the turns since the last reply that asked nothing. 0 when nothing is pending
+    runAtStart,    \* runLen as the turn in flight read it
     written,       \* ledger writes made for the user's current intent
     ledger,        \* assistant-written transactions currently stored
     undo,          \* "none" | "open" | "expired" | "used": the last assistant transaction's Undo window
@@ -76,10 +89,10 @@ VARIABLES
                    \* question it read with a write, or a cancel dropped it. "other" means any other commit
     \* sticky witnesses, one per rule
     wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-    answeredTwice, answeredAfterCancel
-vars == <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, since,
+    answeredTwice, answeredAfterCancel, wroteExpired
+vars == <<access, conv, pend, last, phase, intent, pendAtStart, runLen, runAtStart, written, ledger, undo, txKind, reqs, since,
           wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-          answeredTwice, answeredAfterCancel>>
+          answeredTwice, answeredAfterCancel, wroteExpired>>
 
 \* pendingOutcome (src/lib/machines/assistant.ts): with a question pending, only an exact cancel phrase drops
 \* it. Every other reply answers, whatever its wording, so an amount reply, an amount with a detail, a hedged
@@ -92,9 +105,15 @@ Outcome(i, p) ==
     THEN "replace" ELSE "answer"
 Effective(i, p) == IF Outcome(i, p) = "replace" THEN "none" ELSE p
 
+\* runExpired (src/lib/machines/assistant.ts): a turn at a pending question whose run is already at the limit, and that is
+\* not an exact cancel, would extend it. Expiring is that situation. Expired is what the code does about it, and Unbounded drops
+\* that, which is the code before the limit. Legacy had no limit either.
+Expiring(i, p, r) == ~Legacy /\ p # "none" /\ i # "cancel" /\ r >= RunMax
+Expired(i, p, r) == ~Unbounded /\ Expiring(i, p, r)
+
 \* What the code decides for (intent, follow-up the turn answers). Mirrors the override chain in assistant.ts
 \* runAssistantPrompt (ordinaryIncomeFlow, uncertainRepayment, repaymentIntent) and the per-tool branches below it.
-Decision(i, p) ==
+Decide(i, p) ==
     CASE i = "plain" ->
             IF p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
             THEN [out |-> "ask", next |-> p]                          \* ordinaryIncomeFlow or the bare amount re-asks the question and writes nothing
@@ -129,6 +148,11 @@ Decision(i, p) ==
             ELSE [out |-> "ask", next |-> "clarification"]
       [] i = "readOnly"       -> [out |-> "read", next |-> p]                       \* debt-list branch or finance answer: followupAfterTurn keeps the question
 
+\* What the code decides for a turn that read question p in a run of r turns. An expired run makes no model call
+\* and writes nothing: runAssistantPrompt returns the expiry reply before askProvider, and stores it with no pending kind.
+Decision(i, p, r) ==
+    IF Expired(i, p, r) THEN [out |-> "expired", next |-> "none"] ELSE Decide(i, Effective(i, p))
+
 \* store.ts deleteTransaction(undoOnly): a debt-linked row never deletes; otherwise only
 \* inside the ten-second window.
 CodeAllowsUndo(window, kind) == window = "open" /\ kind # "repayment"
@@ -140,12 +164,12 @@ Fresh == Unchecked \/ since = "same"
 
 Init ==
     /\ access = "on" /\ conv = "live" /\ pend = "none" /\ last = "reply" /\ phase = "idle"
-    /\ intent = "plain" /\ pendAtStart = "none" /\ written = 0 /\ ledger = 0
+    /\ intent = "plain" /\ pendAtStart = "none" /\ runLen = 0 /\ runAtStart = 0 /\ written = 0 /\ ledger = 0
     /\ undo = "none" /\ txKind = "none" /\ reqs = 0
     /\ since = "same"
     /\ wroteNoConsent = FALSE /\ lostFollowup = FALSE /\ trapped = FALSE
     /\ badUndo = FALSE /\ ordNoQuestion = FALSE /\ wroteUncertain = FALSE /\ answerReplaced = FALSE /\ wroteNonAnswer = FALSE
-    /\ answeredTwice = FALSE /\ answeredAfterCancel = FALSE
+    /\ answeredTwice = FALSE /\ answeredAfterCancel = FALSE /\ wroteExpired = FALSE
 
 \* The route: assertAssistantAccess, then the turn reads the stored follow-up and the last message, and waits for the model.
 Send(i, fresh) ==
@@ -155,10 +179,11 @@ Send(i, fresh) ==
     /\ IF Legacy
        THEN \* the user message was stored before the call, so the stored follow-up was no longer last
             /\ pendAtStart' = IF last # "orphan" THEN pend ELSE "none"
-            /\ pend' = "none" /\ last' = "orphan"
-       ELSE /\ pendAtStart' = pend /\ pend' = pend /\ last' = last
+            /\ runAtStart' = IF last # "orphan" THEN runLen ELSE 0
+            /\ pend' = "none" /\ runLen' = 0 /\ last' = "orphan"
+       ELSE /\ pendAtStart' = pend /\ runAtStart' = runLen /\ pend' = pend /\ runLen' = runLen /\ last' = last
     /\ UNCHANGED <<access, conv, ledger, undo, txKind, wroteNoConsent, lostFollowup, trapped,
-                   badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice, answeredAfterCancel>>
+                   badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice, answeredAfterCancel, wroteExpired>>
 
 YouSend(i) == i \in Intents /\ phase = "idle" /\ (i = "cancel" => pend # "none") /\ Send(i, TRUE)
 YouResend == phase = "errored" /\ Send(intent, FALSE)
@@ -168,8 +193,8 @@ YouResend == phase = "errored" /\ Send(intent, FALSE)
 \* state). Our own turn (ProviderOk) and a rival request (Rival) commit the same way. replyStored is FALSE only for
 \* Legacy with the chat gone, where the write happened and the reply insert threw. Only a turn that commits without
 \* the check (Unchecked) can have s other than "same".
-Effects(i, p, s, replyStored) ==
-    LET d == Decision(i, Effective(i, p))
+Effects(i, p, r, s, replyStored) ==
+    LET d == Decision(i, p, r)
         writes == d.out \in {"wplain", "wrepay", "word"}
     IN /\ ledger' = IF writes THEN ledger + 1 ELSE ledger
        /\ txKind' = CASE d.out = "wrepay" -> "repayment"
@@ -183,15 +208,19 @@ Effects(i, p, s, replyStored) ==
        /\ wroteUncertain' = (wroteUncertain \/ (writes /\ i = "uncertainPay"))
        /\ trapped' = (trapped \/ (i = "cancel" /\ p # "none" /\ d.next # "none"))
        /\ answerReplaced' = (answerReplaced \/ (i # "cancel" /\ Outcome(i, p) # "answer")
-                                              \/ (i = "readOnly" /\ p # "none" /\ d.next # p))
+                                              \/ (i = "readOnly" /\ p # "none" /\ d.next # p /\ ~Expired(i, p, r)))
        /\ wroteNonAnswer' = (wroteNonAnswer \/ (writes /\ p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
                                                /\ i \in {"plain", "amountDetail", "hedgedAnswer", "cancel"}))
        \* a write that answers a question some commit since already answered, or that a cancel already dropped
        /\ answeredTwice' = (answeredTwice \/ (writes /\ p # "none" /\ s = "answered"))
        /\ answeredAfterCancel' = (answeredAfterCancel \/ (writes /\ p # "none" /\ s = "dropped"))
+       \* a write by a turn that found the run at the limit. The code ends the question instead
+       /\ wroteExpired' = (wroteExpired \/ (writes /\ Expiring(i, p, r)))
        /\ IF replyStored
           THEN /\ last' = (IF writes THEN "wrote" ELSE "reply") /\ pend' = d.next
-          ELSE /\ last' = "orphan" /\ pend' = "none"   \* Legacy: the reply insert throws, 404
+               \* the run grows by this turn while a question stays or is asked, starts at one turn when a question is asked from nothing, and ends with the question
+               /\ runLen' = IF d.next = "none" THEN 0 ELSE IF Effective(i, p) = "none" THEN 1 ELSE r + 1
+          ELSE /\ last' = "orphan" /\ pend' = "none" /\ runLen' = 0   \* Legacy: the reply insert throws, 404
 
 \* The provider answered. The user message, the write (if any) and the reply commit together.
 \* A refused commit (consent, chat, or a conversation that moved on) stores nothing. Legacy writes first
@@ -200,17 +229,17 @@ ProviderOk ==
     /\ phase = "saved"
     /\ IF ~Legacy /\ ~(CommitOk /\ Fresh)
        THEN /\ phase' = "errored" /\ since' = "same"
-            /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs,
+            /\ UNCHANGED <<access, conv, pend, runLen, runAtStart, last, intent, pendAtStart, written, ledger, undo, txKind, reqs,
                            wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-                           answeredTwice, answeredAfterCancel>>
-       ELSE LET d == Decision(intent, Effective(intent, pendAtStart))
+                           answeredTwice, answeredAfterCancel, wroteExpired>>
+       ELSE LET d == Decision(intent, pendAtStart, runAtStart)
                 writes == d.out \in {"wplain", "wrepay", "word"}
                 replyStored == conv = "live"
-            IN /\ Effects(intent, pendAtStart, since, replyStored)
+            IN /\ Effects(intent, pendAtStart, runAtStart, since, replyStored)
                /\ written' = IF writes THEN written + 1 ELSE written
                /\ phase' = IF replyStored THEN "idle" ELSE "errored"
                /\ since' = "same"
-               /\ UNCHANGED <<access, conv, intent, pendAtStart, reqs, lostFollowup, badUndo>>
+               /\ UNCHANGED <<access, conv, intent, pendAtStart, runAtStart, reqs, lostFollowup, badUndo>>
 
 \* Another request on the same conversation, started and answered while ours waits for the model. It commits like
 \* any turn (it read the stored state, so its question is the current one) and moves the conversation on. Its
@@ -219,37 +248,39 @@ ProviderOk ==
 Rival(i) ==
     /\ Rivals /\ ~Legacy /\ phase = "saved" /\ reqs < MaxReqs /\ CommitOk
     /\ i \in Intents /\ (i = "cancel" => pend # "none")
-    /\ Effects(i, pend, "same", TRUE)
-    /\ LET d == Decision(i, Effective(i, pend))
+    /\ Effects(i, pend, runLen, "same", TRUE)
+    /\ LET d == Decision(i, pend, runLen)
        IN since' = IF since # "same" THEN since                  \* the first commit since our turn read decides what became of its question
                    ELSE IF pendAtStart = "none" THEN "other"
                    ELSE IF d.out \in {"wplain", "wrepay", "word"} THEN "answered"
-                   ELSE IF d.out = "cancelled" THEN "dropped" ELSE "other"
+                   ELSE IF d.out \in {"cancelled", "expired"} THEN "dropped" ELSE "other"
     /\ reqs' = reqs + 1
-    /\ UNCHANGED <<access, conv, phase, intent, pendAtStart, written, lostFollowup, badUndo>>
+    /\ UNCHANGED <<access, conv, phase, intent, pendAtStart, runAtStart, written, lostFollowup, badUndo>>
 
-\* A cancel at a pending question makes no model call (runAssistantPrompt returns before askProvider), so the
-\* provider cannot fail it. Its commit can still be refused, which ProviderOk models.
-CancelTurn == ~Legacy /\ intent = "cancel" /\ pendAtStart # "none"
+\* A cancel at a pending question, and a turn that finds the run at its limit, make no model call
+\* (runAssistantPrompt returns before askProvider), so the provider cannot fail them. Their commit can still be
+\* refused, which ProviderOk models.
+NoModelCall == ~Legacy /\ ((intent = "cancel" /\ pendAtStart # "none") \/ Expired(intent, pendAtStart, runAtStart))
 
 ProviderFail ==
-    /\ Fails /\ phase = "saved" /\ ~CancelTurn
+    /\ Fails /\ phase = "saved" /\ ~NoModelCall
     /\ phase' = "errored" /\ since' = "same"
     \* a failed call must not change the question. Another request that committed meanwhile may have, and that is not this failure
     /\ lostFollowup' = (lostFollowup \/ (IF Legacy THEN pendAtStart # "none" ELSE conv = "live" /\ since = "same" /\ pend # pendAtStart))
-    /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs,
-                   wroteNoConsent, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-                   answeredTwice, answeredAfterCancel>>
+    /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs, wroteNoConsent, trapped,
+                   badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice, answeredAfterCancel,
+                   runLen, runAtStart, wroteExpired>>
 
-GiveUp == phase = "errored" /\ phase' = "idle" /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs, since,
+GiveUp == phase = "errored" /\ phase' = "idle" /\ UNCHANGED <<access, conv, pend, runLen, runAtStart, last, intent, pendAtStart, written, ledger, undo, txKind, reqs, since,
                                                              wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-                                                             answeredTwice, answeredAfterCancel>>
+                                                             answeredTwice, answeredAfterCancel, wroteExpired>>
 
 NewChat ==
     /\ conv = "gone" /\ phase # "saved"
-    /\ conv' = "live" /\ pend' = "none" /\ last' = "reply"
-    /\ UNCHANGED <<access, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, since, wroteNoConsent,
-                   lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice, answeredAfterCancel>>
+    /\ conv' = "live" /\ pend' = "none" /\ runLen' = 0 /\ last' = "reply"
+    /\ UNCHANGED <<access, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, since, wroteNoConsent, lostFollowup,
+                   trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice,
+                   answeredAfterCancel, runAtStart, wroteExpired>>
 
 \* Undo is attempted whenever a transaction exists; the code decides.
 YouUndo ==
@@ -258,26 +289,27 @@ YouUndo ==
        THEN /\ undo' = "used" /\ ledger' = ledger - 1 /\ written' = IF written > 0 THEN written - 1 ELSE 0
             /\ badUndo' = (badUndo \/ undo # "open" \/ txKind = "repayment")   \* deleted outside the window, or a repayment
        ELSE /\ badUndo' = badUndo /\ UNCHANGED <<undo, ledger, written>>   \* the store throws
-    /\ UNCHANGED <<access, conv, pend, last, phase, intent, pendAtStart, txKind, reqs, since, wroteNoConsent,
-                   lostFollowup, trapped, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice, answeredAfterCancel>>
+    /\ UNCHANGED <<access, conv, pend, runLen, runAtStart, last, phase, intent, pendAtStart, txKind, reqs, since, wroteNoConsent,
+                   lostFollowup, trapped, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice, answeredAfterCancel,
+                   wroteExpired>>
 
 ClockExpires ==
     /\ Clock /\ undo = "open" /\ undo' = "expired"
-    /\ UNCHANGED <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, txKind, reqs, since,
-                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-                   answeredTwice, answeredAfterCancel>>
+    /\ UNCHANGED <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, txKind, reqs, since, wroteNoConsent,
+                   lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice,
+                   answeredAfterCancel, runLen, runAtStart, wroteExpired>>
 
 SetAccess(a) ==
     /\ Env /\ access # a /\ access' = a
-    /\ UNCHANGED <<conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, since,
-                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-                   answeredTwice, answeredAfterCancel>>
+    /\ UNCHANGED <<conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, since, wroteNoConsent,
+                   lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice,
+                   answeredAfterCancel, runLen, runAtStart, wroteExpired>>
 
 DeleteChat ==
-    /\ Env /\ conv = "live" /\ conv' = "gone" /\ pend' = "none"
-    /\ UNCHANGED <<access, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, since,
-                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer,
-                   answeredTwice, answeredAfterCancel>>
+    /\ Env /\ conv = "live" /\ conv' = "gone" /\ pend' = "none" /\ runLen' = 0
+    /\ UNCHANGED <<access, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, since, wroteNoConsent,
+                   lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer, answeredTwice,
+                   answeredAfterCancel, runAtStart, wroteExpired>>
 
 \* A finished run: nothing more to send. Keeps TLC from reporting a stuck state as a deadlock.
 Done == reqs = MaxReqs /\ phase # "saved" /\ UNCHANGED vars
@@ -305,8 +337,11 @@ AnswerNotReplaced      == ~answerReplaced    \* only an explicit cancel drops th
 NonAnswerNeverWrites   == ~wroteNonAnswer    \* at a pending repayment or income question, a reply that is not its answer (or a confirmed payment) writes nothing
 OneWritePerQuestion    == ~answeredTwice     \* a pending question is answered with a write at most once, even when the answer is sent twice
 CancelledNeverAnswered == ~answeredAfterCancel  \* a question a cancel dropped is never answered afterwards, even by an answer already in flight
+OpenRunBounded         == runLen <= RunMax   \* an open run is never extended past the limit: a turn that finds it there ends the question
+ExpiryWritesNothing    == ~wroteExpired      \* a turn that finds the run at the limit, and is not an exact cancel, writes nothing
 TypeOK == /\ access \in {"on", "off", "stale"} /\ conv \in {"live", "gone"} /\ pend \in Kinds
           /\ last \in {"reply", "wrote", "orphan"} /\ phase \in {"idle", "saved", "errored"}
+          /\ runLen \in 0..MaxReqs /\ runAtStart \in 0..MaxReqs /\ ((pend = "none") <=> (runLen = 0))   \* the counter follows the question
           /\ undo \in {"none", "open", "expired", "used"} /\ ledger \in 0..MaxReqs
           /\ since \in {"same", "answered", "dropped", "other"}
 ====

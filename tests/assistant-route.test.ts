@@ -2976,4 +2976,214 @@ describe("assistant turn commit", () => {
 
     await expectAnaRepaid500(conversationId, debt.id);
   });
+
+  // A run of 24 messages is the longest one a turn may extend. A run is never trimmed, so what the model reads is
+  // what the user wrote, and a run that grew past the limit ends its question and writes nothing.
+  const expiredReply = "That question has been open too long, so I dropped it. Nothing was recorded. Please send the details again.";
+  const coffeeTool = () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" });
+  async function askCoffeeThenAnaPaidMe() {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "How much was the coffee?" })));
+    const first = await (await POST(assistantRequest("Coffee"))).json();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const asked = await (await POST(assistantRequest("Actually, Ana paid me", first.conversationId))).json();
+    expect(asked.answer).toBe("What amount should I use for the repayment?");
+    expect(lastStored(first.conversationId).followup).toBe("repayment_amount");
+    return { debt, conversationId: first.conversationId as string };
+  }
+  async function reaskCoffee(conversationId: string, times: number) {
+    for (let round = 0; round < times; round++) {
+      vi.stubGlobal("fetch", vi.fn(async () => coffeeTool()));
+      expect((await (await POST(assistantRequest("Coffee 120", conversationId))).json()).answer).toBe(amountReask);
+    }
+  }
+  const messageCount = (conversationId: string) => store.getConversation(user.id, conversationId)!.messages.length;
+  function expectNothingRecorded(debtId: string) {
+    expect(store.listTransactions(user.id)).toEqual([]);
+    expect(store.listDebts(user.id).find((item) => item.id === debtId)).toMatchObject({ amountMinor: 100_000, status: "open" });
+  }
+
+  it("still repays Ana with 500 after six re-asks of a run that held two questions, because no message of the run is dropped", async () => {
+    const { debt, conversationId } = await askCoffeeThenAnaPaidMe();
+    await reaskCoffee(conversationId, 6);
+    expectNothingRecorded(debt.id);
+
+    const provider = vi.fn(async () => expenseGuess500());
+    vi.stubGlobal("fetch", provider);
+    const result = await (await POST(assistantRequest("500", conversationId))).json();
+
+    expect(sentTo(provider.mock.calls[0])).toContain("Actually, Ana paid me");
+    expect(result.transaction).toMatchObject({ amountMinor: 50_000, kind: "debt_repayment", debtId: debt.id });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000 });
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+  });
+
+  it("still repays Ana with 500 when the run is two messages under the limit", async () => {
+    const { debt, conversationId } = await askCoffeeThenAnaPaidMe();
+    await reaskCoffee(conversationId, 9);
+    expect(messageCount(conversationId)).toBe(22);
+
+    vi.stubGlobal("fetch", vi.fn(async () => expenseGuess500()));
+    const result = await (await POST(assistantRequest("500", conversationId))).json();
+
+    expect(result.transaction).toMatchObject({ amountMinor: 50_000, kind: "debt_repayment", debtId: debt.id });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000 });
+  });
+
+  it("ends the question without calling the model once re-asks fill the run, and a following prompt runs in a clean context", async () => {
+    const { debt, conversationId } = await askCoffeeThenAnaPaidMe();
+    await reaskCoffee(conversationId, 10);
+    expect(messageCount(conversationId)).toBe(24);
+    const provider = vi.fn();
+    vi.stubGlobal("fetch", provider);
+
+    const expired = await (await POST(assistantRequest("Coffee 120", conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(expired).toMatchObject({ answer: expiredReply, transaction: null, debt: null, undoUntil: null });
+    expectNothingRecorded(debt.id);
+    expect(messageCount(conversationId)).toBe(26);
+    expect(lastStored(conversationId)).toMatchObject({ role: "assistant", content: expiredReply, followup: null });
+
+    const next = vi.fn(async () => coffeeTool());
+    vi.stubGlobal("fetch", next);
+    const saved = await (await POST(assistantRequest("Coffee 120", conversationId))).json();
+
+    expect(sentTo(next.mock.calls[0]).join(" ")).not.toContain("Ana paid me");
+    expect(saved.transaction).toMatchObject({ kind: "expense", amountMinor: 12_000, description: "Coffee" });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000 });
+  });
+
+  it("records nothing for a 500 that arrives after the run expired, not an expense and not a repayment", async () => {
+    const { debt, conversationId } = await askCoffeeThenAnaPaidMe();
+    await reaskCoffee(conversationId, 10);
+    const provider = vi.fn(async () => expenseGuess500());
+    vi.stubGlobal("fetch", provider);
+
+    const result = await (await POST(assistantRequest("500", conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(result.answer).toBe(expiredReply);
+    expectNothingRecorded(debt.id);
+  });
+
+  it("still lets an exact cancel drop a question whose run is at the limit, with the cancel reply", async () => {
+    const { debt, conversationId } = await askCoffeeThenAnaPaidMe();
+    await reaskCoffee(conversationId, 10);
+    const provider = vi.fn();
+    vi.stubGlobal("fetch", provider);
+
+    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(lastStored(conversationId).followup).toBeNull();
+    expectNothingRecorded(debt.id);
+  });
+
+  it("counts read-only turns that carry the question forward, so the twelfth debt list after Ana paid me expires it", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const { conversationId } = await (await POST(assistantRequest("Ana paid me"))).json();
+    vi.stubGlobal("fetch", vi.fn());
+    for (let round = 0; round < 11; round++) {
+      await POST(assistantRequest("List my debts", conversationId));
+      expect(lastStored(conversationId).followup).toBe("repayment_amount");
+    }
+    expect(messageCount(conversationId)).toBe(24);
+
+    const expired = await (await POST(assistantRequest("List my debts", conversationId))).json();
+
+    expect(expired.answer).toBe(expiredReply);
+    expect(lastStored(conversationId).followup).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async () => expenseGuess500()));
+    const next = await (await POST(assistantRequest("500", conversationId))).json();
+    expect(next.transaction).toMatchObject({ kind: "expense", amountMinor: 50_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000 });
+  });
+
+  describe("a payer corrected inside a long run", () => {
+    async function askAnaThenBob() {
+      const ana = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+      const bob = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Bob", amountMinor: 100_000 });
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500", account: "Missing" })));
+      const first = await (await POST(assistantRequest("Ana paid me 500 into my Missing account"))).json();
+      const conversationId = first.conversationId as string;
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Bob", amount: "500", account: "Missing" })));
+      await POST(assistantRequest("Actually Bob paid me 500", conversationId));
+      expect(lastStored(conversationId).followup).toBe("repayment_payer");
+      await POST(assistantRequest("Bob", conversationId));
+      expect(lastStored(conversationId).followup).toBe("account_or_date");
+      return { ana, bob, conversationId };
+    }
+    async function listDebts(conversationId: string, times: number) {
+      vi.stubGlobal("fetch", vi.fn());
+      for (let round = 0; round < times; round++) await POST(assistantRequest("List my debts", conversationId));
+    }
+
+    it("does not repay Ana from Use Wallet after six debt lists, because the run still holds Bob's correction and selection", async () => {
+      const { ana, bob, conversationId } = await askAnaThenBob();
+      await listDebts(conversationId, 6);
+      const provider = vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "income", category: "Other income", account: "Wallet" }));
+      vi.stubGlobal("fetch", provider);
+
+      const answered = await (await POST(assistantRequest("Use Wallet", conversationId))).json();
+
+      expect(sentTo(provider.mock.calls[0])).toEqual(expect.arrayContaining(["Ana paid me 500 into my Missing account", "Actually Bob paid me 500", "Bob"]));
+      expect(answered).toMatchObject({ answer: "Which person's open debt should I apply this payment to?", transaction: null });
+      expect(store.listTransactions(user.id)).toEqual([]);
+      for (const debt of [ana, bob]) expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    });
+
+    it("records nothing and leaves both debts when Use Wallet comes after the run expired", async () => {
+      const { ana, bob, conversationId } = await askAnaThenBob();
+      await listDebts(conversationId, 9);
+      expect(messageCount(conversationId)).toBe(24);
+      const provider = vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "income", category: "Other income", account: "Wallet" }));
+      vi.stubGlobal("fetch", provider);
+
+      const expired = await (await POST(assistantRequest("Use Wallet", conversationId))).json();
+
+      expect(provider).not.toHaveBeenCalled();
+      expect(expired.answer).toBe(expiredReply);
+      expect(store.listTransactions(user.id)).toEqual([]);
+      for (const debt of [ana, bob]) expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 100_000, status: "open" });
+    });
+  });
+
+  it("says the debt stays in Debts when the expired run had already saved one", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Cara", amount: "300" })));
+    const saved = await (await POST(assistantRequest("Cara owes me 300"))).json();
+    expect(lastStored(saved.conversationId)).toMatchObject({ followup: "debt_transaction" });
+    vi.stubGlobal("fetch", vi.fn());
+    for (let round = 0; round < 11; round++) await POST(assistantRequest("List my debts", saved.conversationId));
+    expect(messageCount(saved.conversationId)).toBe(24);
+
+    const expired = await (await POST(assistantRequest("List my debts", saved.conversationId))).json();
+
+    expect(expired.answer).toBe("That question has been open too long, so I dropped it. The debt stays in Debts, and nothing was added to Transactions.");
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(store.listTransactions(user.id)).toEqual([]);
+  });
+
+  it("refuses an expiry turn when consent is withdrawn while the request body streams, and stores nothing", async () => {
+    const { conversationId } = await askCoffeeThenAnaPaidMe();
+    await reaskCoffee(conversationId, 10);
+    const before = messageCount(conversationId);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        store.setAssistantConsent(user.id, null);
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ prompt: "Coffee 120", conversationId })));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await POST(new Request("https://tally.test/api/assistant", {
+      method: "POST", headers: { origin: "https://tally.test", "content-type": "application/json" }, body, ...{ duplex: "half" },
+    }));
+
+    expect(response.status).toBe(403);
+    expect(messageCount(conversationId)).toBe(before);
+  });
 });

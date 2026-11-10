@@ -63,13 +63,24 @@ export function followupAfterTurn(pending: FollowupKind | null, asked: FollowupK
   return null;
 }
 
-// How many messages of an open follow-up run reach the model and the local reading of the run.
-export const OPEN_RUN_LIMIT = 12;
+// The longest open follow-up run, in messages, that a turn may extend. The whole run reaches the model and the
+// local reading of it, and no message is ever left out, because choosing which ones to keep was a guess that
+// kept dropping the statement or the correction a later answer depends on. A run that reaches the limit ends
+// its question instead.
+export const MAX_OPEN_RUN_MESSAGES = 24;
 
-// The run's first message is the statement the pending question is about ("Ana paid me"). Trimming it away
-// turns a later bare "500" into an ordinary expense, so a longer run keeps it and drops the oldest of the rest.
-export function capOpenRun<T>(run: readonly T[], limit = OPEN_RUN_LIMIT): T[] {
-  return run.length <= limit ? [...run] : [run[0], ...run.slice(run.length - (limit - 1))];
+// A turn that would extend a run already at the limit ends the question. It calls no model and writes nothing.
+// An exact cancel still gets its own reply, and with nothing pending there is no run.
+export function runExpired(runLength: number, outcome: PendingOutcome): boolean {
+  return outcome === "answer" && runLength >= MAX_OPEN_RUN_MESSAGES;
+}
+
+// What an expired question tells the user. Like a cancel, it must not say nothing was recorded when the run
+// already saved a debt, because that debt is in Debts.
+export function expiredReply(debtAlreadySaved: boolean): string {
+  return debtAlreadySaved
+    ? "That question has been open too long, so I dropped it. The debt stays in Debts, and nothing was added to Transactions."
+    : "That question has been open too long, so I dropped it. Nothing was recorded. Please send the details again.";
 }
 
 // What a cancel tells the user about what happened to the dropped question. Most questions are asked before
