@@ -28,16 +28,16 @@ Sync commit: `c006c65`. The verification was confirmed to describe this code at 
 
 | Model action | Code (`src/lib/store.ts`) |
 | --- | --- |
-| `CreateAccount` | `createAccount` (402): first account becomes default, mirrors to `users.default_account_id` |
-| `SetDefault` | `setDefaultAccount` (419) |
-| `SetBalance` | `updateAccount` (428), `balanceMinor` branch |
-| `DeleteAccount` | `deleteAccount` (447): bill guard, keep one, no history, default moves to a remaining account |
-| `CreateTxn` | `createTransaction` (818) + `assertTransactionInput` (798) + `assertMovementFields` (790) + `insertTransaction` (810) |
-| `CreateRepayment` | `recordDebtPayment` (829) |
-| `EditTxn` | `updateTransaction` (905) |
-| `DeleteTxn`, `ExpireUndo` | `deleteTransaction` (926), `undo_until` |
-| `Bal`, `Flow` | `listAccounts` (363) |
-| schema | `financial_accounts`, `transactions`, `categories` tables and the `accounts_one_default` index (store.ts 85-135) |
+| `CreateAccount` | `createAccount`: first account becomes default, mirrors to `users.default_account_id` |
+| `SetDefault` | `setDefaultAccount` |
+| `SetBalance` | `updateAccount`, `balanceMinor` branch |
+| `DeleteAccount` | `deleteAccount`: bill guard, keep one, no history, default moves to a remaining account |
+| `CreateTxn` | `createTransaction` + `assertTransactionInput` + `assertMovementFields` + `insertTransaction` |
+| `CreateRepayment` | `recordDebtPayment` |
+| `EditTxn` | `updateTransaction` |
+| `DeleteTxn`, `ExpireUndo` | `deleteTransaction`, `undo_until` |
+| `Bal`, `Flow` | `listAccounts` |
+| schema | `financial_accounts`, `transactions`, `categories` tables and the `accounts_one_default` index (the schema in `migrate`) |
 
 Also covered: `src/lib/transaction-model.ts` (`isManualTransactionKind`), the accounts, transactions and categories routes only as callers of these functions.
 

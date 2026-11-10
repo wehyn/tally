@@ -11,14 +11,14 @@ State: the user's accounts and which one is default (`financial_accounts.is_defa
 
 | From | Action (code) | To | Guard |
 | --- | --- | --- | --- |
-| no accounts | `createAccount` (store.ts:402) | one account, default | name 1-80 chars, type cash/bank |
-| has accounts | `createAccount` | one more account | same; first-account check `isDefault = no row exists` (408) |
-| any | `setDefaultAccount` (419) | default moves | account owned (421); clears all, sets one |
-| any | `updateAccount` (428) | balance set by adjustment | owned; adjustment keeps balance = requested value |
-| ≥2 accounts | `deleteAccount` (447) | account removed, default re-picked if it was default (456) | not used by a bill (450), count > 1 (453), no transaction history (454) |
+| no accounts | `createAccount` | one account, default | name 1-80 chars, type cash/bank |
+| has accounts | `createAccount` | one more account | same; first-account check `isDefault = no row exists` |
+| any | `setDefaultAccount` | default moves | account owned; clears all, sets one |
+| any | `updateAccount` | balance set by adjustment | owned; adjustment keeps balance = requested value |
+| ≥2 accounts | `deleteAccount` | account removed, default re-picked if it was default | not used by a bill, count > 1, no transaction history |
 | 1 account | `deleteAccount` | rejected | "Keep at least one financial account." |
 
-Schema guard: partial unique index `accounts_one_default` (store.ts:90) allows at most one default; the code makes it exactly one.
+Schema guard: partial unique index `accounts_one_default` (created in `migrate`) allows at most one default; the code makes it exactly one.
 
 ### Transaction row
 
@@ -26,17 +26,17 @@ State: kind (`income`, `expense`, `transfer`, `debt_repayment`), source (`manual
 
 | Action | Code | Guard |
 | --- | --- | --- |
-| create manual or assistant row | `createTransaction` (818) | manual kinds only (820); `assertTransactionInput` (798): owned source, transfer needs a different owned destination and no category, income/expense need an owned category of the same type |
-| create debt-linked repayment | `recordDebtPayment` (829) | open debt owed to you, amount ≤ balance; source assistant, never undoable |
-| edit | `updateTransaction` (905) | same shape checks; cannot become `debt_repayment`; a debt-linked row cannot change kind or amount |
-| delete | `deleteTransaction` (926) | not debt-linked; Undo only for assistant rows with `undo_until` in the future (10 s) |
+| create manual or assistant row | `createTransaction` | manual kinds only; `assertTransactionInput`: owned source, transfer needs a different owned destination and no category, income/expense need an owned category of the same type |
+| create debt-linked repayment | `recordDebtPayment` | open debt owed to you, amount ≤ balance; source assistant, never undoable |
+| edit | `updateTransaction` | same shape checks; cannot become `debt_repayment`; a debt-linked row cannot change kind or amount |
+| delete | `deleteTransaction` | not debt-linked; Undo only for assistant rows with `undo_until` in the future (10 s) |
 | time passes | `undo_until` expires | Undo rejected after that |
 
-Balances are not stored: `listAccounts` (363) = opening + adjustment + income + debt repayments − expenses − outgoing transfers + incoming transfers. `assertLedgerTotalsSafe` (385) rejects any write that would leave a total outside the safe integer range.
+Balances are not stored: `listAccounts` = opening + adjustment + income + debt repayments − expenses − outgoing transfers + incoming transfers. `assertLedgerTotalsSafe` rejects any write that would leave a total outside the safe integer range.
 
 ### Categories
 
-`createCategory` (646) and `updateCategory` (655) only add or rename; `type` never changes and there is no delete route, so a transaction's category type cannot drift. Duplicate names are rejected by `UNIQUE(user_id,type,name)`.
+`createCategory` and `updateCategory` only add or rename; `type` never changes and there is no delete route, so a transaction's category type cannot drift. Duplicate names are rejected by `UNIQUE(user_id,type,name)`.
 
 ## Key flow chart: accounts, default account, one transaction
 

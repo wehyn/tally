@@ -13,7 +13,7 @@ Skill: `.claude/skills/verify-debts` (TLA+ model + replay tests). Machine: `src/
 | **Payment history** (`debt_payments`) | append-only | `payment` rows (delta −amount) from the two payment functions. `adjustment` rows (signed delta) from `updateDebt` by `historyAdjustmentForUpdate`: an amount change on an open debt, and a reopen, bring the history to the amount. An amount edit on a settled debt and a settle write none. A history that older versions left negative can make one move to a large amount pass the exact integer range, so that move is written as two adjustments through zero, each exact. |
 | **UI row** | Outstanding / Settled · last outstanding balance | `debts-view.tsx` labels by status; button toggles via PATCH `status`. |
 
-Two facts the lifecycle hides: a settled debt's amount is a label, not a balance, and a transaction linked to a debt can't be deleted on its own (`deleteTransaction`, store.ts:926).
+Two facts the lifecycle hides: a settled debt's amount is a label, not a balance, and a transaction linked to a debt can't be deleted on its own (`deleteTransaction`).
 
 ## Main flow: lend, get repaid, settle, reopen, delete
 
