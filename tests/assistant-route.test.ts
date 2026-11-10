@@ -2604,6 +2604,34 @@ describe("assistant turn commit", () => {
     expect(asked.answer).toBe("What amount should I use for the repayment?");
   });
 
+  it("keeps the model's own question as it was worded during a repayment, and the repayment question stays pending", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "Which account did Ana send it to?" })));
+
+    const asked = await (await POST(assistantRequest("she sent it through gcash", conversationId))).json();
+
+    expect(asked.answer).toBe("Which account did Ana send it to?");
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("repayment_amount");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana", amount: "500" })));
+    const answered = await (await POST(assistantRequest("500", conversationId))).json();
+    expect(answered.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 50_000 });
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)).toMatchObject({ amountMinor: 50_000, status: "open" });
+  });
+
+  it("still ends a question the code asks again with the way out, even when the model's own call was set aside", async () => {
+    await askAnaPaidMe();
+    const conversationId = store.listConversations(user.id)[0].id;
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("ask_clarification", { question: "Which account did Ana send it to?" })));
+    await POST(assistantRequest("she sent it through gcash", conversationId));
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Ana" })));
+    const reasked = await (await POST(assistantRequest("Ana paid me again", conversationId))).json();
+
+    expect(reasked.answer).toBe(amountReask);
+  });
+
   it("offers cancel when a bill question is asked again, and drops it on cancel", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", {
       name: "Internet", amount: "500", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-10-20",

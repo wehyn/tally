@@ -777,6 +777,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       let call = providerCall;
       // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
       let clarificationKind: FollowupKind | null = null;
+      // True when the question is the model's own wording, which never carries the cancel hint.
+      let modelWorded = false;
       if (repaymentReportQuestion) {
         call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
       } else if (ordinaryIncomeFlow) {
@@ -847,6 +849,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const expectedRepaymentAmount: FollowupKind | null = repaymentIntent && !statedRepaymentAmount ? "repayment_amount" : null;
         answer = safeClarification(call.args.question);
         followup = clarificationKind ?? expectedRepaymentAmount ?? "clarification";
+        modelWorded = call === providerCall;
       }
       else if (call.name === "finance_question") {
         const defaultRange = monthToDateRange();
@@ -1114,7 +1117,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
 
       if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
       else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; followup = null; }
-      const hint = cancelHint(lastFollowup, followup);
+      const hint = cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
       store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, followup, debt?.id);
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };

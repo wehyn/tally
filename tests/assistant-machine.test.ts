@@ -85,6 +85,11 @@ describe("cancel hint on a question asked again", () => {
     expect(cancelHint("repayment_amount", "clarification")).toBeNull();
   });
 
+  it("has no hint on a question the model worded, whatever kind it is stored under", () => {
+    for (const pending of FOLLOWUP_KINDS) for (const asked of FOLLOWUP_KINDS) expect(cancelHint(pending, asked, true)).toBeNull();
+    expect(cancelHint("repayment_amount", "repayment_amount", false)).toBe("Reply with the amount, or say cancel to drop this.");
+  });
+
   it("has a hint when the repayment and income questions lead to each other, and not across other kinds", () => {
     const linked = ["repayment_amount", "repayment_payer", "ordinary_income"] as const;
     for (const pending of linked) for (const asked of linked) expect(cancelHint(pending, asked)).not.toBeNull();
