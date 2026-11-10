@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, isQuietReply, ownUserMessages, pendingOutcome, runExpired, runSaved, turnMayCommit, undoUntilFor, type RunMessage } from "../src/lib/machines/assistant";
+import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, guardUserMessages, isQuietReply, ownUserMessages, pendingOutcome, runExpired, runSaved, turnMayCommit, undoUntilFor, userMessagesFor, type RunMessage } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -172,6 +172,44 @@ describe("which user messages belong to the pending question", () => {
 
   it("never returns an assistant message", () => {
     expect(ownUserMessages([{ ...ask }, { ...ask, readOnly: true }])).toEqual([]);
+  });
+});
+
+describe("which user messages each kind of read may see", () => {
+  const ask = { role: "assistant" as const, followup: "repayment_amount" as const };
+  const user = (content: string) => ({ role: "user" as const, content });
+  const run: (RunMessage & { content?: string })[] = [
+    user("Ana paid me"), { ...ask },
+    user("Actually, Ana did not pay me. List my debts."), { ...ask, readOnly: true },
+    user("Maybe I should track Netflix, 549 monthly"), { ...ask, billId: "bill-1" },
+    user("Actually into Savings"), { ...ask },
+  ];
+  const contents = (messages: { content?: string }[]) => messages.map((message) => message.content);
+
+  it.each([
+    ["hint", ["Ana paid me", "Actually into Savings"]],
+    ["guard", ["Ana paid me", "Actually, Ana did not pay me. List my debts.", "Maybe I should track Netflix, 549 monthly", "Actually into Savings"]],
+  ] as const)("a %s reads %j", (use, expected) => {
+    expect(contents(userMessagesFor(use, run))).toEqual(expected);
+  });
+
+  it("gives a guard every user message and a hint the same list the own-message rule gives", () => {
+    expect(userMessagesFor("guard", run)).toEqual(guardUserMessages(run));
+    expect(userMessagesFor("hint", run)).toEqual(ownUserMessages(run));
+  });
+
+  it("never hides a message from a guard that a hint can see", () => {
+    for (const prefix of [[], run.slice(0, 2), run.slice(0, 4), run]) {
+      const guarded = userMessagesFor("guard", prefix);
+      for (const message of userMessagesFor("hint", prefix)) expect(guarded).toContain(message);
+    }
+  });
+
+  it("returns nothing for an empty run and never an assistant message", () => {
+    for (const use of ["hint", "guard"] as const) {
+      expect(userMessagesFor(use, [])).toEqual([]);
+      expect(userMessagesFor(use, [{ ...ask }, { ...ask, readOnly: true }])).toEqual([]);
+    }
   });
 });
 

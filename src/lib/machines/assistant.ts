@@ -85,12 +85,28 @@ export function isQuietReply(reply: RunMessage): boolean {
   return reply.role === "assistant" && !!reply.followup && (!!reply.billId || !!reply.readOnly);
 }
 
+// What the code reads from the user's words, and which messages of the open run it may read.
+// A hint overrides a field the model chose (account, date, time, category, amount, payer, bill details, the debt
+// the user named, an opt-in) and so decides where money goes. It reads only the messages that belong to the
+// pending question, or a bill or a finance question answered in between would move a repayment.
+// A guard can only refuse or ask (uncertain or negated wording, a declined transaction), and it reads the whole
+// open run, because a refusal said anywhere in the run must still block a write nobody confirmed afterwards.
+export type UserTextUse = "hint" | "guard";
+
 // The user messages of the open run that belong to the pending question: the statement that started it and the
-// answers, re-asks and corrections addressed to it. The account and the date that override the model's fields
-// are read from these alone, so a bill or a finance question answered in between cannot move a repayment. The
-// model still gets the whole run, since it can tell a handled turn from the question by its reply.
+// answers, re-asks and corrections addressed to it. The model still gets the whole run, since it can tell a
+// handled turn from the question by its reply.
 export function ownUserMessages<T extends RunMessage>(run: readonly T[]): T[] {
   return run.filter((message, index) => message.role === "user" && !(index + 1 < run.length && isQuietReply(run[index + 1])));
+}
+
+// Every user message of the open run, quiet turns included.
+export function guardUserMessages<T extends RunMessage>(run: readonly T[]): T[] {
+  return run.filter((message) => message.role === "user");
+}
+
+export function userMessagesFor<T extends RunMessage>(use: UserTextUse, run: readonly T[]): T[] {
+  return use === "hint" ? ownUserMessages(run) : guardUserMessages(run);
 }
 
 // What the open question run already saved. A debt is in Debts and a bill is in Bills, so a reply that drops the

@@ -3054,6 +3054,56 @@ describe("assistant turn commit", () => {
 
       expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, accountName: "Savings" });
     });
+
+    // Refusal wording is a guard, not a hint: it blocks an unconfirmed write wherever in the run it was said.
+    it("records nothing after a negation said in a local debt list turn, even though that turn is quiet", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      const provider = vi.fn(async () => providerTool("record_debt_payment", {}));
+      const listed = await send("Actually, Ana did not pay me. List my debts.", conversationId, provider);
+      expect(provider).not.toHaveBeenCalled();
+      expect(listed.transaction).toBeNull();
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount", readOnly: true });
+
+      const result = await send("500", conversationId, repaymentCall({ amount: "500" }));
+
+      expect(result.transaction).toBeNull();
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+      expect(store.listDebts(user.id).find((item) => item.id === debt.id)?.amountMinor).toBe(100_000);
+    });
+
+    // A bill turn that carries refusal wording is guarded at its own turn, which ends the question, so no negation
+    // is ever left in a bill-saved quiet turn for the next reply to read. The guard decides before the turn is stored.
+    it("ends the repayment question when a bill is saved in a message that negates the payment", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      const bill = await send(`Ana has not paid me. ${billPrompt}`, conversationId, vi.fn(async () => billSpec()));
+      expect(bill.bill).toMatchObject({ name: "Netflix" });
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: null, billId: bill.bill.id });
+      expect(store.listTransactions(user.id).filter((item) => item.kind === "debt_repayment")).toHaveLength(0);
+      expect(store.listDebts(user.id).find((item) => item.id === debt.id)?.amountMinor).toBe(100_000);
+    });
+
+    // A yes is a hint toward a write, so it must be said to the question, not inside a turn that answered something else.
+    it("does not take a yes said in a debt list turn as the answer to the ordinary income question", async () => {
+      const conversationId = await askZedPaidMe();
+      await send("Yes, list my debts", conversationId, vi.fn());
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "ordinary_income", readOnly: true });
+
+      const result = await send("500", conversationId, vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
+
+      expect(result.transaction).toBeNull();
+      expect(result.answer).toBe(incomeReask);
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+    });
+
+    it("still records the repayment after a quiet turn that says nothing against it", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      await send("List my debts", conversationId, vi.fn());
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount", readOnly: true });
+
+      const result = await send("500", conversationId, repaymentCall({ amount: "500" }));
+
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", debtId: debt.id, amountMinor: 50_000 });
+    });
   });
 
   // A bill action that saves the bill answers the bill question it was asked, so that question ends with the save.

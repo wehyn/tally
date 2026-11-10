@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { cancelHint, cancelReply, expiredReply, followupAfterTurn, ownUserMessages, pendingOutcome, runExpired, runSaved, turnMayCommit } from "@/lib/machines/assistant";
+import { cancelHint, cancelReply, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSaved, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -703,14 +703,18 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     }
     const history = openRun;
     const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
-    // Everything the code reads from what the user said, the account and date hints included, comes from the
-    // messages that belong to the pending question. The model still gets the whole run in history.
-    const ownMessages = ownUserMessages(openRun.length ? conversationMessages.slice(-openRun.length) : []);
+    // The code reads the user's words two ways. Hints that choose a value (account, date, time, category, amount,
+    // payer, the debt the user named, an opt-in, bill details) read userMessageText, which leaves out quiet turns.
+    // Guards that can only refuse or ask (uncertain or negated wording, a declined transaction) read guardMessageText,
+    // which keeps them. The model still gets the whole run in history.
+    const run = openRun.length ? conversationMessages.slice(-openRun.length) : [];
+    const ownMessages = userMessagesFor("hint", run);
     const userMessages = [
       ...ownMessages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
       { content: input.prompt, createdAt: receivedAt },
     ];
     const userMessageText = userMessages.map((message) => message.content);
+    const guardMessageText = [...userMessagesFor("guard", run).map((message) => message.content), input.prompt];
     const requestedMetrics = requestedFinanceMetrics(input.prompt);
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
     if (debtQuestion(input.prompt, requestedMetrics)) {
@@ -736,10 +740,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const lastFollowup: FollowupKind | null = history.at(-1)?.followup ?? null;
     const ordinaryIncomeQuestionIndex = history.map((message) => message.role === "assistant" ? message.followup : null).lastIndexOf("ordinary_income");
     const ordinaryIncomeQuestionPending = lastFollowup === "ordinary_income";
-    const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? history.slice(ordinaryIncomeQuestionIndex + 1) : [];
-    const ordinaryIncomeConfirmedInHistory = afterOrdinaryIncomeQuestion.some((message) => message.role === "user"
-      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content))
-      && !afterOrdinaryIncomeQuestion.some((message) => message.role === "user" && (hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
+    const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? run.slice(ordinaryIncomeQuestionIndex + 1) : [];
+    const ordinaryIncomeConfirmedInHistory = userMessagesFor("hint", afterOrdinaryIncomeQuestion).some((message) =>
+      /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content))
+      && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content));
     const ordinaryIncomeFlow = !hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt)
       && (ordinaryIncomeConfirmedInHistory || ordinaryIncomeQuestionPending);
     const ordinaryIncomeAccepted = ordinaryIncomeConfirmedInHistory || (ordinaryIncomeQuestionPending
@@ -748,16 +752,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
-    const debtTransactionOptOut = hasClearDebtTransactionOptOut(userMessageText) || debtQuestionNo;
+    const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo;
     const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(userMessageText) || debtQuestionYes);
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
     const currentDebtIntent = explicitNewDebtIntent(input.prompt);
-    const uncertainNewDebt = userMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
+    const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
     const repaymentContextText = ordinaryIncomeFlow ? input.prompt : userMessageText.join(" ");
     const payerSelection = lastFollowup === "repayment_payer";
     const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
     const repaymentFollowup = lastFollowup === "repayment_payer" || lastFollowup === "repayment_amount";
-    const uncertainRepayment = !repaymentReportQuestion && (userMessageText.some((message) => isUnconfirmedIncomingDebtPayment(message) || isUnconfirmedOutgoingDebtPayment(message))
+    const uncertainRepayment = !repaymentReportQuestion && (guardMessageText.some((message) => isUnconfirmedIncomingDebtPayment(message) || isUnconfirmedOutgoingDebtPayment(message))
       || repaymentFollowup && isUncertainStatement(input.prompt));
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const outgoingRepaymentIntent = !repaymentReportQuestion && hasOutgoingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
@@ -841,7 +845,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
       }
 
-      const billFollowupPending = history.some((message) => message.role === "user" && isBillTrackingIntent(message.content)) && isBillFollowup(lastFollowup);
+      const billFollowupPending = ownMessages.some((message) => isBillTrackingIntent(message.content)) && isBillFollowup(lastFollowup);
       const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && providerCall.name !== "finance_question");
       if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
