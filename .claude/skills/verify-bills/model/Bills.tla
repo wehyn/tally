@@ -46,7 +46,7 @@ BeginRun(kind, day) ==
 Start == /\ ~started /\ started' = TRUE /\ run = "none" /\ BeginRun("sched", today)
          /\ UNCHANGED <<today, next, end, archived, cnt, first, acctOK, armed, bad, regressed>>
 
-\* The timer fires at Manila midnight.
+\* The timer fires at 02:00 Asia/Manila (nextBillRunAt), when the Manila date is already the new day.
 Tick == /\ armed /\ run = "none" /\ today < MaxDay
         /\ today' = today + 1 /\ armed' = FALSE /\ BeginRun("sched", today + 1)
         /\ UNCHANGED <<next, end, archived, cnt, first, acctOK, started, bad, regressed>>
@@ -114,7 +114,7 @@ TypeOK == /\ next \in Dates /\ end \in Ends /\ archived \in BOOLEAN /\ cnt \in [
 \* Rules (each is one sentence in SKILL.md).
 NoPostWhenInactive == ~bad                      \* a bill that is archived, not yet due, or past its end date never posts
 NoSilentRegression == ~regressed                \* only a user edit moves nextDueDate backwards
-SchedulerRearms == (started /\ run = "none") => armed   \* the midnight timer is always pending between runs
+SchedulerRearms == (started /\ run = "none") => armed   \* the 02:00 Manila timer is always pending between runs
 NoDoublePost == \A d \in Dates : cnt[d] <= 1    \* one expense per due date
 ExactlyOnce == \A d \in Dates : cnt[d] = (IF d >= first /\ d < next THEN 1 ELSE 0)
 NoLostDue == (run = "none" /\ started /\ ~lastFailed /\ ~archived) => next > runDay   \* after a clean run nothing due is left

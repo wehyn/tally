@@ -1,6 +1,6 @@
 ---
 name: verify-bills
-description: Model-check Tally's recurring bill schedule (create, edit, archive, midnight posting, catch-up, failures, scheduler re-arm) with TLA+ and replay the same rules on the real store. Use when a change touches createBill, updateBill, archiveBill, processDueBills, advanceBillDate, src/lib/machines/bill.ts, src/lib/bill-scheduler.ts, src/instrumentation.ts, src/app/api/bills, or the bill actions in bills-view.tsx or assistant.ts.
+description: Model-check Tally's recurring bill schedule (create, edit, archive, 02:00 Manila posting, catch-up, failures, scheduler re-arm) with TLA+ and replay the same rules on the real store. Use when a change touches createBill, updateBill, archiveBill, processDueBills, advanceBillDate, src/lib/machines/bill.ts, src/lib/bill-scheduler.ts, src/instrumentation.ts, src/app/api/bills, or the bill actions in bills-view.tsx or assistant.ts.
 ---
 
 # Verify the bill schedule
@@ -9,8 +9,8 @@ description: Model-check Tally's recurring bill schedule (create, edit, archive,
 
 - **Each due date is posted once.** A bill never charges the same date twice, including after the user edits its next due date. Harm: wrong balances and spending totals.
 - **An archived bill, a bill that is not due yet, or a bill past its end date never posts.**
-- **A failed posting changes nothing.** The bill stays due and is retried at the next midnight run or the next save of that bill; no date is lost.
-- **The midnight timer is always re-armed** after a run, a failed bill, or a crash of the run.
+- **A failed posting changes nothing.** The bill stays due and is retried at the next 02:00 Asia/Manila run or the next save of that bill; no date is lost.
+- **The 02:00 Asia/Manila timer is always re-armed** after a run, a failed bill, or a crash of the run.
 - **Only a user edit moves `nextDueDate` backwards, and never onto a date already posted.**
 
 ## Run it

@@ -10,7 +10,7 @@ export const state = (v: Vars) => {
 export const group = (v: Vars) => (v.archived ? "tan" : v.next <= v.today ? "orange" : "teal");
 export const colors = { tan: "tan", orange: "orange", teal: "teal" };
 export const step = (a: string) => ({
-  Start: "app starts and runs the scheduler", Tick: "Manila midnight", StepGone: "nothing left to post",
+  Start: "app starts and runs the scheduler", Tick: "02:00 Manila", StepGone: "nothing left to post",
   StepEnded: "the end date has passed", StepFail: "posting fails, bill stays due", StepPost: "expense is posted",
   AccountBreaks: "the account or amount becomes invalid, or valid again",
 } as Record<string, string>)[a] ?? a;
