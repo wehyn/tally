@@ -1,6 +1,6 @@
 # Assistant state machines
 
-Subsystem: Ask Tally (`src/lib/assistant.ts`, `src/lib/machines/assistant.ts`, `src/lib/provider.ts`, `src/lib/assistant-followup.ts`, assistant routes, assistant parts of `src/lib/store.ts`). Verified by `.claude/skills/verify-assistant` (sync commit `f6ee8eb`). The charts below were edited by hand to match `model/Assistant.tla` after the fixes, because the `/statechart` renderer is not installed here. Regenerate them with that renderer when it is available (`model/views/*.mjs` and `model/flows/*.cfg`).
+Subsystem: Ask Tally (`src/lib/assistant.ts`, `src/lib/machines/assistant.ts`, `src/lib/provider.ts`, `src/lib/assistant-followup.ts`, assistant routes, assistant parts of `src/lib/store.ts`). Verified by `.claude/skills/verify-assistant` (sync commit `4cd0e11`). The charts below were edited by hand to match `model/Assistant.tla` after the fixes, because the `/statechart` renderer is not installed here. Regenerate them with that renderer when it is available (`model/views/*.mjs` and `model/flows/*.cfg`).
 
 ## Inventory
 

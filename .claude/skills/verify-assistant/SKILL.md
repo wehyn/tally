@@ -23,7 +23,7 @@ Model: `model/Assistant.tla`, one conversation. A hand model proves nothing abou
 
 Not covered: bill follow-ups (`bill_*`), debt creation and `debt_transaction`, `account_or_date`, category/date/account inference, finance questions, the widget UI, Shortcut credential auth (see `verify-identity-access`), debt balance rules (see `verify-debts`). Undo is modeled for the latest transaction only. One conversation, one user. The uncertain-wording abandon path (`uncertainRepayment` in `assistant.ts`) is not in the machine; the model covers its effect (`UncertainNeverWrites`) only.
 
-**Sync commit: `f6ee8eb`.** If `git diff f6ee8eb -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
+**Sync commit: `4cd0e11`.** If `git diff 4cd0e11 -- <covered files>` is non-empty, re-read the diff against the model and the conformance tests. Move this commit forward only after you confirm both still describe the code at the new commit.
 
 ## Run it
 
