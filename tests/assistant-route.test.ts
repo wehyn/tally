@@ -2907,4 +2907,15 @@ describe("assistant turn commit", () => {
     expect(asked.bill).toBeNull();
     expect(lastStored(conversationId).followup).toMatch(/^bill_/);
   });
+
+  it("keeps the message that started a question through six re-asks, so 500 still repays Ana", async () => {
+    const { debt, conversationId } = await askAnaPaidMe();
+    for (let round = 0; round < 6; round++) {
+      vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food" })));
+      expect((await (await POST(assistantRequest("Coffee 120", conversationId))).json()).answer).toBe(amountReask);
+    }
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    await expectAnaRepaid500(conversationId, debt.id);
+  });
 });

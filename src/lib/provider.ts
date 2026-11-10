@@ -3,6 +3,7 @@ import { z } from "zod";
 import { todayInManila } from "@/lib/dates";
 import { formatPHP } from "@/lib/money";
 import type { FollowupKind } from "@/lib/assistant-followup";
+import { capOpenRun } from "@/lib/machines/assistant";
 
 const sensitive = (value: string) => value.replace(/[\r\n\t]/g, " ").trim();
 export type ProviderConfig = { baseUrl: string; endpoint: string; model: string; apiKey: string; disclosure: string };
@@ -195,7 +196,7 @@ export function minimalFollowUpContext(messages: AssistantContextMessage[]): (As
       break;
     }
   }
-  return messages.slice(lastCompletedReply + 1).slice(-12).map(({ role, content, createdAt, followup }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null }));
+  return capOpenRun(messages.slice(lastCompletedReply + 1)).map(({ role, content, createdAt, followup }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null }));
 }
 
 async function readProviderJson(response: Response, maxBytes: number): Promise<unknown> {
@@ -280,7 +281,7 @@ Current date and time in Asia/Manila: ${currentDateTime}. Today's date is ${toda
     method: "POST", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: config.model, messages: [
       { role: "system", content: systemPrompt },
-      ...(input.history ?? []).slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
+      ...capOpenRun(input.history ?? []).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
       debtSummaryMessage,
       { role: "user", content: input.prompt },
     ], tools: [transactionTool(input.categories ?? []), debtTool(input.categories ?? []), debtPaymentTool, debtRepaymentTool, questionTool, ...billTools(input.categories ?? []), clarificationTool], tool_choice: "required" }),

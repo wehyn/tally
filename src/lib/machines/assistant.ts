@@ -56,6 +56,15 @@ export function followupAfterTurn(pending: FollowupKind | null, asked: FollowupK
   return asked ?? (leavesPending ? pending : null);
 }
 
+// How many messages of an open follow-up run reach the model and the local reading of the run.
+export const OPEN_RUN_LIMIT = 12;
+
+// The run's first message is the statement the pending question is about ("Ana paid me"). Trimming it away
+// turns a later bare "500" into an ordinary expense, so a longer run keeps it and drops the oldest of the rest.
+export function capOpenRun<T>(run: readonly T[], limit = OPEN_RUN_LIMIT): T[] {
+  return run.length <= limit ? [...run] : [run[0], ...run.slice(run.length - (limit - 1))];
+}
+
 // What a cancel tells the user about what happened to the dropped question. Most questions are asked before
 // anything is saved, so nothing was recorded. The offer to add a just-saved debt to Transactions is different,
 // because the debt is already in Debts, and so is every question that continues it ("add it to Transactions"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, followupAfterTurn, pendingOutcome, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
+import { OPEN_RUN_LIMIT, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, capOpenRun, followupAfterTurn, pendingOutcome, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -63,6 +63,28 @@ describe("pending follow-up outcome", () => {
       for (const pending of FOLLOWUP_KINDS) expect(pendingOutcome(pending, reply)).toBe("answer");
     });
   }
+});
+
+describe("the open run that reaches the model", () => {
+  const run = (length: number) => Array.from({ length }, (_, index) => `m${index}`);
+
+  it("keeps a run whole up to the limit", () => {
+    expect(OPEN_RUN_LIMIT).toBe(12);
+    for (const length of [0, 1, 2, 11, 12]) expect(capOpenRun(run(length))).toEqual(run(length));
+  });
+
+  it("keeps the first message and the most recent ones, and drops the oldest of the middle", () => {
+    expect(capOpenRun(run(13))).toEqual(["m0", ...run(13).slice(2)]);
+    expect(capOpenRun(run(40))).toEqual(["m0", ...run(40).slice(29)]);
+    expect(capOpenRun(run(40))).toHaveLength(OPEN_RUN_LIMIT);
+    expect(capOpenRun(run(5), 3)).toEqual(["m0", "m3", "m4"]);
+  });
+
+  it("does not change the run it is given", () => {
+    const original = run(20);
+    capOpenRun(original);
+    expect(original).toEqual(run(20));
+  });
 });
 
 describe("the pending question a turn stores", () => {

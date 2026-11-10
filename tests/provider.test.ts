@@ -55,6 +55,27 @@ describe("assistant data minimization", () => {
     ]);
   });
 
+  it("keeps the message that started the open run and the most recent ones when the run is longer than the cap", () => {
+    const run = [{ role: "user" as const, content: "Ana paid me" }, { role: "assistant" as const, content: "How much?", followup: "repayment_amount" as const }];
+    for (let round = 1; round <= 6; round++) {
+      run.push({ role: "user", content: `Coffee ${round}` }, { role: "assistant", content: `How much? ${round}`, followup: "repayment_amount" });
+    }
+    const context = minimalFollowUpContext([{ role: "user", content: "Earlier" }, { role: "assistant", content: "Earlier answer" }, ...run]);
+
+    expect(context).toHaveLength(12);
+    expect(context[0]).toMatchObject({ role: "user", content: "Ana paid me" });
+    expect(context.slice(1)).toEqual(run.slice(-11).map(({ role, content, followup }) => ({ role, content, followup: followup ?? null })));
+    expect(context.at(-1)).toMatchObject({ role: "assistant", content: "How much? 6", followup: "repayment_amount" });
+    expect(context.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant"]);
+  });
+
+  it("keeps a run of exactly the cap whole", () => {
+    const run = Array.from({ length: 12 }, (_, index) => index % 2 === 0
+      ? { role: "user" as const, content: `u${index}` }
+      : { role: "assistant" as const, content: `a${index}`, followup: "clarification" as const });
+    expect(minimalFollowUpContext(run).map((message) => message.content)).toEqual(run.map((message) => message.content));
+  });
+
   it("retains the original transaction details through a multi-turn follow-up", async () => {
     vi.stubEnv("CODEX_LB_BASE_URL", "https://provider.example/v1");
     vi.stubEnv("CODEX_LB_MODEL", "test-model");
