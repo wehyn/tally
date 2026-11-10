@@ -5,9 +5,11 @@
 \* reply commit in one store transaction (commitTurn). Consent and the chat are checked again at commit.
 \* The only interleaving points are the awaited provider call and separate HTTP requests.
 \*
-\* A pending question is dropped only by an explicit cancel (pendingOutcome, src/lib/machines/assistant.ts):
-\* the whole prompt, normalized, equals one of a few phrases. Every other reply keeps the question and runs
-\* the existing cautious handling, which asks again and writes nothing when the reply is not a clean answer.
+\* A pending question ends in three ways. An exact cancel drops it (pendingOutcome, src/lib/machines/assistant.ts):
+\* the whole prompt, normalized, equals one of a few phrases. An answer that resolves it ends it, and so does a
+\* completed write. Every other reply keeps the question and runs the existing cautious handling, which asks again
+\* and writes nothing when the reply is not a clean answer. A turn that only reads (the debt list, a finance
+\* answer) is none of the three, so it leaves the question exactly as it was (followupAfterTurn, same file).
 \* Deciding from free text that a reply was a new request was tried four times and abandoned (see the doc).
 \*
 \* A turn may commit only while the conversation still ends at the message it read (turnMayCommit). A second
@@ -34,7 +36,7 @@ CONSTANTS
     Rivals,     \* TRUE: another request on the same conversation may commit while a turn waits on the model
     Unchecked   \* TRUE: a turn commits without checking that the conversation is where it read it (326d565, see the header)
 
-AllIntents == {"plain", "cancel", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPay", "amount", "amountDetail", "hedgedAnswer", "yes"}
+AllIntents == {"plain", "cancel", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPay", "amount", "amountDetail", "hedgedAnswer", "yes", "readOnly"}
 \* plain            "Jollibee lunch 250", "she paid back the food money, 500", "siguro Food 500": any prompt that
 \*                  is not an answer to the pending question and not a cancel. At a pending repayment or
 \*                  income question it is asked again and writes nothing, however much it looks like a new
@@ -52,6 +54,9 @@ AllIntents == {"plain", "cancel", "uncertainPay", "debtPay", "debtPayNoAmount", 
 \*                  an amount, so the question is asked again.
 \* hedgedAnswer     a reply that hedges or negates: "maybe 500", "I think 500", "not 500", "500?"
 \* yes              a bare "yes"
+\* readOnly         "List my debts" or "How much did I spend this month?", answered from the ledger. It writes nothing
+\*                  and asks nothing. It is not an answer and not a cancel, so a pending question stays pending. With
+\*                  nothing pending it is an ordinary turn.
 Kinds == {"none", "clarification", "ordinary_income", "repayment_amount", "repayment_payer"}
 
 VARIABLES
@@ -122,6 +127,7 @@ Decision(i, p) ==
             IF p = "ordinary_income"
             THEN [out |-> "word", next |-> "none"]                     \* ordinaryIncomeFlow branch
             ELSE [out |-> "ask", next |-> "clarification"]
+      [] i = "readOnly"       -> [out |-> "read", next |-> p]                       \* debt-list branch or finance answer: followupAfterTurn keeps the question
 
 \* store.ts deleteTransaction(undoOnly): a debt-linked row never deletes; otherwise only
 \* inside the ten-second window.
@@ -176,7 +182,8 @@ Effects(i, p, s, replyStored) ==
        /\ ordNoQuestion'  = (ordNoQuestion \/ (d.out = "word" /\ p # "ordinary_income"))
        /\ wroteUncertain' = (wroteUncertain \/ (writes /\ i = "uncertainPay"))
        /\ trapped' = (trapped \/ (i = "cancel" /\ p # "none" /\ d.next # "none"))
-       /\ answerReplaced' = (answerReplaced \/ (i # "cancel" /\ Outcome(i, p) # "answer"))
+       /\ answerReplaced' = (answerReplaced \/ (i # "cancel" /\ Outcome(i, p) # "answer")
+                                              \/ (i = "readOnly" /\ p # "none" /\ d.next # p))
        /\ wroteNonAnswer' = (wroteNonAnswer \/ (writes /\ p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
                                                /\ i \in {"plain", "amountDetail", "hedgedAnswer", "cancel"}))
        \* a write that answers a question some commit since already answered, or that a cancel already dropped
@@ -294,7 +301,7 @@ NoDuplicateIntentWrite == written <= 1       \* one user intent, at most one tra
 WriteNeedsConsent      == ~wroteNoConsent    \* no transaction after consent was withdrawn
 FollowupSurvivesError  == ~lostFollowup      \* a failed provider call keeps the pending question
 PlainPromptNotTrapped  == ~trapped           \* an explicit cancel always clears the pending question. An unrelated prompt re-asks (a deliberate limit, not checked)
-AnswerNotReplaced      == ~answerReplaced    \* only an explicit cancel drops the pending question, whatever any other reply says
+AnswerNotReplaced      == ~answerReplaced    \* only an explicit cancel drops the pending question, whatever any other reply says, and a turn that only reads leaves it pending
 NonAnswerNeverWrites   == ~wroteNonAnswer    \* at a pending repayment or income question, a reply that is not its answer (or a confirmed payment) writes nothing
 OneWritePerQuestion    == ~answeredTwice     \* a pending question is answered with a write at most once, even when the answer is sent twice
 CancelledNeverAnswered == ~answeredAfterCancel  \* a question a cancel dropped is never answered afterwards, even by an answer already in flight

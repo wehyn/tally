@@ -228,6 +228,58 @@ describe("regressions: the findings stay fixed", () => {
     expect(store.listDebts(user.id)[0].amountMinor).toBe(100_000);
   });
 
+  it("AnswerNotReplaced (read-only): a debt list or a finance answer leaves a pending repayment question, so the amount still repays Ana", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    const lastFollowup = () => store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup;
+
+    const listed = await (await ask("List my debts", conversationId)).json();
+    expect(listed.answer).toContain("Ana: ₱1,000.00");
+    expect(lastFollowup()).toBe("repayment_amount");
+    provider(tool("finance_question", { start: "2026-10-01", end: "2026-10-09" }));
+    const answered = await (await ask("How much did I spend this month?", conversationId)).json();
+    expect(answered.answer).toContain("Total Spent");
+    expect(lastFollowup()).toBe("repayment_amount");
+
+    const bodies = provider(tool("log_transaction", { amount: "500", kind: "expense", category: "Other" }));
+    const repaid = await (await ask("500", conversationId)).json();
+    expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
+    expect(repaid.answer).toContain("repayment from Ana");
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
+    expect(txCount()).toBe(1);
+    expect(lastFollowup()).toBeNull();
+  });
+
+  it("AnswerNotReplaced (read-only): a cancel after a read-only answer still drops the question, and a read-only turn with nothing pending stores none", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const none = await (await ask("List my debts")).json();
+    expect(store.getConversation(user.id, none.conversationId)!.messages.at(-1)!.followup).toBeNull();
+    provider(tool("record_debt_payment", { counterparty: "Ana" }));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    await ask("List my debts", conversationId);
+    const cancelled = await (await ask("cancel", conversationId)).json();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  it("PlainPromptNotTrapped (long run): six re-asks keep the message that started the question, so the amount still repays Ana", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const coffee = () => tool("log_transaction", { amount: "120", description: "coffee", kind: "expense", category: "Food" });
+    provider(tool("record_debt_payment", { counterparty: "Ana" }));
+    const { conversationId } = await (await ask("Ana paid me")).json();
+    for (let round = 0; round < 6; round++) {
+      provider(coffee());
+      expect((await (await ask("Coffee 120", conversationId)).json()).transaction).toBeNull();
+    }
+    const bodies = provider(tool("log_transaction", { amount: "500", kind: "expense", category: "Other" }));
+    const repaid = await (await ask("500", conversationId)).json();
+    expect(JSON.stringify(bodies[0].messages)).toContain("Ana paid me");
+    expect(repaid.answer).toContain("repayment from Ana");
+    expect(store.listDebts(user.id)[0].amountMinor).toBe(50_000);
+    expect(txCount()).toBe(1);
+  });
+
   it("PlainPromptNotTrapped (stays cancelled): the dropped question is not reloaded by a later turn of the new request", async () => {
     store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     const coffee = (account: string) => tool("log_transaction", { amount: "120", description: "Coffee", kind: "expense", category: "Food", account });
