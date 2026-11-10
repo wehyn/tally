@@ -38,7 +38,8 @@ When the code asks a question again while one is pending, the re-ask ends with o
 | ordinary_income | "yes" or "no" | answers the question (`:775-786`). "no" is not a cancel, it declines the income |
 | repayment_amount | an amount the strict reading accepts, digits with an optional peso sign or word and nothing else: "500", "1,000.50", "₱500", "500 pesos" | answers it, saves the repayment (`:766`) |
 | repayment_amount | an amount with a detail, shorthand or hedge-like word: "500 cash", "5k", "P500", "500 sa GCash", "about 500", "500 last night", "it was 500" | asks for the amount again, keeps the question, writes nothing |
-| repayment_amount, repayment_payer, ordinary_income | a hedged or negated reply: "maybe 500", "I think 500", "not 500", "500?" | the uncertainty guard asks first, writes nothing and clears the question (`:787-788`, `:1108`) |
+| repayment_amount, repayment_payer | a hedged or negated reply: "maybe 500", "I think 500", "not 500", "500?" | the uncertainty guard asks first, writes nothing and clears the question (`:787-788`, `:1108`) |
+| ordinary_income | a hedged or negated reply: "maybe", "I think so", "not sure" | `ordinaryIncomeFlow` runs before the uncertainty guard, so the guard never sees it. The question is asked again with the cancel hint, stays ordinary_income and nothing is written (`:782-790`) |
 | repayment_amount, repayment_payer | payment wording, uncertain or negated | answers it through the existing branches (`:787-808`) |
 | repayment_payer | a name with an open debt | answers it (the payer is matched to the debt) |
 | repayment_amount, repayment_payer, ordinary_income | an unrelated prompt, however complete: "Coffee 120", "she paid back the food money, 500", "for the food, 500", "siguro Food 500", "to Food Wallet 500" | asks the question again with the cancel hint and writes nothing. This is a deliberate limit. The user says cancel and sends the prompt again |

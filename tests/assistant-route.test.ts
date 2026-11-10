@@ -2470,6 +2470,19 @@ describe("assistant turn commit", () => {
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
   });
 
+  it.each(["maybe", "I think so", "not sure", "maybe 500"])("asks the ordinary income question again, with the way out, when the hedged reply %s answers it", async (reply) => {
+    const conversationId = await askZedPaidMe();
+
+    const second = vi.fn(async () => providerTool("log_transaction", { amount: "500", description: "Payment", kind: "income", category: "Other income" }));
+    vi.stubGlobal("fetch", second);
+    const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(result.answer).toBe(incomeReask);
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+  });
+
   it.each(["He paid back the food money, 500", "she paid back the food money, 500", "She paid 500 for lunch"])(
     "writes nothing and offers cancel when %s answers the ordinary income question", async (reply) => {
       const conversationId = await askZedPaidMe();
