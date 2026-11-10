@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { cancelHint, pendingOutcome, turnMayCommit } from "@/lib/machines/assistant";
+import { cancelHint, cancelReply, pendingOutcome, runSavedDebt, turnMayCommit } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -693,8 +693,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const conversationMessages = conversation?.messages ?? [];
     const readLastMessageId = conversationMessages.at(-1)?.id ?? null;
     const openRun = minimalFollowUpContext(conversationMessages);
-    if (pendingOutcome(openRun.at(-1)?.followup ?? null, input.prompt) === "cancel") {
-      const answer = "Okay, I dropped that question. Nothing was recorded.";
+    const pending = openRun.at(-1)?.followup ?? null;
+    if (pending && pendingOutcome(pending, input.prompt) === "cancel") {
+      const answer = cancelReply(pending, runSavedDebt(conversationMessages));
       return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, true, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNDO_WINDOW_MS, cancelHint, canUndo, pendingOutcome, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
+import { UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, pendingOutcome, runSavedDebt, turnMayCommit, undoUntilFor } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -103,5 +103,38 @@ describe("a turn commits only if the conversation is where it read it", () => {
   it("refuses when another request stored a message in between, however it ended", () => {
     expect(turnMayCommit("message-7", "message-9")).toBe(false);
     expect(turnMayCommit(null, "message-1")).toBe(false);
+  });
+});
+
+describe("what a cancel says about the dropped question", () => {
+  const nothingRecorded = "Okay, I dropped that question. Nothing was recorded.";
+  const debtStays = "Okay, I dropped that question. The debt stays in Debts, and nothing was added to Transactions.";
+
+  it("says the debt stays for the offer to add a just-saved debt to Transactions", () => {
+    expect(cancelReply("debt_transaction", true)).toBe(debtStays);
+    expect(cancelReply("debt_transaction", false)).toBe(debtStays);
+  });
+
+  // None of these asks anything after saving. The repayment, income, account or date, bill and generic questions
+  // are all asked before the write they wait for, so nothing was recorded unless a debt came earlier in the run.
+  for (const kind of FOLLOWUP_KINDS.filter((item) => item !== "debt_transaction")) {
+    it(`says nothing was recorded for ${kind} when no debt was saved in the run`, () => {
+      expect(cancelReply(kind, false)).toBe(nothingRecorded);
+    });
+    it(`says the debt stays for ${kind} when an earlier reply of the run saved one`, () => {
+      expect(cancelReply(kind, true)).toBe(debtStays);
+    });
+  }
+
+  it("finds a debt saved by any reply of the open run, and none before a reply that asked nothing", () => {
+    const saved = { role: "assistant", followup: "debt_transaction", debtId: "debt-1" } as const;
+    const ask = { role: "assistant", followup: "account_or_date", debtId: null } as const;
+    const done = { role: "assistant", followup: null, debtId: "debt-0" } as const;
+    const user = { role: "user" } as const;
+    expect(runSavedDebt([user, saved])).toBe(true);
+    expect(runSavedDebt([user, saved, user, ask])).toBe(true);
+    expect(runSavedDebt([user, ask])).toBe(false);
+    expect(runSavedDebt([user, done, user, ask])).toBe(false);
+    expect(runSavedDebt([])).toBe(false);
   });
 });

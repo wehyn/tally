@@ -2625,6 +2625,38 @@ describe("assistant turn commit", () => {
     expect(store.getConversation(user.id, first.conversationId)!.messages.at(-1)!.followup).toBeNull();
   });
 
+  it("tells the user the debt stays in Debts when they cancel the offer to add it to Transactions", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" })));
+    const first = await (await POST(assistantRequest("Ana owes me 500"))).json();
+    expect(first.answer).toContain("Added it to Debts only");
+    expect(store.getConversation(user.id, first.conversationId)!.messages.at(-1)!.followup).toBe("debt_transaction");
+    const provider = vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" }));
+    vi.stubGlobal("fetch", provider);
+
+    const cancelled = await (await POST(assistantRequest("skip", first.conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(cancelled.answer).toBe("Okay, I dropped that question. The debt stays in Debts, and nothing was added to Transactions.");
+    expect(store.listDebts(user.id)).toMatchObject([{ counterparty: "Ana", amountMinor: 50_000, status: "open" }]);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, first.conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  it("still says the debt stays when the cancel comes after the request to add it to Transactions asked for an account", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" })));
+    const first = await (await POST(assistantRequest("Ana owes me 500"))).json();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500", recordTransaction: true, note: "lunch", account: "Missing" })));
+    const asked = await (await POST(assistantRequest("Add it to Transactions, it was lunch", first.conversationId))).json();
+    expect(asked.answer).toContain("Missing");
+    expect(store.getConversation(user.id, first.conversationId)!.messages.at(-1)!.followup).toBe("account_or_date");
+
+    const cancelled = await (await POST(assistantRequest("cancel", first.conversationId))).json();
+
+    expect(cancelled.answer).toBe("Okay, I dropped that question. The debt stays in Debts, and nothing was added to Transactions.");
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+
   it("treats no as a decline of the ordinary income question, not as a cancel", async () => {
     const conversationId = await askZedPaidMe();
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "income", category: "Other income" })));

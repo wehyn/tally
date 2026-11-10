@@ -48,6 +48,27 @@ export function pendingOutcome(pending: FollowupKind | null, prompt: string): Pe
   return CANCEL_PHRASES.has(phrase) ? "cancel" : "answer";
 }
 
+// What a cancel tells the user about what happened to the dropped question. Most questions are asked before
+// anything is saved, so nothing was recorded. The offer to add a just-saved debt to Transactions is different,
+// because the debt is already in Debts, and so is every question that continues it ("add it to Transactions"
+// asking for an account or a date). Saying nothing was recorded there would invite entering the debt again.
+// No bill question is asked after a bill was saved, so none needs a wording of its own.
+export function cancelReply(pending: FollowupKind, debtAlreadySaved: boolean): string {
+  return pending === "debt_transaction" || debtAlreadySaved
+    ? "Okay, I dropped that question. The debt stays in Debts, and nothing was added to Transactions."
+    : "Okay, I dropped that question. Nothing was recorded.";
+}
+
+// Whether a reply of the open question run already saved a debt. The run is the messages since the last reply
+// that asked nothing, and the saving reply is the one that carries the debt.
+export function runSavedDebt(messages: readonly { role: "user" | "assistant"; followup?: FollowupKind | null; debtId?: string | null }[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role === "assistant" && !messages[index].followup) return false;
+    if (messages[index].debtId) return true;
+  }
+  return false;
+}
+
 // The way out, appended when the code asks a question again while one is pending. The repayment and income
 // questions the code forces on the user lead to each other, so any of them asked right after any of them
 // carries it. Every other kind carries it only when the same question repeats. A first ask has none, and
