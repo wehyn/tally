@@ -5,11 +5,16 @@
 \* reply commit in one store transaction (commitTurn). Consent and the chat are checked again at commit.
 \* The only interleaving points are the awaited provider call and separate HTTP requests.
 \*
+\* A pending question is dropped only by an explicit cancel (pendingOutcome, src/lib/machines/assistant.ts):
+\* the whole prompt, normalized, equals one of a few phrases. Every other reply keeps the question and runs
+\* the existing cautious handling, which asks again and writes nothing when the reply is not a clean answer.
+\* Deciding from free text that a reply was a new request was tried four times and abandoned (see the doc).
+\*
 \* Legacy = TRUE replays the rules before the fixes (user message stored before the call, no re-check
-\* at commit, no replacement of a pending question). findings.cfg runs that variant and must fail.
-\* Doubt = TRUE replays the replacement rule at 232f564 (kept until b35b71b), which let any word beyond
-\* an amount, its peso marker and answer filler replace a pending question, so "maybe 500" and
-\* "500 cash" dropped it. doubt.cfg runs that variant and must fail on AnswerNotReplaced.
+\* at commit, no way to drop a pending question). findings.cfg runs that variant and must fail.
+\* Doubt = TRUE replays the older replace-on-text rule (232f564, then 7f0e42f), which let a hedged reply, an
+\* amount with a detail or a complete request replace a pending question, so "maybe 500", "500 cash" and
+\* "Coffee 120" dropped it. doubt.cfg runs that variant and must fail on AnswerNotReplaced.
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS
@@ -19,21 +24,24 @@ CONSTANTS
     Clock,      \* TRUE: the ten-second Undo window may expire
     Fails,      \* TRUE: the provider call may fail
     Legacy,     \* TRUE: the pre-fix rules (see the header)
-    Doubt       \* TRUE: a hedged or detailed amount reply replaces a pending question, as at 232f564 (see the header)
+    Doubt       \* TRUE: a text-classified reply replaces a pending question, as at 232f564 and 7f0e42f (see the header)
 
-AllIntents == {"plain", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPay", "amount", "amountDetail", "hedgedAnswer", "yes"}
-\* plain            "Jollibee lunch 250": a number and a category (one of the user's own or a keyword the
-\*                  category map knows), no hedge, no payment wording, not a yes or no, no open debtor named.
-\*                  This is the only intent that carries the positive signal that replaces a question.
+AllIntents == {"plain", "cancel", "uncertainPay", "debtPay", "debtPayNoAmount", "noMatchPay", "amount", "amountDetail", "hedgedAnswer", "yes"}
+\* plain            "Jollibee lunch 250", "she paid back the food money, 500", "siguro Food 500": any prompt that
+\*                  is not an answer to the pending question and not a cancel. At a pending repayment or
+\*                  income question it is asked again and writes nothing, however much it looks like a new
+\*                  request. That is the deliberate limitation, not an invariant. With nothing pending it is
+\*                  an ordinary prompt, and so is a cancel, which is why cancel is only sent while a question is pending.
+\* cancel           the exact cancel phrase ("cancel", "never mind", "skip", "forget it", "stop", "wag na"...)
 \* uncertainPay     "maybe Ana paid me?": negated or uncertain payment wording
 \* debtPay          "Ana paid me 500" and Ana has one open debt: confirmed repayment
 \* debtPayNoAmount  "Ana paid me": payer known, amount missing
 \* noMatchPay       "Zed paid me 500", no open debt for Zed
 \* amount           an amount the strict reading accepts: digits with an optional peso sign or word and
 \*                  nothing else ("500", "1,000.50", "500 pesos")
-\* amountDetail     any other reply with a number and no category evidence and no hedge: "500 cash", "5k",
-\*                  "P500", "500 sa GCash", "about 500", "500 last night". It answers. After a repayment
-\*                  amount question it is not read as an amount, so the question is asked again.
+\* amountDetail     any other reply with a number and no hedge: "500 cash", "5k", "P500", "500 sa GCash",
+\*                  "about 500", "500 last night". After a repayment amount question it is not read as
+\*                  an amount, so the question is asked again.
 \* hedgedAnswer     a reply that hedges or negates: "maybe 500", "I think 500", "not 500", "500?"
 \* yes              a bare "yes"
 Kinds == {"none", "clarification", "ordinary_income", "repayment_amount", "repayment_payer"}
@@ -51,55 +59,56 @@ VARIABLES
     txKind,        \* "none" | "plain" | "repayment"
     reqs,
     \* sticky witnesses, one per rule
-    wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced
+    wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer
 vars == <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs,
-          wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+          wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
-\* pendingOutcome (src/lib/machines/assistant.ts), closed world: a prompt replaces a pending repayment or
-\* income question only on a positive signal. It has a number, names a category (one of the user's own or a
-\* word in the category keyword map, never an account name or the catch-all Other), hedges nothing, is not
-\* payment wording or a yes or no, and names nobody with an open debt. The turn then runs with no prior
-\* context. Every other reply answers, whatever its wording, so an amount reply, an amount with a detail
-\* and a hedged reply never replace. A wrong answer only asks again and writes nothing.
+\* pendingOutcome (src/lib/machines/assistant.ts): with a question pending, only an exact cancel phrase drops
+\* it. Every other reply answers, whatever its wording, so an amount reply, an amount with a detail, a hedged
+\* reply and a request that looks new never drop it. "replace" exists only in the Doubt variant, the older
+\* rule that read free text, which then ran the turn with no prior context.
 Outcome(i, p) ==
-    IF ~Legacy /\ (i = "plain" \/ (Doubt /\ i \in {"amountDetail", "hedgedAnswer"}))
-       /\ p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
+    IF p = "none" THEN "answer"
+    ELSE IF ~Legacy /\ i = "cancel" THEN "cancel"
+    ELSE IF Doubt /\ i \in {"plain", "amountDetail", "hedgedAnswer"} /\ p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
     THEN "replace" ELSE "answer"
 Effective(i, p) == IF Outcome(i, p) = "replace" THEN "none" ELSE p
 
 \* What the code decides for (intent, follow-up the turn answers). Mirrors the override chain at
-\* assistant.ts:790-827 and the per-tool branches below it.
+\* assistant.ts:775-812 and the per-tool branches below it.
 Decision(i, p) ==
     CASE i = "plain" ->
-            IF p \in {"repayment_amount", "repayment_payer"}
-            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:808-811 re-asks
-            ELSE IF p = "ordinary_income"
-            THEN [out |-> "ask", next |-> p, trap |-> TRUE]           \* assistant.ts:790-801 re-asks
-            ELSE [out |-> "wplain", next |-> "none", trap |-> FALSE]
-      [] i = "uncertainPay"   -> [out |-> "ask",    next |-> "none",             trap |-> FALSE]  \* :802-803, :1123
-      [] i = "debtPay"        -> [out |-> "wrepay", next |-> "none",             trap |-> FALSE]  \* :823-824, :962
-      [] i = "debtPayNoAmount"-> [out |-> "ask",    next |-> "repayment_amount", trap |-> FALSE]  \* :808-809
-      [] i = "noMatchPay"     -> [out |-> "ask",    next |-> "ordinary_income",  trap |-> FALSE]  \* :812-813
+            IF p \in {"repayment_amount", "repayment_payer", "ordinary_income"}
+            THEN [out |-> "ask", next |-> p]                          \* :775-796 re-asks the question and writes nothing
+            ELSE [out |-> "wplain", next |-> "none"]
+      [] i = "cancel" ->
+            IF p = "none" THEN [out |-> "ask", next |-> "clarification"]   \* nothing pending: an ordinary prompt
+            ELSE IF Legacy THEN [out |-> "ask", next |-> p]                \* before the fix nothing could drop a question
+            ELSE [out |-> "cancelled", next |-> "none"]                    \* no model call, nothing written, question cleared
+      [] i = "uncertainPay"   -> [out |-> "ask",    next |-> "none"]                \* :787-788, :1108
+      [] i = "debtPay"        -> [out |-> "wrepay", next |-> "none"]                \* :807-808, :947
+      [] i = "debtPayNoAmount"-> [out |-> "ask",    next |-> "repayment_amount"]    \* :793-794
+      [] i = "noMatchPay"     -> [out |-> "ask",    next |-> "ordinary_income"]     \* :797-798
       [] i = "amount"         ->
             IF p = "repayment_amount"
-            THEN [out |-> "wrepay", next |-> "none", trap |-> FALSE]   \* :781 (bareAmountFromPrompt)
-            ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
+            THEN [out |-> "wrepay", next |-> "none"]                   \* :766 (bareAmountFromPrompt)
+            ELSE [out |-> "ask", next |-> "clarification"]
       [] i = "amountDetail"   ->
             IF p = "repayment_amount"
-            THEN [out |-> "ask", next |-> p, trap |-> FALSE]           \* strict amount reading fails: asks again, writes nothing
+            THEN [out |-> "ask", next |-> p]                           \* strict amount reading fails: asks again, writes nothing
             ELSE IF p = "ordinary_income"
-            THEN [out |-> "ask", next |-> p, trap |-> FALSE]           \* re-asks the income question
-            ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
+            THEN [out |-> "ask", next |-> p]                           \* re-asks the income question
+            ELSE [out |-> "ask", next |-> "clarification"]
       [] i = "hedgedAnswer"   ->
             IF p \in {"repayment_amount", "repayment_payer"}
-            THEN [out |-> "ask", next |-> "none", trap |-> FALSE]      \* uncertainRepayment: asks, writes nothing, clears the question
+            THEN [out |-> "ask", next |-> "none"]                      \* uncertainRepayment: asks, writes nothing, clears the question
             ELSE IF p = "ordinary_income"
-            THEN [out |-> "ask", next |-> p, trap |-> FALSE]
-            ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
+            THEN [out |-> "ask", next |-> p]
+            ELSE [out |-> "ask", next |-> "clarification"]
       [] i = "yes"            ->
             IF p = "ordinary_income"
-            THEN [out |-> "word", next |-> "none", trap |-> FALSE]     \* :790-801
-            ELSE [out |-> "ask", next |-> "clarification", trap |-> FALSE]
+            THEN [out |-> "word", next |-> "none"]                     \* :775-786
+            ELSE [out |-> "ask", next |-> "clarification"]
 
 \* store.ts deleteTransaction(undoOnly): a debt-linked row never deletes; otherwise only
 \* inside the ten-second window.
@@ -113,7 +122,7 @@ Init ==
     /\ intent = "plain" /\ pendAtStart = "none" /\ written = 0 /\ ledger = 0
     /\ undo = "none" /\ txKind = "none" /\ reqs = 0
     /\ wroteNoConsent = FALSE /\ lostFollowup = FALSE /\ trapped = FALSE
-    /\ badUndo = FALSE /\ ordNoQuestion = FALSE /\ wroteUncertain = FALSE /\ answerReplaced = FALSE
+    /\ badUndo = FALSE /\ ordNoQuestion = FALSE /\ wroteUncertain = FALSE /\ answerReplaced = FALSE /\ wroteNonAnswer = FALSE
 
 \* The route: assertAssistantAccess, then the turn reads the stored follow-up and waits for the model.
 Send(i, fresh) ==
@@ -126,9 +135,9 @@ Send(i, fresh) ==
             /\ pend' = "none" /\ last' = "orphan"
        ELSE /\ pendAtStart' = pend /\ pend' = pend /\ last' = last
     /\ UNCHANGED <<access, conv, ledger, undo, txKind, wroteNoConsent, lostFollowup, trapped,
-                   badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+                   badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
-YouSend(i) == i \in Intents /\ phase = "idle" /\ Send(i, TRUE)
+YouSend(i) == i \in Intents /\ phase = "idle" /\ (i = "cancel" => pend # "none") /\ Send(i, TRUE)
 YouResend == phase = "errored" /\ Send(intent, FALSE)
 
 \* The provider answered. The user message, the write (if any) and the reply commit together.
@@ -138,7 +147,7 @@ ProviderOk ==
     /\ IF ~Legacy /\ ~CommitOk
        THEN /\ phase' = "errored"
             /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs,
-                           wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+                           wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
        ELSE LET d == Decision(intent, Effective(intent, pendAtStart))
                 writes == d.out \in {"wplain", "wrepay", "word"}
                 replyStored == conv = "live"
@@ -153,27 +162,33 @@ ProviderOk ==
                /\ wroteNoConsent' = (wroteNoConsent \/ (writes /\ access # "on"))
                /\ ordNoQuestion'  = (ordNoQuestion \/ (d.out = "word" /\ pendAtStart # "ordinary_income"))
                /\ wroteUncertain' = (wroteUncertain \/ (writes /\ intent = "uncertainPay"))
-               /\ trapped' = (trapped \/ d.trap)
-               /\ answerReplaced' = (answerReplaced \/ (intent \in {"amount", "amountDetail", "hedgedAnswer"} /\ Outcome(intent, pendAtStart) = "replace"))
+               /\ trapped' = (trapped \/ (intent = "cancel" /\ pendAtStart # "none" /\ d.next # "none"))
+               /\ answerReplaced' = (answerReplaced \/ (intent # "cancel" /\ Outcome(intent, pendAtStart) # "answer"))
+               /\ wroteNonAnswer' = (wroteNonAnswer \/ (writes /\ pendAtStart \in {"repayment_amount", "repayment_payer", "ordinary_income"}
+                                                       /\ intent \in {"plain", "amountDetail", "hedgedAnswer", "cancel"}))
                /\ IF replyStored
                   THEN /\ phase' = "idle" /\ last' = (IF writes THEN "wrote" ELSE "reply") /\ pend' = d.next
                   ELSE /\ phase' = "errored" /\ last' = "orphan" /\ pend' = "none"   \* Legacy: the reply insert throws, 404
     /\ UNCHANGED <<access, conv, intent, pendAtStart, reqs, lostFollowup, badUndo>>
 
+\* A cancel at a pending question makes no model call (runAssistantPrompt returns before askProvider), so the
+\* provider cannot fail it. Its commit can still be refused, which ProviderOk models.
+CancelTurn == ~Legacy /\ intent = "cancel" /\ pendAtStart # "none"
+
 ProviderFail ==
-    /\ Fails /\ phase = "saved"
+    /\ Fails /\ phase = "saved" /\ ~CancelTurn
     /\ phase' = "errored"
     /\ lostFollowup' = (lostFollowup \/ (IF Legacy THEN pendAtStart # "none" ELSE conv = "live" /\ pend # pendAtStart))
     /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs,
-                   wroteNoConsent, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+                   wroteNoConsent, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
-GiveUp == phase = "errored" /\ phase' = "idle" /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs, wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+GiveUp == phase = "errored" /\ phase' = "idle" /\ UNCHANGED <<access, conv, pend, last, intent, pendAtStart, written, ledger, undo, txKind, reqs, wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
 NewChat ==
     /\ conv = "gone" /\ phase # "saved"
     /\ conv' = "live" /\ pend' = "none" /\ last' = "reply"
     /\ UNCHANGED <<access, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs, wroteNoConsent,
-                   lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+                   lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
 \* Undo is attempted whenever a transaction exists; the code decides.
 YouUndo ==
@@ -183,22 +198,22 @@ YouUndo ==
             /\ badUndo' = (badUndo \/ undo # "open" \/ txKind = "repayment")   \* deleted outside the window, or a repayment
        ELSE /\ badUndo' = badUndo /\ UNCHANGED <<undo, ledger, written>>   \* the store throws
     /\ UNCHANGED <<access, conv, pend, last, phase, intent, pendAtStart, txKind, reqs, wroteNoConsent,
-                   lostFollowup, trapped, ordNoQuestion, wroteUncertain, answerReplaced>>
+                   lostFollowup, trapped, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
 ClockExpires ==
     /\ Clock /\ undo = "open" /\ undo' = "expired"
     /\ UNCHANGED <<access, conv, pend, last, phase, intent, pendAtStart, written, ledger, txKind, reqs,
-                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
 SetAccess(a) ==
     /\ Env /\ access # a /\ access' = a
     /\ UNCHANGED <<conv, pend, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs,
-                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
 DeleteChat ==
     /\ Env /\ conv = "live" /\ conv' = "gone" /\ pend' = "none"
     /\ UNCHANGED <<access, last, phase, intent, pendAtStart, written, ledger, undo, txKind, reqs,
-                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced>>
+                   wroteNoConsent, lostFollowup, trapped, badUndo, ordNoQuestion, wroteUncertain, answerReplaced, wroteNonAnswer>>
 
 \* A finished run: nothing more to send. Keeps TLC from reporting a stuck state as a deadlock.
 Done == reqs = MaxReqs /\ phase # "saved" /\ UNCHANGED vars
@@ -220,8 +235,9 @@ ReplyConsumesFollowup == last = "wrote" => pend = "none"   \* a saving reply lea
 NoDuplicateIntentWrite == written <= 1       \* one user intent, at most one transaction
 WriteNeedsConsent      == ~wroteNoConsent    \* no transaction after consent was withdrawn
 FollowupSurvivesError  == ~lostFollowup      \* a failed provider call keeps the pending question
-PlainPromptNotTrapped  == ~trapped           \* an unrelated complete prompt is not swallowed by a pending question
-AnswerNotReplaced      == ~answerReplaced    \* a reply without the positive signal (amount, detail, hedge) never drops the pending question
+PlainPromptNotTrapped  == ~trapped           \* an explicit cancel always clears the pending question. An unrelated prompt re-asks (a deliberate limit, not checked)
+AnswerNotReplaced      == ~answerReplaced    \* only an explicit cancel drops the pending question, whatever any other reply says
+NonAnswerNeverWrites   == ~wroteNonAnswer    \* at a pending repayment or income question, a reply that is not its answer (or a confirmed payment) writes nothing
 TypeOK == /\ access \in {"on", "off", "stale"} /\ conv \in {"live", "gone"} /\ pend \in Kinds
           /\ last \in {"reply", "wrote", "orphan"} /\ phase \in {"idle", "saved", "errored"}
           /\ undo \in {"none", "open", "expired", "used"} /\ ledger \in 0..MaxReqs

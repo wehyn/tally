@@ -8,7 +8,7 @@ Each subsystem has an explicit pure machine in `src/lib/machines/`, a TLA+ model
 | Shared goals | `machines/goal.ts` | [goals.md](goals.md) | `verify-goals` | 2 rule breaks, fixed (plus 1 found while fixing) |
 | Debts | `machines/debt.ts` | [debts.md](debts.md) | `verify-debts` | 1 inconsistency, fixed |
 | Bills | `machines/bill.ts` | [bills.md](bills.md) | `verify-bills` | 1 rule break, fixed (product call: refuse the edit) |
-| Assistant | `machines/assistant.ts` | [assistant.md](assistant.md) | `verify-assistant` | 4 rule breaks, fixed |
+| Assistant | `machines/assistant.ts` | [assistant.md](assistant.md) | `verify-assistant` | 4 rule breaks, fixed (product call: a pending question is dropped only by an explicit cancel) |
 | Ledger | none | [ledger.md](ledger.md) | `verify-ledger` | none, rule already enforced in code |
 
 Open product calls: a sole admin deleting their account while every other user is disabled; disabling a user does not end their sessions or Shortcut credential; bills posted before `last_posted_due_date` existed are not protected until their next post.

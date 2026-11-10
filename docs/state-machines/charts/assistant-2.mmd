@@ -1,5 +1,5 @@
 ---
-title: "Follow-up question, then answer"
+title: "Follow-up question, then answer or cancel"
 ---
 stateDiagram-v2
   state "Legend" as legend {
@@ -13,35 +13,40 @@ stateDiagram-v2
   class lg2 yellow
   class lg3 purple
   s0: Ready
-  s1: Waiting for the model: a number
-  s2: Waiting for the model: payer, no amount
+  s1: Waiting for the model: payer, no amount
+  s2: Waiting for the model: a number
   s3: Waiting for the model: complete transaction
-  s4: Asked a question
-  s5: Asked: how much was repaid?
+  s4: Asked: how much was repaid?
+  s5: Asked a question
   s6: Saved, Undo open
-  s7: Saved, then undone
-  s8: Saved, no Undo (repayment)
+  s7: Dropping the question
+  s8: Saved, then undone
+  s9: Saved, no Undo (repayment)
   [*] --> s0
-  s0 --> s1: you send just a number
-  s0 --> s2: you say who paid, no amount
+  s0 --> s1: you say who paid, no amount
+  s0 --> s2: you send just a number
   s0 --> s3: you send a complete transaction
   s1 --> s4: the model answers and Tally asks, saving nothing
   s2 --> s5: the model answers and Tally asks, saving nothing
   s3 --> s6: the model answers and Tally saves it
-  s4 --> s1: you send just a number
-  s4 --> s2: you say who paid, no amount
+  s4 --> s1: you say who paid, no amount
+  s4 --> s2: you send just a number
   s4 --> s3: you send a complete transaction
-  s5 --> s1: you send just a number
-  s5 --> s2: you say who paid, no amount
+  s4 --> s7: you say cancel
+  s5 --> s1: you say who paid, no amount
+  s5 --> s2: you send just a number
   s5 --> s3: you send a complete transaction
-  s6 --> s7: you press Undo
-  s6 --> s1: you send just a number
-  s6 --> s2: you say who paid, no amount
+  s5 --> s7: you say cancel
+  s6 --> s1: you say who paid, no amount
+  s6 --> s2: you send just a number
   s6 --> s3: you send a complete transaction
-  s7 --> s1: you send just a number
-  s7 --> s2: you say who paid, no amount
-  s7 --> s3: you send a complete transaction
-  s1 --> s8: the model answers and Tally saves it
+  s6 --> s8: you press Undo
+  s2 --> s9: the model answers and Tally saves it
+  s3 --> s4: the model answers and Tally asks, saving nothing
+  s7 --> s0: Tally drops the question, saving nothing
+  s8 --> s1: you say who paid, no amount
+  s8 --> s2: you send just a number
+  s8 --> s3: you send a complete transaction
   class s0 teal
   class s1 blue
   class s2 blue
@@ -49,5 +54,6 @@ stateDiagram-v2
   class s4 yellow
   class s5 yellow
   class s6 purple
-  class s7 purple
+  class s7 blue
   class s8 purple
+  class s9 purple
