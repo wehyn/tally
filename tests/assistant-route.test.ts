@@ -3095,6 +3095,117 @@ describe("assistant turn commit", () => {
       expect(store.listTransactions(user.id)).toHaveLength(0);
     });
 
+    // A refusal guard decides before any write of its turn. A refusal said anywhere in the open run, a quiet turn
+    // included, means the turn that would write asks again and records nothing, and never writes and then denies it.
+    const refusedAgain = "You said earlier that this payment didn't happen, so I haven't recorded anything.";
+    const snapshot = () => ({
+      transactions: store.listTransactions(user.id).map((item) => `${item.kind}:${item.amountMinor}:${item.description}`),
+      bills: store.listBills(user.id).map((item) => `${item.name}:${item.amountMinor}`),
+      debts: store.listDebts(user.id).map((item) => `${item.counterparty}:${item.amountMinor}:${item.status}`),
+      balances: store.listAccounts(user.id).map((item) => item.balanceMinor),
+    });
+    const deniesAnyWrite = /didn't record anything|nothing was recorded|won't record the money/i;
+
+    it("asks again and records nothing when yes answers the income question after a negation said in a quiet turn", async () => {
+      const conversationId = await askZedPaidMe();
+      await send("Actually, Zed did not pay me. List my debts.", conversationId, vi.fn());
+      expect(lastStored(conversationId)).toMatchObject({ followup: "ordinary_income", readOnly: true });
+      const before = snapshot();
+
+      const result = await send("yes", conversationId, vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income" })));
+
+      expect(result.transaction).toBeNull();
+      expect(result.answer).toBe(`${refusedAgain} Say cancel to drop this question.`);
+      expect(snapshot()).toEqual(before);
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+      expect(store.listAccounts(user.id)[0].balanceMinor).toBe(0);
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "ordinary_income", readOnly: true });
+      const cancelled = await send("cancel", conversationId, vi.fn());
+      expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+    });
+
+    it("asks again and saves no bill or expense when a bill follows a negation said in a quiet turn", async () => {
+      const { debt, conversationId } = await askAnaPaidMe();
+      await send("Actually, Ana did not pay me. List my debts.", conversationId, vi.fn());
+      const before = snapshot();
+
+      const result = await send(billPrompt, conversationId, vi.fn(async () => billSpec()));
+
+      expect(result.bill).toBeNull();
+      expect(result.answer).toBe(`${refusedAgain} Say cancel to drop this question.`);
+      expect(snapshot()).toEqual(before);
+      expect(store.listBills(user.id)).toHaveLength(0);
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+      expect(store.listDebts(user.id).find((item) => item.id === debt.id)?.amountMinor).toBe(100_000);
+      expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: "repayment_amount", readOnly: true });
+    });
+
+    // A reply that says nothing was recorded never coexists with a write committed in the same turn.
+    describe("a denying reply never coexists with a committed write", () => {
+      type Setup = () => Promise<{ conversationId: string; prompt: string; provider: ReturnType<typeof vi.fn> }>;
+      const quietNegation = async (conversationId: string) => { await send("Actually, Ana did not pay me. List my debts.", conversationId, vi.fn()); };
+      const cases: [string, Setup][] = [
+        ["yes to ordinary income after a quiet negation", async () => {
+          const conversationId = await askZedPaidMe();
+          await send("Actually, Zed did not pay me. List my debts.", conversationId, vi.fn());
+          return { conversationId, prompt: "yes", provider: vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500" })) };
+        }],
+        ["a bill after a quiet negation", async () => {
+          const { conversationId } = await askAnaPaidMe();
+          await quietNegation(conversationId);
+          return { conversationId, prompt: billPrompt, provider: vi.fn(async () => billSpec()) };
+        }],
+        ["a bill update after a quiet negation", async () => {
+          const { conversationId } = await askAnaPaidMe();
+          seedNetflix();
+          await quietNegation(conversationId);
+          return { conversationId, prompt: "Update the Netflix bill amount to ₱599.", provider: vi.fn(async () => providerTool("update_bill", { name: "Netflix", amount: "599" })) };
+        }],
+        ["a bill in a message that carries the negation itself", async () => {
+          const { conversationId } = await askAnaPaidMe();
+          return { conversationId, prompt: `Ana has not paid me. ${billPrompt}`, provider: vi.fn(async () => billSpec()) };
+        }],
+        ["a repayment amount after a quiet negation", async () => {
+          const { conversationId } = await askAnaPaidMe();
+          await quietNegation(conversationId);
+          return { conversationId, prompt: "500", provider: repaymentCall({ amount: "500" }) };
+        }],
+        ["a new debt after a quiet negation", async () => {
+          const { conversationId } = await askAnaPaidMe();
+          await quietNegation(conversationId);
+          return { conversationId, prompt: "Bob owes me 300", provider: vi.fn(async () => providerTool("log_debt", { direction: "owed_to_you", counterparty: "Bob", amount: "300" })) };
+        }],
+        ["a no to ordinary income with a bill in the same message", async () => {
+          const conversationId = await askZedPaidMe();
+          return { conversationId, prompt: `No. ${billPrompt}`, provider: vi.fn(async () => billSpec()) };
+        }],
+        ["a no to ordinary income after an earlier yes that was held for an account", async () => {
+          const conversationId = await askZedPaidMe();
+          const held = await send("yes", conversationId, vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", account: "Nowhere" })));
+          expect(held.transaction).toBeNull();
+          expect(lastStored(conversationId).followup).toBe("account_or_date");
+          return { conversationId, prompt: "no", provider: vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500" })) };
+        }],
+      ];
+      const seedNetflix = () => store.createBill(user.id, { name: "Netflix", amountMinor: 54_900, frequency: "monthly", nextDueDate: "2026-11-09", endDate: "2026-12-15", accountId: store.listAccounts(user.id)[0].id, categoryId: store.listCategories(user.id).find((category) => category.type === "expense")!.id });
+      it("controls the bill update case: without a negation the same update changes the bill", async () => {
+        const { conversationId } = await askAnaPaidMe();
+        seedNetflix();
+        const result = await send("Update the Netflix bill amount to ₱599.", conversationId, vi.fn(async () => providerTool("update_bill", { name: "Netflix", amount: "599" })));
+        expect(result.bill).toMatchObject({ name: "Netflix", amountMinor: 59_900 });
+      });
+      it.each(cases)("%s", async (_name, setup) => {
+        const { conversationId, prompt, provider } = await setup();
+        const before = snapshot();
+
+        const result = await send(prompt, conversationId, provider);
+
+        const wrote = JSON.stringify(snapshot()) !== JSON.stringify(before);
+        if (wrote) expect(result.answer).not.toMatch(deniesAnyWrite);
+        if (deniesAnyWrite.test(result.answer)) expect(wrote).toBe(false);
+      });
+    });
+
     it("still records the repayment after a quiet turn that says nothing against it", async () => {
       const { debt, conversationId } = await askAnaPaidMe();
       await send("List my debts", conversationId, vi.fn());

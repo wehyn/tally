@@ -109,6 +109,48 @@ export function userMessagesFor<T extends RunMessage>(use: UserTextUse, run: rea
   return use === "hint" ? ownUserMessages(run) : guardUserMessages(run);
 }
 
+// Refusal wording ("Ana did not pay me", "maybe he paid") blocks a write nobody confirmed. The block is one decision
+// taken before the turn writes anything, never a reply that replaces one after it: a turn either writes nothing and
+// says so, or writes and answers with what it wrote. The decision reads what the call is about to do, after every
+// rewrite of it, and whether the refusal was said in earlier turns of the open run (quiet turns included) or in the
+// message being answered.
+export type TurnCall = "write" | "bill" | "read" | "ask";
+
+// "bill" saves or updates a bill, "write" is any other call that can store money, "read" only reads the ledger,
+// and "ask" is every call that stores nothing (a question, or a call the code does not know).
+export function turnCallOf(name: string): TurnCall {
+  if (name === "create_bill" || name === "update_bill") return "bill";
+  if (["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(name)) return "write";
+  return name === "finance_question" ? "read" : "ask";
+}
+
+// "proceed": no refusal applies, run the call. "askAgain": the call would write after a refusal said in an earlier
+// turn; write nothing, say so, and leave the pending question exactly as it was, which cancel can still drop.
+// "refuse": write nothing, say nothing was recorded, and end the question. "endQuestion": the refusal is in the
+// message being answered and a bill in the same message is its own request, so the bill call runs, the refusal ends
+// the pending question, and the reply says what was saved, or that nothing was when the bill still lacked details.
+export type RefusalOutcome = "proceed" | "askAgain" | "refuse" | "endQuestion";
+
+export function refusalOutcome(refusal: { earlier: boolean; now: boolean }, pending: FollowupKind | null, call: TurnCall): RefusalOutcome {
+  if (!refusal.earlier && !refusal.now) return "proceed";
+  if (call === "read") return pending ? "proceed" : "refuse";
+  if (call === "ask") return "refuse";
+  if (refusal.earlier) return pending ? "askAgain" : "refuse";
+  return call === "bill" ? "endQuestion" : "refuse";
+}
+
+export const REFUSED_REPLY = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much.";
+export const DECLINED_REPLY = "Okay, I won't record the money.";
+export const REFUSED_AGAIN_REPLY = "You said earlier that this payment didn't happen, so I haven't recorded anything. Say cancel to drop this question.";
+
+// The reply of a turn that ends its pending question because the user refused or declined it. A reply that says
+// nothing was recorded is only for a turn that wrote nothing. After a write it keeps the receipt and says the
+// question was dropped.
+export function endedQuestionReply(reason: "refused" | "declined", answer: string, wrote: boolean): string {
+  if (!wrote) return reason === "refused" ? REFUSED_REPLY : DECLINED_REPLY;
+  return `${answer}\n${reason === "refused" ? "I also dropped the earlier question about that payment." : "I also dropped the earlier question about recording the money."}`;
+}
+
 // What the open question run already saved. A debt is in Debts and a bill is in Bills, so a reply that drops the
 // question must not say nothing was recorded when either exists.
 export type RunSaved = { debt: boolean; bill: boolean };

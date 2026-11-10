@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { cancelHint, cancelReply, expiredReply, followupAfterTurn, pendingOutcome, runExpired, runSaved, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -761,8 +761,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const payerSelection = lastFollowup === "repayment_payer";
     const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
     const repaymentFollowup = lastFollowup === "repayment_payer" || lastFollowup === "repayment_amount";
-    const uncertainRepayment = !repaymentReportQuestion && (guardMessageText.some((message) => isUnconfirmedIncomingDebtPayment(message) || isUnconfirmedOutgoingDebtPayment(message))
-      || repaymentFollowup && isUncertainStatement(input.prompt));
+    const unconfirmedPayment = (text: string) => isUnconfirmedIncomingDebtPayment(text) || isUnconfirmedOutgoingDebtPayment(text);
+    // A refusal said in an earlier turn of the run (a quiet turn too) and one in this message are told apart, because
+    // refusalOutcome decides what the turn may write from them before anything is stored.
+    const refusedEarlier = !repaymentReportQuestion && userMessagesFor("guard", run).some((message) => unconfirmedPayment(message.content));
+    const refusedNow = !repaymentReportQuestion && (unconfirmedPayment(input.prompt) || repaymentFollowup && isUncertainStatement(input.prompt));
+    const uncertainRepayment = refusedEarlier || refusedNow;
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const outgoingRepaymentIntent = !repaymentReportQuestion && hasOutgoingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const repaymentIntent = incomingRepaymentIntent || outgoingRepaymentIntent;
@@ -792,14 +796,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       if (repaymentReportQuestion) {
         call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
       } else if (ordinaryIncomeFlow) {
-        if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
+        if (ordinaryIncomeDeclined) {
+          call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
+        } else if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
           const providerCounterparty = typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty.trim() : "";
           const description = typeof providerCall.args.description === "string" && providerCall.args.description.trim()
             ? providerCall.args.description.trim()
             : providerCounterparty ? `${providerCounterparty} paid me` : "";
           call = { name: "log_transaction", args: { ...providerCall.args, kind: "income", category: "Other income", description } };
-        } else if (ordinaryIncomeDeclined) {
-          call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
         } else if (!ordinaryIncomeAccepted) {
           call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } }; clarificationKind = "ordinary_income";
         }
@@ -849,8 +853,15 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && providerCall.name !== "finance_question");
       if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
+      // The refusal decision is taken here, on the call as it will run, before any branch below can write.
+      const refusal = refusalOutcome({ earlier: refusedEarlier, now: refusedNow }, lastFollowup, turnCallOf(call.name));
       let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
-      if (call.name === "create_bill" || call.name === "update_bill") {
+      if (refusal === "askAgain") {
+        // The question stays pending and the turn is quiet, so this message is not read as an answer to it.
+        answer = REFUSED_AGAIN_REPLY; answeredReadOnly = true;
+      }
+      else if (refusal === "refuse") { answer = endedQuestionReply("refused", "", false); followup = null; }
+      else if (call.name === "create_bill" || call.name === "update_bill") {
         const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, accounts, categories, lastFollowup);
         answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup;
       }
@@ -1126,14 +1137,15 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         }
       } else answer = "I couldn't complete that request. Please rephrase it.";
 
-      // A finance answer writes nothing, so the uncertainty guard has nothing to protect and must not replace it
-      // while a question is pending.
-      const guarded = uncertainRepayment && !(answeredReadOnly && lastFollowup !== null);
-      if (guarded) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
-      else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; followup = null; }
+      // Nothing below can add a write. A reply that says nothing was recorded is only made for a turn that wrote
+      // nothing; after a write the reply keeps its receipt and says the question was dropped.
+      const wrote = transaction !== null || debt !== null || bill !== null;
+      const refusedTurn = refusal === "refuse" || refusal === "endQuestion";
+      if (refusal === "endQuestion") { answer = endedQuestionReply("refused", answer, wrote); followup = null; }
+      else if (ordinaryIncomeDeclined && refusal === "proceed") { answer = endedQuestionReply("declined", answer, wrote); followup = null; }
       const hint = cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
-      const stored = followupAfterTurn(lastFollowup, followup, guarded ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
+      const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
       store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined), undefined, bill?.id, answeredReadOnly && stored !== null);
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_OPEN_RUN_MESSAGES, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, expiredReply, followupAfterTurn, guardUserMessages, isQuietReply, ownUserMessages, pendingOutcome, runExpired, runSaved, turnMayCommit, undoUntilFor, userMessagesFor, type RunMessage } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, isQuietReply, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -302,5 +302,66 @@ describe("what a cancel says about the dropped question", () => {
     expect(runSaved([user, ask])).toEqual(nothing);
     expect(runSaved([user, done, user, ask])).toEqual(nothing);
     expect(runSaved([])).toEqual(nothing);
+  });
+});
+
+describe("the refusal decision a turn takes before it writes", () => {
+  it.each([
+    ["create_bill", "bill"], ["update_bill", "bill"],
+    ["log_debt", "write"], ["log_transaction", "write"], ["record_debt_payment", "write"], ["record_debt_repayment", "write"],
+    ["finance_question", "read"], ["ask_clarification", "ask"], ["something_new", "ask"], ["", "ask"],
+  ] as const)("reads the call %j as %s", (name, expected) => {
+    expect(turnCallOf(name)).toBe(expected);
+  });
+
+  const calls: TurnCall[] = ["write", "bill", "read", "ask"];
+  // earlier: said in an earlier turn of the run, quiet turns included. now: said in the message being answered.
+  const table: [string, { earlier: boolean; now: boolean }, FollowupKindOrNull, Record<TurnCall, RefusalOutcome>][] = [
+    ["no refusal", { earlier: false, now: false }, "repayment_amount", { write: "proceed", bill: "proceed", read: "proceed", ask: "proceed" }],
+    ["no refusal, nothing pending", { earlier: false, now: false }, null, { write: "proceed", bill: "proceed", read: "proceed", ask: "proceed" }],
+    ["refusal in an earlier turn", { earlier: true, now: false }, "repayment_amount", { write: "askAgain", bill: "askAgain", read: "proceed", ask: "refuse" }],
+    ["refusal in an earlier turn on an income question", { earlier: true, now: false }, "ordinary_income", { write: "askAgain", bill: "askAgain", read: "proceed", ask: "refuse" }],
+    ["refusal in this message", { earlier: false, now: true }, "repayment_amount", { write: "refuse", bill: "endQuestion", read: "proceed", ask: "refuse" }],
+    ["refusal in this message, nothing pending", { earlier: false, now: true }, null, { write: "refuse", bill: "endQuestion", read: "refuse", ask: "refuse" }],
+    ["refusal in both", { earlier: true, now: true }, "repayment_amount", { write: "askAgain", bill: "askAgain", read: "proceed", ask: "refuse" }],
+    ["a refusal with nothing pending cannot be an earlier one, but never writes if it is", { earlier: true, now: false }, null, { write: "refuse", bill: "refuse", read: "refuse", ask: "refuse" }],
+  ];
+  type FollowupKindOrNull = (typeof FOLLOWUP_KINDS)[number] | null;
+  it.each(table)("%s", (_name, refusal, pending, expected) => {
+    for (const call of calls) expect(refusalOutcome(refusal, pending, call)).toBe(expected[call]);
+  });
+
+  it("lets a call write only when no refusal applies, or when a bill shares the message that carries it", () => {
+    for (const earlier of [false, true]) for (const now of [false, true]) for (const pending of [null, ...FOLLOWUP_KINDS]) for (const call of calls) {
+      const outcome = refusalOutcome({ earlier, now }, pending, call);
+      const mayWrite = outcome === "proceed" || outcome === "endQuestion";
+      if (call !== "write" && call !== "bill") continue;
+      if (earlier) expect(mayWrite).toBe(false);
+      if (!earlier && now) expect(mayWrite).toBe(call === "bill");
+      if (!earlier && !now) expect(mayWrite).toBe(true);
+    }
+  });
+
+  it("keeps the pending question only when it asks again", () => {
+    for (const pending of FOLLOWUP_KINDS) {
+      expect(refusalOutcome({ earlier: true, now: false }, pending, "write")).toBe("askAgain");
+      expect(followupAfterTurn(pending, null, "read")).toBe(pending);
+    }
+  });
+
+  it("says nothing was recorded only for a turn that wrote nothing", () => {
+    const receipt = "Saved ₱549.00 for Netflix.";
+    expect(endedQuestionReply("refused", receipt, false)).toBe(REFUSED_REPLY);
+    expect(endedQuestionReply("declined", receipt, false)).toBe(DECLINED_REPLY);
+    for (const reason of ["refused", "declined"] as const) {
+      const kept = endedQuestionReply(reason, receipt, true);
+      expect(kept.startsWith(`${receipt}\n`)).toBe(true);
+      expect(kept).not.toMatch(/didn't record anything|nothing was recorded|won't record the money/i);
+    }
+  });
+
+  it("asks again with the way out and a statement that is true of a turn that wrote nothing", () => {
+    expect(REFUSED_AGAIN_REPLY).toContain("cancel");
+    expect(REFUSED_AGAIN_REPLY).toContain("haven't recorded anything");
   });
 });
