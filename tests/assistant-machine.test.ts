@@ -88,25 +88,39 @@ describe("the open run that reaches the model", () => {
 });
 
 describe("the pending question a turn stores", () => {
-  it("keeps the pending question for a turn that only reads or saved a bill and asked nothing", () => {
-    for (const pending of FOLLOWUP_KINDS) expect(followupAfterTurn(pending, null, true)).toBe(pending);
+  const billKinds = FOLLOWUP_KINDS.filter((kind) => kind.startsWith("bill_"));
+  const otherKinds = FOLLOWUP_KINDS.filter((kind) => !kind.startsWith("bill_"));
+
+  it("keeps the pending question for a turn that only reads", () => {
+    for (const pending of FOLLOWUP_KINDS) expect(followupAfterTurn(pending, null, "read")).toBe(pending);
+  });
+
+  it("keeps a pending question that is not about a bill when a bill is saved without a question", () => {
+    for (const pending of otherKinds) expect(followupAfterTurn(pending, null, "billSaved")).toBe(pending);
+  });
+
+  it("consumes a pending bill question when a bill is saved without a question, because that save answered it", () => {
+    for (const pending of billKinds) expect(followupAfterTurn(pending, null, "billSaved")).toBeNull();
   });
 
   it("ends the pending question for any other turn that asked nothing, such as a completed write", () => {
-    for (const pending of FOLLOWUP_KINDS) expect(followupAfterTurn(pending, null, false)).toBeNull();
+    for (const pending of FOLLOWUP_KINDS) expect(followupAfterTurn(pending, null, "other")).toBeNull();
   });
 
-  it("lets a turn that asks its own question replace the pending one, whether or not it read anything", () => {
+  it("lets a turn that asks its own question replace the pending one, whatever else the turn did", () => {
     for (const pending of FOLLOWUP_KINDS) {
-      expect(followupAfterTurn(pending, "bill_name", true)).toBe("bill_name");
-      expect(followupAfterTurn(pending, "clarification", false)).toBe("clarification");
+      for (const turn of ["read", "billSaved", "other"] as const) {
+        expect(followupAfterTurn(pending, "bill_name", turn)).toBe("bill_name");
+        expect(followupAfterTurn(pending, "clarification", turn)).toBe("clarification");
+      }
     }
   });
 
   it("stores no question when none was pending and the turn asked nothing", () => {
-    expect(followupAfterTurn(null, null, true)).toBeNull();
-    expect(followupAfterTurn(null, null, false)).toBeNull();
-    expect(followupAfterTurn(null, "repayment_amount", false)).toBe("repayment_amount");
+    for (const turn of ["read", "billSaved", "other"] as const) {
+      expect(followupAfterTurn(null, null, turn)).toBeNull();
+      expect(followupAfterTurn(null, "repayment_amount", turn)).toBe("repayment_amount");
+    }
   });
 });
 

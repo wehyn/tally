@@ -711,7 +711,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     if (debtQuestion(input.prompt, requestedMetrics)) {
       const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
       // Reading the debt list is not an answer to a pending question, so the question and the debt it offered stay.
-      const stored = followupAfterTurn(pending, null, true);
+      const stored = followupAfterTurn(pending, null, "read");
       return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
         store.addMessage(user.id, conversationId, "assistant", answer, undefined, stored, stored ? recordedDebtId : undefined);
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
@@ -1119,14 +1119,13 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       } else answer = "I couldn't complete that request. Please rephrase it.";
 
       // A finance answer writes nothing, so the uncertainty guard has nothing to protect and must not replace it
-      // while a question is pending. A bill that was saved without a question leaves that question pending too.
+      // while a question is pending.
       const guarded = uncertainRepayment && !(answeredReadOnly && lastFollowup !== null);
       if (guarded) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
       else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; followup = null; }
       const hint = cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
-      const leavesPending = !guarded && (answeredReadOnly || call.name === "create_bill" || call.name === "update_bill");
-      const stored = followupAfterTurn(lastFollowup, followup, leavesPending);
+      const stored = followupAfterTurn(lastFollowup, followup, guarded ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
       store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined));
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });

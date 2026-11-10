@@ -2898,6 +2898,64 @@ describe("assistant turn commit", () => {
     await expectAnaRepaid500(conversationId, debt.id);
   });
 
+  // A bill action that saves the bill answers the bill question it was asked, so that question ends with the save.
+  const netflixPrompt = "I have a Netflix bill under Entertainment. It is monthly, starts today, and ends December 15.";
+  async function askNetflixAmount() {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", { name: "Netflix", frequency: "monthly", category: "Entertainment" })));
+    const asked = await (await POST(assistantRequest(netflixPrompt))).json();
+    expect(asked.bill).toBeNull();
+    expect(lastStored(asked.conversationId).followup).toBe("bill_amount");
+    return asked.conversationId as string;
+  }
+  async function answerNetflixAmount(conversationId: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", { name: "Netflix", amount: "549" })));
+    const saved = await (await POST(assistantRequest("549", conversationId))).json();
+    expect(saved.bill).toMatchObject({ name: "Netflix", amountMinor: 54_900 });
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+    return saved;
+  }
+
+  it("ends the bill question when its answer saves the bill, so the next expense is recorded and not forced into the bill flow", async () => {
+    const conversationId = await askNetflixAmount();
+    await answerNetflixAmount(conversationId);
+    expect(lastStored(conversationId)).toMatchObject({ role: "assistant", followup: null });
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "200", description: "Lunch", kind: "expense", category: "Food" })));
+    const lunch = await (await POST(assistantRequest("I spent 200 on lunch", conversationId))).json();
+
+    expect(lunch.answer).not.toContain("already exists");
+    expect(lunch.bill).toBeNull();
+    expect(lunch.transaction).toMatchObject({ kind: "expense", amountMinor: 20_000, description: "Lunch" });
+    expect(store.listBills(user.id)).toHaveLength(1);
+    expect(store.listTransactions(user.id)).toHaveLength(2);
+  });
+
+  it("treats cancel as an ordinary prompt once the bill answer saved the bill, so the saved bill is not reported as dropped", async () => {
+    const conversationId = await askNetflixAmount();
+    await answerNetflixAmount(conversationId);
+    const provider = vi.fn(async () => providerTool("ask_clarification", { question: "What would you like to cancel?" }));
+    vi.stubGlobal("fetch", provider);
+
+    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(cancelled.answer).toBe("What would you like to cancel?");
+    expect(cancelled.answer).not.toContain("dropped that question");
+    expect(store.listBills(user.id)).toHaveLength(1);
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+  });
+
+  it("ends the question the saved bill answered but keeps a read-only turn's question pending in between", async () => {
+    const conversationId = await askNetflixAmount();
+    vi.stubGlobal("fetch", vi.fn());
+    await POST(assistantRequest("List my debts", conversationId));
+    expect(lastStored(conversationId).followup).toBe("bill_amount");
+
+    await answerNetflixAmount(conversationId);
+
+    expect(lastStored(conversationId).followup).toBeNull();
+  });
+
   it("lets a bill action that asks its own question take over the pending slot, which is a known limit", async () => {
     const { conversationId } = await askAnaPaidMe();
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("create_bill", { name: "Internet" })));

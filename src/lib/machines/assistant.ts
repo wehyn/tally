@@ -1,7 +1,7 @@
 // Pure rules for one Ask Tally conversation turn. assistant.ts and store.ts ask this module for
 // each decision and persist the answer; they never re-derive these rules inline.
 
-import type { FollowupKind } from "../assistant-followup";
+import { isBillFollowup, type FollowupKind } from "../assistant-followup";
 
 // An assistant-saved transaction can be undone for this long after it is saved.
 export const UNDO_WINDOW_MS = 10_000;
@@ -48,12 +48,19 @@ export function pendingOutcome(pending: FollowupKind | null, prompt: string): Pe
   return CANCEL_PHRASES.has(phrase) ? "cancel" : "answer";
 }
 
+// What a turn that asked no question did. "read" only read the ledger (the debt list, a finance answer),
+// "billSaved" saved or updated a bill, and "other" is everything else, such as a completed write.
+export type QuietTurn = "read" | "billSaved" | "other";
+
 // The pending question a turn stores with its reply. A turn that asks a question of its own replaces the
-// pending one. A turn that only reads (the debt list, a finance answer) or saved a bill and asked nothing is not
-// an answer to the pending question and not a cancel of it, so the question stays exactly as it was and the next
-// reply still answers it. Every other turn that asks nothing ends the pending question.
-export function followupAfterTurn(pending: FollowupKind | null, asked: FollowupKind | null, leavesPending: boolean): FollowupKind | null {
-  return asked ?? (leavesPending ? pending : null);
+// pending one. A turn that only reads is not an answer to the pending question and not a cancel of it, so the
+// question stays exactly as it was and the next reply still answers it. A saved bill is an answer to a bill
+// question, which it ends, and not to any other, which stays. Every other turn that asks nothing ends it.
+export function followupAfterTurn(pending: FollowupKind | null, asked: FollowupKind | null, turn: QuietTurn): FollowupKind | null {
+  if (asked) return asked;
+  if (turn === "read") return pending;
+  if (turn === "billSaved") return isBillFollowup(pending) ? null : pending;
+  return null;
 }
 
 // How many messages of an open follow-up run reach the model and the local reading of the run.
