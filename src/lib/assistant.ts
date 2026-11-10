@@ -125,7 +125,7 @@ function safeClarification(value: unknown): string {
   if (typeof value !== "string" || value.trim().length < 3 || value.length > 240) return "What amount or category should I use?";
   return value.trim();
 }
-export type AssistantCategory = { id: string; name: string; type: "income" | "expense" };
+type AssistantCategory = { id: string; name: string; type: "income" | "expense" };
 function normalizeCategoryName(value: string): string {
   return value.toLowerCase().replace(/\btranspor(?:tation|attion)\b/g, "transport").replace(/[^a-z0-9]+/g, " ").trim();
 }
@@ -534,17 +534,17 @@ function findCategoryInText(text: string, categories: AssistantCategory[], prefe
   if (preferredType) return longestMatches.find((category) => category.type === preferredType) ?? null;
   return null;
 }
-const CATEGORY_KEYWORD_RULES: [RegExp, string, AssistantCategory["type"]][] = [
-  [/\b(food|lunch|dinner|breakfast|coffee|restaurant|jollibee|meal|grocer)\b/i, "Food", "expense"],
-  [/\b(shopping|shop|store|retail|online order)\b/i, "Shopping", "expense"],
-  [/\b(transport|transpor(?:tation|attion)|commut(?:e|ing)|transit|bus|train|taxi|grab|jeep|fare|fuel|gasoline)\b/i, "Transport", "expense"],
-  [/\b(rent|mortgage|condo)\b/i, "Housing", "expense"], [/\b(electric|water|internet|utility)\b/i, "Utilities", "expense"],
-  [/\b(doctor|medicine|pharmacy|clinic|hospital)\b/i, "Health", "expense"], [/\b(school|tuition|book|course)\b/i, "Education", "expense"],
-  [/\b(movie|concert|game|stream)\b/i, "Entertainment", "expense"], [/\b(flight|hotel|vacation|travel)\b/i, "Travel", "expense"],
-  [/\b(salary|payroll|payday)\b/i, "Salary", "income"],
-];
 function guessCategory(text: string, categories: AssistantCategory[]): AssistantCategory | undefined {
-  const rule = CATEGORY_KEYWORD_RULES.find(([pattern]) => pattern.test(text));
+  const rules: [RegExp, string, AssistantCategory["type"]][] = [
+    [/\b(food|lunch|dinner|breakfast|coffee|restaurant|jollibee|meal|grocer)\b/i, "Food", "expense"],
+    [/\b(shopping|shop|store|retail|online order)\b/i, "Shopping", "expense"],
+    [/\b(transport|transpor(?:tation|attion)|commut(?:e|ing)|transit|bus|train|taxi|grab|jeep|fare|fuel|gasoline)\b/i, "Transport", "expense"],
+    [/\b(rent|mortgage|condo)\b/i, "Housing", "expense"], [/\b(electric|water|internet|utility)\b/i, "Utilities", "expense"],
+    [/\b(doctor|medicine|pharmacy|clinic|hospital)\b/i, "Health", "expense"], [/\b(school|tuition|book|course)\b/i, "Education", "expense"],
+    [/\b(movie|concert|game|stream)\b/i, "Entertainment", "expense"], [/\b(flight|hotel|vacation|travel)\b/i, "Travel", "expense"],
+    [/\b(salary|payroll|payday)\b/i, "Salary", "income"],
+  ];
+  const rule = rules.find(([pattern]) => pattern.test(text));
   return rule ? categories.find((category) => category.type === rule[2] && normalizeCategoryName(category.name) === normalizeCategoryName(rule[1])) : undefined;
 }
 function explicitTransactionKind(text: string): AssistantCategory["type"] | undefined {
