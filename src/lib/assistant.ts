@@ -37,11 +37,11 @@ function isDebtRepaymentReportQuestion(prompt: string, metrics: ReadonlySet<Fina
   return (metrics.has("repaymentsReceived") || metrics.has("repaymentsMade"))
     && /\b(?:how much|what amount|what (?:were|was|are|is)|total|sum|show|display|list|report|breakdown)\b/i.test(prompt);
 }
-function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>, prompt: string, requestedMetrics: ReadonlySet<FinanceMetric>) {
+function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>, prompt: string, requestedMetrics: ReadonlySet<FinanceMetric>, now: Date) {
   if (/\b(?:assets?|balances?|account totals?)\b/i.test(prompt)) {
     return `Account Balances\n\n${facts.accounts.map((account) => `${account.name}: ${formatPHP(account.balanceMinor)}`).join("\n") || "No accounts yet."}`;
   }
-  const currentPeriod = monthToDateRange();
+  const currentPeriod = monthToDateRange(now);
   const period = facts.start === currentPeriod.start && facts.end === currentPeriod.end
     ? `This ${formatAssistantDate(facts.end, "long")}`
     : `From ${formatAssistantDate(facts.start)} to ${formatAssistantDate(facts.end)}`;
@@ -276,10 +276,10 @@ function missingBillFollowup(missing: string[]): FollowupKind {
 }
 function handleAssistantBillAction(
   store: ReturnType<typeof getStore>, userId: string, action: "create_bill" | "update_bill", args: Record<string, unknown>,
-  userMessages: string[], hintMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null,
+  userMessages: string[], hintMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null, now: Date,
   otherReading: { hintMessages: string[]; carriesEarlier: boolean } | null = null,
 ): AssistantBillResult {
-  const today = todayInManila();
+  const today = todayInManila(now);
   const duplicateFollowup = followup === "bill_duplicate" || followup === "bill_schedule";
   const lastUserMessage = userMessages.at(-1) ?? "";
   const explicitUpdate = /\b(?:update|edit|change|remove|clear|delete)\b.{0,60}\bbill\b/i.test(lastUserMessage);
@@ -710,7 +710,7 @@ type WritePlace = {
   requestedAccount: string; accountHint: { account?: Account; mentioned: boolean; invalidName?: string };
   account: Account | undefined; date: string; time: string; timed: boolean;
 };
-function writePlaceOf(hints: readonly HintMessage[], args: Record<string, unknown>, accounts: Account[], options: { accountChoice?: Account; providerTime: boolean; now: string }): WritePlace {
+function writePlaceOf(hints: readonly HintMessage[], args: Record<string, unknown>, accounts: Account[], options: { accountChoice?: Account; providerTime: boolean; now: Date }): WritePlace {
   const hintText = hints.map((message) => message.content);
   const requestedAccount = typeof args.account === "string" ? args.account.trim() : "";
   const accountHint = options.accountChoice ? { account: options.accountChoice, mentioned: true } : accountHintFromMessages(hintText, accounts);
@@ -722,10 +722,10 @@ function writePlaceOf(hints: readonly HintMessage[], args: Record<string, unknow
       : defaultAccount;
   const dateHint = priorDateHint([...hints]);
   const requestedDate = typeof args.date === "string" ? args.date.trim() : "";
-  const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
+  const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila(options.now));
   const timeHint = timeHintFromMessages(hintText);
   const requestedTime = options.providerTime && typeof args.time === "string" ? args.time.trim() : "";
-  const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : options.now;
+  const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila(options.now);
   return { requestedAccount, accountHint, account, date, time, timed: !!timeHint && isTime(timeHint) };
 }
 const placeKey = (place: WritePlace) => ({ account: place.account?.id ?? `?${place.accountHint.invalidName ?? place.requestedAccount}`, date: place.date, time: place.time });
@@ -792,10 +792,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const hintText = hintMessages.map((message) => message.content);
     // Which reading carries the earlier statement's hints: the longer list of messages.
     const otherCarriesEarlier = !!readings.other && readings.other.length > readings.primary.length;
-    const nowTime = timeInManila();
+    // One instant for the whole request: the default date, the default time, a relative date and a bill's "today" all read it, so a
+    // provider call that crosses midnight cannot give a date from one side and a time from the other.
+    const requestedAt = new Date(receivedAt);
     // The message answering the question that named both choices states the account and the date it means.
     const answeringAmbiguity = isAmbiguousHintsQuestion(history.at(-1)?.content ?? "")
-      ? { namesAccount: accountHintFromMessages([input.prompt], accounts).mentioned || incomeConfirmationAccount(input.prompt, accounts) !== undefined, namesDate: dateHintFromMessage(input.prompt, new Date(receivedAt)).mentioned }
+      ? { namesAccount: accountHintFromMessages([input.prompt], accounts).mentioned || incomeConfirmationAccount(input.prompt, accounts) !== undefined, namesDate: dateHintFromMessage(input.prompt, requestedAt).mentioned }
       : null;
     // "yes, Wallet" names its account with no cue word, so no hint reads it. The answer's account is the one every write uses,
     // as the verdict above already counts it.
@@ -804,8 +806,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // place, and store nothing (ambiguityVerdict).
     const placesOf = (args: Record<string, unknown>, providerTime: boolean, accountChoice?: Account) => {
       const choice = accountChoice ?? answeredAccount;
-      const primary = writePlaceOf(hintMessages, args, accounts, { accountChoice: choice, providerTime, now: nowTime });
-      const other = otherHintMessages ? writePlaceOf(otherHintMessages, args, accounts, { accountChoice: choice, providerTime, now: nowTime }) : null;
+      const primary = writePlaceOf(hintMessages, args, accounts, { accountChoice: choice, providerTime, now: requestedAt });
+      const other = otherHintMessages ? writePlaceOf(otherHintMessages, args, accounts, { accountChoice: choice, providerTime, now: requestedAt }) : null;
       const earlier = other && otherCarriesEarlier ? other : primary;
       const question = (what: string) => other && ambiguityVerdict(placeKey(primary), placeKey(other), answeringAmbiguity) === "ask" ? ambiguousHintsQuestion(what, describePlace(earlier)) : null;
       return { place: primary, question };
@@ -966,7 +968,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       }
       else if (refusal === "refuse") { answer = endedQuestionReply("refused", "", false); followup = null; }
       else if (call.name === "create_bill" || call.name === "update_bill") {
-        const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup,
+        const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup, requestedAt,
           otherHintMessages ? { hintMessages: otherHintMessages.map((message) => message.content), carriesEarlier: otherCarriesEarlier } : null);
         answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup; modelWorded = !!result.ambiguous;
       }
@@ -978,14 +980,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         modelWorded = call === providerCall;
       }
       else if (call.name === "finance_question") {
-        const defaultRange = monthToDateRange();
+        const defaultRange = monthToDateRange(requestedAt);
         const start = typeof call.args.start === "string" && isDateOnly(call.args.start) ? call.args.start : defaultRange.start;
-        const end = typeof call.args.end === "string" && isDateOnly(call.args.end) ? call.args.end : todayInManila();
+        const end = typeof call.args.end === "string" && isDateOnly(call.args.end) ? call.args.end : todayInManila(requestedAt);
         if (start > end) { answer = "Which date range would you like me to check? Please use a start and end date."; followup = "clarification"; }
         else {
           const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
           const facts = store.getFinanceFacts(user.id, start, end, category);
-          answer = answerForFacts(facts, input.prompt, requestedMetrics);
+          answer = answerForFacts(facts, input.prompt, requestedMetrics, requestedAt);
           answeredReadOnly = true;
         }
       } else if (call.name === "log_debt") {

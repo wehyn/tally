@@ -4702,4 +4702,52 @@ describe("the question that names both choices keeps the flow it interrupts (rou
       expect(saved.bill).toMatchObject({ name: "Internet", accountName: "Wallet", amountMinor: 54_900 });
     });
   });
+  // The assistant reads "now" once, when the request arrives: the default date, the default time, the date a relative word means
+  // and a bill's "today" all come from that one instant. A provider call that crosses midnight must not give a date from one
+  // side and a time from the other. The request instant is the right one because it is what the user was looking at when they
+  // wrote "Log coffee 120", and it is already the time stored on their message (receivedAt), from which "today" is read.
+  describe("finding 21c: one instant for the date and the time of a write", () => {
+    const crossMidnight = (call: () => Response) => {
+      vi.setSystemTime(new Date("2026-10-09T15:59:59.000Z"));
+      vi.stubGlobal("fetch", vi.fn(async () => {
+        vi.setSystemTime(new Date("2026-10-09T16:00:02.000Z"));
+        return call();
+      }));
+    };
+    const coffee = { kind: "expense", amount: "120", category: "Food", description: "coffee", account: "Wallet", date: "2026-10-09" };
+
+    it("a transaction sent at 23:59:59 and answered after midnight is saved on the day it was sent, at the time it was sent", async () => {
+      crossMidnight(() => providerTool("log_transaction", coffee));
+
+      const result = await (await POST(assistantRequest("Log coffee 120"))).json();
+
+      expect(result.transaction).toMatchObject({ date: "2026-10-09", time: "23:59" });
+    });
+
+    it("a repayment keeps the same instant for its default date and time", async () => {
+      store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+      crossMidnight(() => providerTool("record_debt_payment", { counterparty: "Maya", amount: "200" }));
+
+      const result = await (await POST(assistantRequest("Maya paid me 200"))).json();
+
+      expect(result.transaction).toMatchObject({ kind: "debt_repayment", date: "2026-10-09", time: "23:59" });
+    });
+
+    it("a word like today means the day the request was sent", async () => {
+      crossMidnight(() => providerTool("log_transaction", coffee));
+
+      const result = await (await POST(assistantRequest("Log coffee 120 today"))).json();
+
+      expect(result.transaction).toMatchObject({ date: "2026-10-09" });
+    });
+
+    it("a bill that starts tomorrow means the day after the day the request was sent", async () => {
+      store.createCategory(user.id, { name: "Bills", type: "expense" });
+      crossMidnight(() => providerTool("create_bill", { name: "Internet", amount: "549", frequency: "monthly", nextDueDate: "2026-10-10", endDate: "2026-12-31", category: "Bills" }));
+
+      const result = await (await POST(assistantRequest("I have a monthly Internet bill for 549 starting tomorrow until 2026-12-31."))).json();
+
+      expect(result.bill).toMatchObject({ name: "Internet", nextDueDate: "2026-10-10" });
+    });
+  });
 });
