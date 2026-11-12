@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeConfirmed, isOrdinaryIncomeDecline, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeConfirmHint, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -569,7 +569,9 @@ function accountMention(text: string, accounts: Account[]): Account | undefined 
   const cues = "from|to|into|using|via|in|use|with|account(?:\\s+named)?|card";
   return [...accounts].sort((a, b) => b.name.length - a.name.length).find((account) => {
     const name = account.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-    return new RegExp(`\\b(?:${cues})\\s+(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\b`, "i").test(text);
+    return new RegExp(`\\b(?:${cues})\\s+(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\b`, "i").test(text)
+      // The reply the income clarification asks for, "yes, Wallet", names the account with no cue word.
+      || new RegExp(`^\\s*(?:yes|yeah|yep|sure|okay|ok)\\b[\\s,.:;-]*(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\s*[.!]?\\s*$`, "i").test(text);
   });
 }
 function accountHintFromMessages(messages: string[], accounts: Account[]): { account?: Account; mentioned: boolean; invalidName?: string } {
@@ -741,18 +743,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const ordinaryIncomeQuestionIndex = history.map((message) => message.role === "assistant" ? message.followup : null).lastIndexOf("ordinary_income");
     const ordinaryIncomeQuestionPending = lastFollowup === "ordinary_income";
     const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? run.slice(ordinaryIncomeQuestionIndex + 1) : [];
-    const ordinaryIncomeConfirmedInHistory = userMessagesFor("hint", afterOrdinaryIncomeQuestion).some((message) =>
-      /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content))
-      && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content));
-    const ordinaryIncomeFlow = !hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt)
-      && (ordinaryIncomeConfirmedInHistory || ordinaryIncomeQuestionPending);
-    const ordinaryIncomeAccepted = incomeConfirmed({
-      startsWithYes: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt),
-      questionPending: ordinaryIncomeQuestionPending, heldYes: ordinaryIncomeConfirmedInHistory, prompt: input.prompt,
-    });
-    // An earlier yes that a leading negative word in this message vetoed: nothing is written and the question is asked again.
-    const ordinaryIncomeHeldYesVetoed = ordinaryIncomeFlow && ordinaryIncomeConfirmedInHistory && !ordinaryIncomeAccepted;
-    const ordinaryIncomeDeclined = ordinaryIncomeFlow && isOrdinaryIncomeDecline(input.prompt);
+    // The income flow is open from the question until its run ends, through any account, date or amount question it
+    // asks. Being open authorizes nothing: only a message that is itself a yes writes (ordinaryIncomeTurn).
+    const ordinaryIncomeOpen = ordinaryIncomeQuestionPending || (ordinaryIncomeQuestionIndex >= 0
+      && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
+    const ordinaryIncomeFlow = !hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && ordinaryIncomeOpen;
+    const incomeTurn = ordinaryIncomeFlow ? ordinaryIncomeTurn(input.prompt, turnCallOf(providerCall.name)) : null;
+    const ordinaryIncomeAccepted = incomeTurn === "write";
+    const ordinaryIncomeDeclined = incomeTurn === "decline";
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
@@ -800,6 +798,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       if (repaymentReportQuestion) {
         call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
       } else if (ordinaryIncomeFlow) {
+        // A read-only call runs as it is and leaves the question pending.
         if (ordinaryIncomeDeclined) {
           call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
         } else if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
@@ -808,7 +807,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             ? providerCall.args.description.trim()
             : providerCounterparty ? `${providerCounterparty} paid me` : "";
           call = { name: "log_transaction", args: { ...providerCall.args, kind: "income", category: "Other income", description } };
-        } else if (!ordinaryIncomeAccepted) {
+        } else if (incomeTurn === "askAgain") {
           call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } }; clarificationKind = "ordinary_income";
         }
       } else if (uncertainRepayment && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
@@ -1147,7 +1146,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const refusedTurn = refusal === "refuse" || refusal === "endQuestion";
       if (refusal === "endQuestion") { answer = endedQuestionReply("refused", answer, wrote); followup = null; }
       else if (ordinaryIncomeDeclined && refusal === "proceed") { answer = endedQuestionReply("declined", answer, wrote); followup = null; }
-      const hint = cancelHint(lastFollowup, followup, modelWorded, ordinaryIncomeHeldYesVetoed);
+      // A yes the user just gave does not carry over: when the turn still needs an account, date or answer, it says how to confirm.
+      const confirmHint = ordinaryIncomeAccepted && !wrote && (followup === "account_or_date" || followup === "clarification")
+        ? incomeConfirmHint(followup, (accounts.find((candidate) => candidate.isDefault) ?? accounts[0])?.name) : null;
+      const hint = confirmHint ?? cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
       const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
       store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined), undefined, bill?.id, answeredReadOnly && stored !== null);

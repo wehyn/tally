@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, incomeConfirmed, isOrdinaryIncomeDecline, isQuietReply, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, vetoesHeldIncomeYes, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -82,39 +82,51 @@ describe("the ordinary income decline", () => {
   }
 });
 
-// A yes held from an earlier turn may authorize the income write only while the current message does not lead with a
-// negative word. The veto is not a decline: an exact decline is read first, and this only stops the held yes.
-describe("the veto on an earlier held yes for ordinary income", () => {
-  const vetoes = [
-    "No, don't record this in Wallet or anywhere else.", "No, don't record it", "no, I changed my mind", "No, never mind", "No, use Wallet. I still want to record it as income.",
-    "no", "No.", "Nope, Wallet", "nah", "Hindi, Wallet", "hindi po", "Ayoko, Wallet", "  NO   thanks", "no-one paid me",
-  ];
-  for (const reply of vetoes) {
-    it(`vetoes the held yes for "${reply}"`, () => expect(vetoesHeldIncomeYes(reply)).toBe(true));
+// The ordinary income write needs the message being answered to be a yes itself. Nothing said earlier in the run can
+// authorize it, so there is no held yes to veto: a reply is a confirmation, a decline, a read-only call or a re-ask.
+describe("the ordinary income turn", () => {
+  const confirmations = ["yes", "Yes.", "yeah", "yep, Wallet", "sure", "okay", "ok", "go ahead", "record it", "Record that", "yes, into my Wallet account", "  YES   please"];
+  for (const reply of confirmations) {
+    it(`reads "${reply}" as a confirmation`, () => expect(isIncomeConfirmation(reply)).toBe(true));
   }
-  const keeps = ["not now", "nothing wrong, yes record it", "nowhere", "Wallet", "yes, use Wallet", "yes, no", "Notebook account", "never mind the date, Wallet", "Honestly no", "", "   ", "!!!"];
-  for (const reply of keeps) {
-    it(`does not veto the held yes for "${reply}"`, () => expect(vetoesHeldIncomeYes(reply)).toBe(false));
+  const notConfirmations = [
+    "Wallet", "use Wallet", "Don't record it", "I changed my mind, don't record it", "Wallet, but don't record it", "Actually, skip recording it as income",
+    "Not as income", "Hold on, don't record that", "No, use Wallet. I still want to record it as income.", "no problem, yes record it", "not now", "maybe", "500", "", "!!!",
+    "Please record it", "I said yes earlier",
+  ];
+  for (const reply of notConfirmations) {
+    it(`does not read "${reply}" as a confirmation`, () => expect(isIncomeConfirmation(reply)).toBe(false));
   }
 
-  it("lets a held yes stand for any message that does not lead with a negative word", () => {
-    expect(incomeConfirmed({ startsWithYes: false, questionPending: false, heldYes: true, prompt: "Wallet" })).toBe(true);
-    expect(incomeConfirmed({ startsWithYes: true, questionPending: false, heldYes: true, prompt: "yes, use Wallet" })).toBe(true);
-    expect(incomeConfirmed({ startsWithYes: false, questionPending: false, heldYes: true, prompt: "No, don't record it" })).toBe(false);
+  const calls: TurnCall[] = ["write", "bill", "read", "ask"];
+  const table: [string, string, Record<TurnCall, ReturnType<typeof ordinaryIncomeTurn>>][] = [
+    ["a plain yes", "yes", { write: "write", bill: "write", read: "write", ask: "write" }],
+    ["a yes with the account", "yes, Wallet", { write: "write", bill: "write", read: "write", ask: "write" }],
+    ["an exact decline", "no", { write: "decline", bill: "decline", read: "decline", ask: "decline" }],
+    ["an exact decline phrase", "No thanks!", { write: "decline", bill: "decline", read: "decline", ask: "decline" }],
+    ["a bare account", "Wallet", { write: "askAgain", bill: "askAgain", read: "read", ask: "askAgain" }],
+    ["a refusal that does not lead with no", "Don't record it", { write: "askAgain", bill: "askAgain", read: "read", ask: "askAgain" }],
+    ["a refusal that leads with no", "No, never mind", { write: "askAgain", bill: "askAgain", read: "read", ask: "askAgain" }],
+    ["an unrelated finance question that leads with No", "No expenses this month? Show my spending totals.", { write: "askAgain", bill: "askAgain", read: "read", ask: "askAgain" }],
+    ["a deferral", "not now", { write: "askAgain", bill: "askAgain", read: "read", ask: "askAgain" }],
+  ];
+  for (const [name, reply, expected] of table) {
+    for (const call of calls) {
+      it(`${name} with a ${call} call is ${expected[call]}`, () => expect(ordinaryIncomeTurn(reply, call)).toBe(expected[call]));
+    }
+  }
+
+  it("lets only the current message authorize a write, whatever the provider's call", () => {
+    for (const call of calls) {
+      for (const reply of notConfirmations) expect(ordinaryIncomeTurn(reply, call)).not.toBe("write");
+      for (const reply of confirmations) expect(ordinaryIncomeTurn(reply, call)).toBe("write");
+    }
   });
-  it("never confirms without a yes: the veto only removes confirmations", () => {
-    expect(incomeConfirmed({ startsWithYes: false, questionPending: true, heldYes: false, prompt: "Wallet" })).toBe(false);
-    expect(incomeConfirmed({ startsWithYes: false, questionPending: false, heldYes: false, prompt: "Wallet" })).toBe(false);
-    expect(incomeConfirmed({ startsWithYes: true, questionPending: false, heldYes: false, prompt: "yes" })).toBe(false);
-  });
-  it("lets a message that starts with yes answer the pending income question", () => {
-    expect(incomeConfirmed({ startsWithYes: true, questionPending: true, heldYes: false, prompt: "yes" })).toBe(true);
-  });
-  it("adds the cancel hint to the income question asked again after a veto, whatever question was pending", () => {
-    for (const pending of FOLLOWUP_KINDS) expect(cancelHint(pending, "ordinary_income", false, true)).toBe("Or say cancel to drop this.");
-    expect(cancelHint(null, "ordinary_income", false, true)).toBeNull();
-    expect(cancelHint("account_or_date", "ordinary_income")).toBeNull();
-    expect(cancelHint("account_or_date", "ordinary_income", true, true)).toBeNull();
+  it("adds the cancel hint when the income question is asked again from its own account or date clarification", () => {
+    expect(cancelHint("account_or_date", "ordinary_income")).toBe("Or say cancel to drop this.");
+    expect(cancelHint("account_or_date", "ordinary_income", true)).toBeNull();
+    expect(cancelHint(null, "ordinary_income")).toBeNull();
+    expect(cancelHint("clarification", "ordinary_income")).toBeNull();
   });
 });
 

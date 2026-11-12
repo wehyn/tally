@@ -1939,7 +1939,8 @@ describe("assistant debt capture", () => {
     expect(store.listDebts(user.id)).toHaveLength(0);
   });
 
-  it("keeps an accepted ordinary-income choice through a later account clarification", async () => {
+  // The yes does not carry over any more: the clarification asks for "yes, <account>", and a bare account asks again.
+  it("keeps an accepted ordinary-income choice through a later account clarification, which asks for yes and the account", async () => {
     const providerResponse = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
       choices: [{ message: { tool_calls: [{ function: { name, arguments: JSON.stringify(args) } }] } }],
     }), { headers: { "content-type": "application/json" } });
@@ -1964,7 +1965,7 @@ describe("assistant debt capture", () => {
     const accountResponse = await POST(new Request("https://tally.test/api/assistant", {
       method: "POST",
       headers: { origin: "https://tally.test", "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "Wallet", conversationId }),
+      body: JSON.stringify({ prompt: "yes, Wallet", conversationId }),
     }));
     const result = await accountResponse.json();
 
@@ -2470,15 +2471,16 @@ describe("assistant turn commit", () => {
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
   });
 
-  it("asks the ordinary income question again for a finance question instead of answering it, and answers a debt list locally, leaving the question pending either way", async () => {
+  it("answers a finance question and a debt list while the ordinary income question is pending, leaving it pending, so yes still records", async () => {
     const conversationId = await askZedPaidMe();
     vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
 
     const asked = await (await POST(assistantRequest("How much did I spend this month?", conversationId))).json();
 
-    expect(asked.answer).toBe(incomeReask);
+    expect(asked.answer).not.toBe(incomeReask);
+    expect(asked.answer).toContain("Total Spent");
     expect(asked.transaction).toBeNull();
-    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)).toMatchObject({ followup: "ordinary_income", readOnly: true });
 
     const local = vi.fn();
     vi.stubGlobal("fetch", local);
@@ -2488,6 +2490,10 @@ describe("assistant turn commit", () => {
     expect(listed.answer).not.toBe(incomeReask);
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
     expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("record_debt_payment", { counterparty: "Zed", amount: "500" })));
+    const yes = await (await POST(assistantRequest("yes", conversationId))).json();
+    expect(yes.transaction).toMatchObject({ kind: "income", amountMinor: 50_000 });
   });
 
   it.each(["maybe", "I think so", "not sure", "maybe 500"])("asks the ordinary income question again, with the way out, when the hedged reply %s answers it", async (reply) => {
@@ -2740,74 +2746,116 @@ describe("assistant turn commit", () => {
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
   });
 
-  // ecad4c6 let an earlier yes authorize the write after any reply that was not an exact decline, so a refusal that
-  // began with no and said more saved the income against the user's words. The earlier yes now stands only when the
-  // current message does not lead with a negative word. "No, use Wallet. I still want to record it as income." asks
-  // once more, which is the accepted cost of the safe direction.
-  it("records the income a user confirmed when a reply after an account clarification says yes", async () => {
+  // No earlier yes authorizes a later write. The ordinary income write needs the message being answered to be a yes
+  // itself, so an account or date clarification asks for "yes, <account>" and every other reply asks again.
+  const confirmHint = "Reply with yes and the account, like \"yes, Wallet\", or say cancel.";
+  async function holdIncomeForAccount() {
     const conversationId = await askZedPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Nowhere" })));
     const held = await (await POST(assistantRequest("yes, into my Nowhere account", conversationId))).json();
     expect(held.transaction).toBeNull();
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("account_or_date");
+    return { conversationId, held };
+  }
+
+  it("asks for the account and says how to confirm in the same message", async () => {
+    const { held } = await holdIncomeForAccount();
+
+    expect(held.answer).toContain("Nowhere");
+    expect(held.answer).toContain(confirmHint);
+  });
+
+  it("records the income a user confirmed when a reply after an account clarification says yes and the account", async () => {
+    const { conversationId } = await holdIncomeForAccount();
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" })));
 
-    const result = await (await POST(assistantRequest("yes, use Wallet", conversationId))).json();
+    const result = await (await POST(assistantRequest("yes, Wallet", conversationId))).json();
 
-    expect(result.answer).not.toMatch(/won't record the money/i);
     expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Wallet" });
     expect(store.listAccounts(user.id).find((account) => account.name === "Wallet")!.balanceMinor).toBe(50_000);
-  });
-
-  it.each([
-    "No, don't record this in Wallet or anywhere else.",
-    "No, don't record it",
-    "no, I changed my mind",
-    "No, never mind",
-    "No, use Wallet. I still want to record it as income.",
-  ])("does not write on the strength of an earlier yes when the reply %s leads with no: it asks again and writes nothing", async (reply) => {
-    const conversationId = await askZedPaidMe();
-    const held = await (await POST(assistantRequest("yes, into my Nowhere account", conversationId))).json();
-    expect(held.transaction).toBeNull();
-    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("account_or_date");
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" })));
-
-    const result = await (await POST(assistantRequest(reply, conversationId))).json();
-
-    expect(result.answer).toBe(incomeReask);
-    expect(result.transaction).toBeNull();
-    expect(store.listTransactions(user.id)).toHaveLength(0);
-    expect(store.listAccounts(user.id).find((account) => account.name === "Wallet")!.balanceMinor).toBe(0);
-    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
-  });
-
-  it("asks for a fresh yes after a vetoed one: the question is pending again, and cancel still drops it", async () => {
-    const conversationId = await askZedPaidMe();
-    await POST(assistantRequest("yes, into my Nowhere account", conversationId));
-    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" })));
-    await POST(assistantRequest("No, don't record it", conversationId));
-
-    const unclear = await (await POST(assistantRequest("Wallet", conversationId))).json();
-    expect(unclear.transaction).toBeNull();
-    expect(unclear.answer).toBe(incomeReask);
-
-    const provider = vi.fn();
-    vi.stubGlobal("fetch", provider);
-    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
-    expect(provider).not.toHaveBeenCalled();
-    expect(cancelled.transaction).toBeNull();
-    expect(store.listTransactions(user.id)).toHaveLength(0);
     expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
   });
 
-  it("records the income after a vetoed yes once the user says yes again", async () => {
-    const conversationId = await askZedPaidMe();
-    await POST(assistantRequest("yes, into my Nowhere account", conversationId));
+  // The accepted tradeoff: a reply that names the account but does not say yes is not a confirmation.
+  it("asks again for a bare account after the clarification, and then records on yes and the account", async () => {
+    const { conversationId } = await holdIncomeForAccount();
     vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" })));
-    await POST(assistantRequest("No, don't record it", conversationId));
 
-    const result = await (await POST(assistantRequest("yes, record it in Wallet", conversationId))).json();
+    const bare = await (await POST(assistantRequest("Wallet", conversationId))).json();
+    expect(bare.answer).toBe(incomeReask);
+    expect(bare.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
 
+    const result = await (await POST(assistantRequest("yes, Wallet", conversationId))).json();
     expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Wallet" });
+  });
+
+  const incomeRefusals = [
+    "Don't record it", "I changed my mind, don't record it", "Wallet, but don't record it", "Actually, skip recording it as income", "Not as income", "Hold on, don't record that",
+    "No, don't record this in Wallet or anywhere else.", "No, don't record it", "no, I changed my mind", "No, never mind", "No, use Wallet. I still want to record it as income.",
+  ];
+  const walletIncome = () => vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" })));
+  const expectNoIncomeRecorded = () => {
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.listAccounts(user.id).find((account) => account.name === "Wallet")!.balanceMinor).toBe(0);
+  };
+
+  it.each(incomeRefusals)("writes nothing and keeps the question pending when %s follows an earlier yes held for an account", async (reply) => {
+    const { conversationId } = await holdIncomeForAccount();
+    walletIncome();
+
+    const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(result.transaction).toBeNull();
+    expect(result.answer).toBe(incomeReask);
+    expectNoIncomeRecorded();
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+
+    const confirmed = await (await POST(assistantRequest("yes, Wallet", conversationId))).json();
+    expect(confirmed.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Wallet" });
+  });
+
+  it.each(incomeRefusals)("writes nothing and keeps the question pending when %s answers the income question itself", async (reply) => {
+    const conversationId = await askZedPaidMe();
+    walletIncome();
+
+    const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(result.transaction).toBeNull();
+    expect(result.answer).toBe(incomeReask);
+    expectNoIncomeRecorded();
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+  });
+
+  it("drops a clarification that waits for yes and the account on cancel", async () => {
+    const { conversationId } = await holdIncomeForAccount();
+    const provider = vi.fn();
+    vi.stubGlobal("fetch", provider);
+
+    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(cancelled.transaction).toBeNull();
+    expectNoIncomeRecorded();
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  // A read-only call is answered and leaves the income question as it was, so the confirmation still works after it.
+  it("answers an unrelated finance question that starts with No and keeps the held clarification, so yes and the account still records", async () => {
+    const { conversationId } = await holdIncomeForAccount();
+    vi.stubGlobal("fetch", vi.fn(async () => financeQuestionResponse()));
+
+    const asked = await (await POST(assistantRequest("No expenses this month? Show my spending totals.", conversationId))).json();
+
+    expect(asked.answer).not.toBe(incomeReask);
+    expect(asked.answer).toContain("Total Spent:");
+    expect(asked.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)).toMatchObject({ followup: "account_or_date", readOnly: true });
+
+    walletIncome();
+    const resumed = await (await POST(assistantRequest("yes, Wallet", conversationId))).json();
+    expect(resumed.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Wallet" });
   });
 
   it.each(["No, use Wallet", "no problem, yes record it", "not now", "Nope, but record it in Wallet", "no way"])("does not read %s as a decline: it asks again with the cancel hint and writes nothing", async (reply) => {
@@ -3273,7 +3321,7 @@ describe("assistant turn commit", () => {
           const conversationId = await askZedPaidMe();
           return { conversationId, prompt: `No. ${billPrompt}`, provider: vi.fn(async () => billSpec()) };
         }],
-        ...["No, don't record this in Wallet or anywhere else.", "No, don't record it", "no, I changed my mind", "No, never mind"].map((reply): [string, Setup] => [`the refusal "${reply}" after an earlier yes that was held for an account`, async () => {
+        ...incomeRefusals.map((reply): [string, Setup] => [`the refusal "${reply}" after an earlier yes that was held for an account`, async () => {
           const conversationId = await askZedPaidMe();
           const held = await send("yes, into my Nowhere account", conversationId, vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", account: "Nowhere" })));
           expect(held.transaction).toBeNull();
