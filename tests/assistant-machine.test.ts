@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type StatementOpener, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -473,4 +473,41 @@ describe("the refusal decision a turn takes before it writes", () => {
     expect(REFUSED_AGAIN_REPLY).toContain("cancel");
     expect(REFUSED_AGAIN_REPLY).toContain("haven't recorded anything");
   });
+});
+
+// A hint that chooses a value reads only the statement the write is for. A new statement starts at a user message that
+// opens a different payment, debt, bill or transaction and is not an answer to the question pending, which the kind
+// the reply before it stored decides. Quiet turns are left out.
+describe("the user messages a hint may read", () => {
+  type Turn = [role: "user" | "assistant", text: string, followup?: FollowupKind | null, quiet?: boolean];
+  const toRun = (turns: Turn[]) => turns.map(([role, content, followup, quiet]) => ({ role, content, followup: followup ?? null, ...(quiet ? { readOnly: true } : {}) }));
+  // The caller's recognizer, stood in for here: "paid" is a payment, "owes" a debt, "bill" a bill, and a message with
+  // letters and a number of two digits or more states a transaction.
+  const opens = (text: string): StatementOpener => /\bpaid\b/.test(text) ? "payment" : /\bowes\b/.test(text) ? "debt" : /\bbill\b/.test(text) ? "bill" : /[a-z].*\d{2}|\d{2}.*[a-z]/i.test(text) ? "transaction" : null;
+  const read = (turns: Turn[], current: string) => hintMessagesFor(toRun(turns), current, opens).map((message) => message.content);
+  const incomeQuestion: Turn[] = [["user", "Zed paid me 500 into Maya"], ["assistant", "Record as income?", "ordinary_income"]];
+
+  const table: [string, Turn[], string, string[]][] = [
+    ["no run, the current message stands alone", [], "Coffee 120", []],
+    ["an answer stays with the statement it answers", incomeQuestion, "yes", ["Zed paid me 500 into Maya"]],
+    ["a correction in the same statement stays", [...incomeQuestion, ["user", "actually into Wallet"], ["assistant", "Please answer yes", "ordinary_income"]], "yes", ["Zed paid me 500 into Maya", "actually into Wallet"]],
+    ["the current message opens a payment", incomeQuestion, "Actually Ben paid me 200", []],
+    ["an earlier payment that opened a new statement hides the one before it", [...incomeQuestion, ["user", "Actually Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"]], "yes", ["Actually Ben paid me 200"]],
+    ["the answers after the new statement stay with it", [...incomeQuestion, ["user", "Actually Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"], ["user", "into Wallet"], ["assistant", "Please answer yes", "ordinary_income"]], "yes", ["Actually Ben paid me 200", "into Wallet"]],
+    ["a payment opens whatever question was pending, the amount question included", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "Ana paid me 200", []],
+    ["a bare amount answers the amount question", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "500", ["Zed paid me into Maya"]],
+    ["an amount with a detail still answers the amount question", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "500 cash", ["Zed paid me into Maya"]],
+    ["a new debt opens", incomeQuestion, "Ben owes me 200", []],
+    ["a bill opens", incomeQuestion, "I have a Netflix bill", []],
+    ["a bill answers a bill question, so the statement stays", [["user", "I have a Netflix bill under Entertainment"], ["assistant", "Amount?", "bill_amount"]], "I have a Netflix bill for 549", ["I have a Netflix bill under Entertainment"]],
+    ["a transaction statement opens when the question pending did not ask for one", incomeQuestion, "Coffee 120 into Wallet", []],
+    ["a transaction statement answers a question that asked for an amount", [["user", "Coffee into Maya"], ["assistant", "What amount?", "clarification"]], "Coffee 120", ["Coffee into Maya"]],
+    ["a date answers an account or date question", [["user", "lunch 120"], ["assistant", "What date?", "account_or_date"]], "2026-10-05", ["lunch 120"]],
+    ["a payment opened earlier in the run starts the statement, not the first message", [["user", "lunch 120 into Maya"], ["assistant", "Which?", "account_or_date"], ["user", "Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"], ["user", "yes, Wallet"], ["assistant", "What date?", "account_or_date"]], "2026-10-05", ["Ben paid me 200", "yes, Wallet"]],
+    ["a quiet turn neither feeds a hint nor opens a statement", [...incomeQuestion, ["user", "How much did Ana pay me, paid?"], ["assistant", "Your answer", "ordinary_income", true]], "yes", ["Zed paid me 500 into Maya"]],
+    ["a quiet turn first in the run is left out too", [["user", "Ana paid me into Maya"], ["assistant", "Debts", "repayment_amount", true], ["user", "Ben paid me"], ["assistant", "How much?", "repayment_amount"]], "200", ["Ben paid me"]],
+  ];
+  for (const [name, turns, current, expected] of table) {
+    it(`${name} -> ${expected.length ? expected.join(" | ") : "none"}`, () => expect(read(turns, current)).toEqual(expected));
+  }
 });

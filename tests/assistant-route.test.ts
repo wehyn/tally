@@ -3992,3 +3992,186 @@ describe("assistant account named by a yes reply", () => {
     expect(store.listTransactions(user.id)).toHaveLength(0);
   });
 });
+
+// A cue word, a date or a time said about one payment, debt, bill or transaction must not apply to a different one asked
+// later in the same open run (hintMessagesFor). The later write uses its own words, then the provider's field, the
+// default account and today. An answer to the pending question still belongs to the statement it answers.
+describe("a hint applies to the statement it was said for", () => {
+  beforeEach(() => { store.createAccount(user.id, { name: "Maya", type: "bank", openingMinor: 0 }); });
+  const balance = (name: string) => store.listAccounts(user.id).find((account) => account.name === name)!.balanceMinor;
+  const lastFollowup = (conversationId: string) => store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    return (await POST(assistantRequest(prompt, conversationId))).json();
+  }
+  const debtAmount = (id: string) => store.listDebts(user.id).find((debt) => debt.id === id)!.amountMinor;
+
+  it("writes a later income into the default account when only an earlier payment named Maya", async () => {
+    const first = await say("Zed paid me 500 into Maya", "record_debt_payment", { counterparty: "Zed", amount: "500", account: "Maya" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("ordinary_income");
+    const second = await say("Actually Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200" }, id);
+    expect(second.transaction).toBeNull();
+    expect(lastFollowup(id)).toBe("ordinary_income");
+
+    const saved = await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
+    expect({ wallet: balance("Wallet"), maya: balance("Maya") }).toEqual({ wallet: 20_000, maya: 0 });
+  });
+
+  it("writes a later income on today when only an earlier payment gave an ISO date", async () => {
+    const first = await say("Zed paid me 500 into Maya on 2026-10-01", "record_debt_payment", { counterparty: "Zed", amount: "500", account: "Maya", date: "2026-10-01" });
+    const id = first.conversationId as string;
+    await say("Actually Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
+
+    const saved = await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+  });
+
+  it("neither asks for nor takes a date when only an earlier payment said last Monday", async () => {
+    const first = await say("Zed paid me 500 last Monday", "record_debt_payment", { counterparty: "Zed", amount: "500", date: "2026-10-05" });
+    const id = first.conversationId as string;
+    await say("Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200", date: "2026-10-05" }, id);
+
+    const saved = await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", date: "2026-10-05" }, id);
+
+    expect(saved.transaction).toMatchObject({ amountMinor: 20_000, date: "2026-10-09" });
+    expect(lastFollowup(id)).toBeNull();
+  });
+
+  it("writes a later received repayment into the default account on today, with no cue from an earlier payment", async () => {
+    const ben = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ben", amountMinor: 100_000 });
+    const first = await say("Zed paid me 500 into Maya on 2026-09-01", "record_debt_payment", { counterparty: "Zed", amount: "500", account: "Maya", date: "2026-09-01" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("ordinary_income");
+
+    const saved = await say("Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
+    expect(debtAmount(ben.id)).toBe(80_000);
+    expect({ wallet: balance("Wallet"), maya: balance("Maya") }).toEqual({ wallet: 20_000, maya: 0 });
+  });
+
+  it("takes no date, account or time from an earlier payment that asked for its amount", async () => {
+    const ana = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const first = await say("Zed paid me into Maya on 2026-10-01 at 5pm", "record_debt_payment", { counterparty: "Zed", account: "Maya", date: "2026-10-01" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("repayment_amount");
+
+    const saved = await say("Ana paid me 200", "record_debt_payment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09", time: "16:00" });
+    expect(debtAmount(ana.id)).toBe(80_000);
+  });
+
+  it("writes a later outgoing repayment with its own account, date and category", async () => {
+    const ana = store.createDebt(user.id, { direction: "you_owe", counterparty: "Ana", amountMinor: 100_000 });
+    const first = await say("I paid Zed for Food from Maya on 2026-10-01", "record_debt_repayment", { counterparty: "Zed", account: "Maya", date: "2026-10-01" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("repayment_amount");
+
+    const saved = await say("I paid Ana 200", "record_debt_repayment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09", category: "Other" }, id);
+
+    expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09", categoryName: "Other" });
+    expect(debtAmount(ana.id)).toBe(80_000);
+  });
+
+  it("writes a later debt advance with its own account and date, and only the opt-in it was given", async () => {
+    const first = await say("Zed owes me money into Maya on 2026-10-01", "log_debt", { counterparty: "Zed", direction: "owed_to_you", account: "Maya", date: "2026-10-01" });
+    const id = first.conversationId as string;
+    expect(first.debt).toBeNull();
+    expect(lastFollowup(id)).toBe("clarification");
+
+    const saved = await say("Ben owes me 200 and add it to Transactions for food", "log_debt", { counterparty: "Ben", direction: "owed_to_you", amount: "200", account: "Wallet", date: "2026-10-09", description: "food" }, id);
+
+    expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
+    expect(balance("Maya")).toBe(0);
+  });
+
+  it("does not let an earlier debt's opt-in put a later debt in Transactions", async () => {
+    const first = await say("Zed owes me, add it to Transactions into Maya", "log_debt", { counterparty: "Zed", direction: "owed_to_you", account: "Maya" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("clarification");
+
+    const saved = await say("Ben owes me 200", "log_debt", { counterparty: "Ben", direction: "owed_to_you", amount: "200", account: "Wallet" }, id);
+
+    expect(saved.debt).toMatchObject({ counterparty: "Ben" });
+    expect(saved.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+
+  it("saves a later bill and its posted expense with the default account, not an earlier payment's", async () => {
+    const first = await say("Zed paid me into Maya on 2026-10-01", "record_debt_payment", { counterparty: "Zed", account: "Maya", date: "2026-10-01" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("repayment_amount");
+
+    const saved = await say("I have a Netflix bill for ₱549 under Entertainment. It is monthly, starts today, and ends December 15.", "create_bill", { name: "Netflix", amount: "549", frequency: "monthly", category: "Entertainment", firstDueDate: "2026-10-09", endDate: "2026-12-15" }, id);
+
+    expect(saved.bill).toMatchObject({ name: "Netflix", accountName: "Wallet" });
+    expect(store.listTransactions(user.id).map((row) => row.accountName)).toEqual(["Wallet"]);
+    expect(balance("Maya")).toBe(0);
+  });
+
+  // The controls: what belongs to the statement still applies.
+  it("applies a correction said inside the same statement", async () => {
+    const first = await say("Zed paid me 500", "record_debt_payment", { counterparty: "Zed", amount: "500", account: "Wallet" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("ordinary_income");
+    const corrected = await say("actually into Maya", "record_debt_payment", { counterparty: "Zed", amount: "500", account: "Wallet" }, id);
+    expect(corrected.transaction).toBeNull();
+
+    const saved = await say("yes", "log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Maya" });
+    expect({ wallet: balance("Wallet"), maya: balance("Maya") }).toEqual({ wallet: 0, maya: 50_000 });
+  });
+
+  it("applies the account named for the same payment after its clarification", async () => {
+    const ana = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const first = await say("Ana paid me 500 into my Nowhere account", "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Nowhere" });
+    const id = first.conversationId as string;
+    expect(first.transaction).toBeNull();
+    expect(lastFollowup(id)).toBe("account_or_date");
+
+    const saved = await say("use Maya", "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Maya" });
+    expect(debtAmount(ana.id)).toBe(50_000);
+  });
+
+  it("keeps the account and date the statement named when the amount arrives later", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const first = await say("Ana paid me into Maya on 2026-10-05", "record_debt_payment", { counterparty: "Ana", account: "Wallet" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("repayment_amount");
+
+    const saved = await say("500", "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ accountName: "Maya", date: "2026-10-05" });
+  });
+
+  it("keeps the date said for the income while the user answers yes", async () => {
+    const first = await say("Zed paid me 500 last Monday", "record_debt_payment", { counterparty: "Zed", amount: "500", date: "2026-10-05" });
+    const id = first.conversationId as string;
+
+    const saved = await say("yes", "log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" }, id);
+
+    expect(saved.transaction).toMatchObject({ date: "2026-10-05" });
+  });
+
+  // The accepted cost: a restated payment is a new statement, so the cue said before it does not carry over.
+  it("asks the user to restate the account when a payment is said again in full", async () => {
+    const ana = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const first = await say("Ana paid me into Maya", "record_debt_payment", { counterparty: "Ana" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("repayment_amount");
+
+    const saved = await say("Ana paid me 500", "record_debt_payment", { counterparty: "Ana", amount: "500" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Wallet" });
+    expect(debtAmount(ana.id)).toBe(50_000);
+  });
+});

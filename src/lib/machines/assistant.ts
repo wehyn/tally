@@ -218,6 +218,44 @@ export function userMessagesFor<T extends RunMessage>(use: UserTextUse, run: rea
   return use === "hint" ? ownUserMessages(run) : guardUserMessages(run);
 }
 
+// A hint that chooses a value (account, date, time, category, an opt-in to Transactions) applies to the statement the
+// write is for, never to an earlier different one in the same open run. A new statement starts at a user message that
+// opens a different payment, debt, bill or transaction, and the earlier messages of the run stop applying to it. The
+// answers to the pending question (an account, a date, an amount, a payer, a yes) belong to the statement they answer,
+// so they never start one.
+//
+// What opens a statement is the caller's text recognizer (`opens`, which knows the wording); whether an opener is
+// really an answer is decided here, from the kind the reply before it stored, never from more text:
+//  - "payment" (a payment wording, incoming or outgoing) and "debt" (a new debt) always open, whatever was asked. The
+//    code runs the repayment or the debt path for them, as `incomeChainAnswers` already assumes.
+//  - "bill" opens unless a bill question was pending, because a bill question expects bill wording as its answer.
+//  - "transaction" (a message that states an amount and is no bare answer) opens unless the question pending expected
+//    one: an amount, a model-worded question or a bill detail (repayment_amount, clarification, bill kinds).
+// A message that is no opener belongs to the statement before it. In doubt a message is an opener, so an older cue
+// does not apply and the write falls back to the provider's field, the default account and today, which the existing
+// ask rules cover. The cost is that a user who restates a payment ("Ana paid me" asked for the amount, then "Ana paid
+// me 500") says the account or date again. Quiet turns are left out as in `ownUserMessages`: a read or a saved bill
+// is its own request and neither feeds a hint nor starts a statement.
+export type StatementOpener = "payment" | "debt" | "bill" | "transaction" | null;
+
+function opensStatement(opener: StatementOpener, pending: FollowupKind | null): boolean {
+  if (opener === null) return false;
+  if (opener === "payment" || opener === "debt") return true;
+  if (opener === "bill") return !isBillFollowup(pending);
+  return !(pending === "repayment_amount" || pending === "clarification" || isBillFollowup(pending));
+}
+
+// The user messages of the open run whose hints may apply to the write the current message is for. The result never
+// holds the current message, which the caller adds, and is empty when the current message opens its own statement.
+export function hintMessagesFor<T extends RunMessage & { content: string }>(run: readonly T[], current: string, opens: (userMessage: string) => StatementOpener): T[] {
+  if (opensStatement(opens(current), run.at(-1)?.followup ?? null)) return [];
+  let start = 0;
+  const own = run.flatMap((message, index) => message.role === "user" && !(index + 1 < run.length && isQuietReply(run[index + 1]))
+    ? [{ message, pending: index > 0 ? run[index - 1].followup ?? null : null }] : []);
+  own.forEach(({ message, pending }, index) => { if (index > 0 && opensStatement(opens(message.content), pending)) start = index; });
+  return own.slice(start).map(({ message }) => message);
+}
+
 // Refusal wording ("Ana did not pay me", "maybe he paid") blocks a write nobody confirmed. The block is one decision
 // taken before the turn writes anything, never a reply that replaces one after it: a turn either writes nothing and
 // says so, or writes and answers with what it wrote. The decision reads what the call is about to do, after every

@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isIncomeConfirmation, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, type StatementOpener } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -276,13 +276,16 @@ function missingBillFollowup(missing: string[]): FollowupKind {
 }
 function handleAssistantBillAction(
   store: ReturnType<typeof getStore>, userId: string, action: "create_bill" | "update_bill", args: Record<string, unknown>,
-  userMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null,
+  userMessages: string[], hintMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null,
 ): AssistantBillResult {
   const today = todayInManila();
   const duplicateFollowup = followup === "bill_duplicate" || followup === "bill_schedule";
   const lastUserMessage = userMessages.at(-1) ?? "";
   const explicitUpdate = /\b(?:update|edit|change|remove|clear|delete)\b.{0,60}\bbill\b/i.test(lastUserMessage);
-  const detailMessages = (action === "update_bill" || explicitUpdate) && !duplicateFollowup ? [lastUserMessage] : userMessages;
+  const ownDetailsOnly = (action === "update_bill" || explicitUpdate) && !duplicateFollowup;
+  const detailMessages = ownDetailsOnly ? [lastUserMessage] : userMessages;
+  // The account and the category the bill uses come from the statement it is for (hintMessagesFor), not the whole run.
+  const hintDetailMessages = ownDetailsOnly ? [lastUserMessage] : hintMessages;
   const amountHint = billAmountHint(detailMessages, followup);
   const frequencyHint = billFrequencyHint(detailMessages);
   const startHint = billDateHint(detailMessages, "start", followup, today);
@@ -345,14 +348,14 @@ function handleAssistantBillAction(
     ? accounts.find((candidate) => ` ${normalizeWords(lastUserMessage)} `.includes(` ${normalizeWords(candidate.name)} `))
       ?? (/^default(?: account)?$/i.test(lastUserMessage.trim()) ? accounts.find((candidate) => candidate.isDefault) : undefined)
     : undefined;
-  const accountHint = accountCorrection ? { account: accountCorrection, mentioned: true } : accountHintFromMessages(detailMessages, accounts);
+  const accountHint = accountCorrection ? { account: accountCorrection, mentioned: true } : accountHintFromMessages(hintDetailMessages, accounts);
   const account = accountHint.mentioned ? accountHint.account
     : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
       : accounts.find((candidate) => candidate.isDefault);
-  const categoryHint = latestCategoryHintFromMessages(detailMessages, categories, "expense");
+  const categoryHint = latestCategoryHintFromMessages(hintDetailMessages, categories, "expense");
   const requestedCategory = typeof args.category === "string" ? findCategory(args.category, categories, "expense") : undefined;
-  const inferredCategory = findCategoryInText(detailMessages.join(" "), categories, "expense")
-    ?? guessCategory(`${detailMessages.join(" ")} ${name}`, categories);
+  const inferredCategory = findCategoryInText(hintDetailMessages.join(" "), categories, "expense")
+    ?? guessCategory(`${hintDetailMessages.join(" ")} ${name}`, categories);
   const category = categoryHint.mentioned ? categoryHint.category
     : effectiveAction === "update_bill" ? categories.find((candidate) => candidate.id === selected?.categoryId)
       : inferredCategory ?? requestedCategory;
@@ -442,6 +445,22 @@ function hasOutgoingDebtRepaymentWording(text: string): boolean {
 // A message with payment wording is handled by the repayment path, never by the income flow, so it opens a payment.
 function hasPaymentWording(text: string): boolean {
   return hasIncomingDebtRepaymentWording(text) || hasOutgoingDebtRepaymentWording(text);
+}
+// An amount in the message that is no date or time, and the message is no bare amount and no yes. "Coffee 120 into
+// Maya" states a transaction, "500", "yes, Maya, 2026-10-05" and "5pm" answer a question.
+function isTransactionStatement(text: string): boolean {
+  if (bareAmountFromPrompt(text) !== undefined || isIncomeConfirmation(text)) return false;
+  const withoutDatesAndTimes = text
+    .replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|\b\d{1,2}:\d{2}\b/gi, " ")
+    .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?/gi, " ");
+  return /(?:₱|\bPHP\s*)?\b\d[\d,]*(?:\.\d+)?\b/i.test(withoutDatesAndTimes);
+}
+// What a user message opens, for hintMessagesFor: the statement its hints belong to.
+function statementOpener(text: string): StatementOpener {
+  if (hasPaymentWording(text)) return "payment";
+  if (explicitNewDebtIntent(text)) return "debt";
+  if (isBillTrackingIntent(text)) return "bill";
+  return isTransactionStatement(text) ? "transaction" : null;
 }
 function hasOutgoingPayeeOrPurpose(text: string): boolean {
   const match = /\b(?:i|we)\s+(?:paid\s+back|paid|repaid|returned|settled)\s+(.+?)\s*[.!?]?\s*$/i.exec(text);
@@ -729,6 +748,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       { content: input.prompt, createdAt: receivedAt },
     ];
     const userMessageText = userMessages.map((message) => message.content);
+    // A hint that chooses a value reads only the statement this write is for, so a cue word or a date said about an earlier,
+    // different payment, debt, bill or transaction of the same run never applies (hintMessagesFor). The payer, the amount,
+    // the bill details and the guards keep reading the whole run.
+    const hintMessages = [
+      ...hintMessagesFor(run, input.prompt, statementOpener).map((message) => ({ content: message.content, createdAt: message.createdAt })),
+      { content: input.prompt, createdAt: receivedAt },
+    ];
+    const hintText = hintMessages.map((message) => message.content);
     const guardMessageText = [...userMessagesFor("guard", run).map((message) => message.content), input.prompt];
     const requestedMetrics = requestedFinanceMetrics(input.prompt);
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
@@ -768,7 +795,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo;
-    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(userMessageText) || debtQuestionYes);
+    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes);
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
     const currentDebtIntent = explicitNewDebtIntent(input.prompt);
     const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
@@ -880,7 +907,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       }
       else if (refusal === "refuse") { answer = endedQuestionReply("refused", "", false); followup = null; }
       else if (call.name === "create_bill" || call.name === "update_bill") {
-        const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, accounts, categories, lastFollowup);
+        const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup);
         answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup;
       }
       else if (call.name === "ask_clarification") {
@@ -946,24 +973,24 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
               followup = "debt_transaction";
             }
           } else {
-            const userContext = userMessageText.join(" ");
+            const userContext = hintText.join(" ");
             const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-            const accountHint = accountHintFromMessages(userMessageText, accounts);
+            const accountHint = accountHintFromMessages(hintText, accounts);
             const defaultAccount = accounts.find((candidate) => candidate.isDefault);
             const account = accountHint.mentioned
               ? accountHint.account
               : requestedAccount
                 ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
                 : defaultAccount;
-            const dateHint = priorDateHint(userMessages);
+            const dateHint = priorDateHint(hintMessages);
             const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
             const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-            const timeHint = timeHintFromMessages(userMessageText);
+            const timeHint = timeHintFromMessages(hintText);
             const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
             const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
             const kind: "expense" | "income" = direction === "owed_to_you" ? "expense" : "income";
             const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, kind) : undefined;
-            const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, kind);
+            const categoryHint = latestCategoryHintFromMessages(hintText, categories, kind);
             const category = categoryHint.mentioned
               ? categoryHint.category
               : [
@@ -1014,17 +1041,17 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
           else {
             const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-            const accountHint = accountHintFromMessages(userMessageText, accounts);
+            const accountHint = accountHintFromMessages(hintText, accounts);
             const defaultAccount = accounts.find((candidate) => candidate.isDefault);
             const account = accountHint.mentioned
               ? accountHint.account
               : requestedAccount
                 ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
                 : defaultAccount;
-            const dateHint = priorDateHint(userMessages);
+            const dateHint = priorDateHint(hintMessages);
             const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
             const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-            const timeHint = timeHintFromMessages(userMessageText);
+            const timeHint = timeHintFromMessages(hintText);
             const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
             const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
             if (!account) {
@@ -1058,20 +1085,20 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         } else {
           const amountMinor = parsePHPToMinor(amount);
           const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-          const accountHint = accountHintFromMessages(userMessageText, accounts);
+          const accountHint = accountHintFromMessages(hintText, accounts);
           const defaultAccount = accounts.find((candidate) => candidate.isDefault);
           const account = accountHint.mentioned
             ? accountHint.account
             : requestedAccount
               ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
               : defaultAccount;
-          const dateHint = priorDateHint(userMessages);
+          const dateHint = priorDateHint(hintMessages);
           const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
           const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-          const timeHint = timeHintFromMessages(userMessageText);
+          const timeHint = timeHintFromMessages(hintText);
           const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
           const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
-          const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, "expense");
+          const categoryHint = latestCategoryHintFromMessages(hintText, categories, "expense");
           const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, "expense") : undefined;
           const category = categoryHint.mentioned ? categoryHint.category : requestedCategory ?? fallbackCategory("expense", categories);
           if (amountMinor > repaymentDebt.amountMinor) { answer = `That payment is more than the ${formatPHP(repaymentDebt.amountMinor)} you still owe ${repaymentDebt.counterparty}. How should I handle it?`; followup = "clarification"; }
@@ -1103,7 +1130,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         if (!amount) { answer = safeClarification("What amount should I use?"); followup = "clarification"; }
         else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; followup = "account_or_date"; }
         else {
-          const userContext = userMessageText.join(" ");
+          const userContext = hintText.join(" ");
           const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
           // An income write takes an account from the current reply only. When the reply names none and an earlier confirmation
           // of this income question chose one, it asks again instead of guessing that the choice still stands (incomeAccountChoice).
@@ -1113,17 +1140,17 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
               incomeChainAccount(incomeChainAnswers(run, hasPaymentWording), (confirmation) => incomeConfirmationAccount(confirmation, accounts)))
             : { use: "none" as const };
           if (incomeChoice.use === "ask") incomeEchoedAccount = incomeChoice.earlier.name;
-          const accountHint = incomeChoice.use === "account" ? { account: incomeChoice.account, mentioned: true } : accountHintFromMessages(userMessageText, accounts);
+          const accountHint = incomeChoice.use === "account" ? { account: incomeChoice.account, mentioned: true } : accountHintFromMessages(hintText, accounts);
           const defaultAccount = accounts.find((candidate) => candidate.isDefault);
           const account = accountHint.mentioned
             ? accountHint.account
             : requestedAccount
               ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
               : defaultAccount;
-          const dateHint = priorDateHint(userMessages);
+          const dateHint = priorDateHint(hintMessages);
           const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
           const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-          const timeHint = timeHintFromMessages(userMessageText);
+          const timeHint = timeHintFromMessages(hintText);
           const time = timeHint && isTime(timeHint) ? timeHint : timeInManila();
           const explicitKind = ordinaryIncomeAccepted ? "income" : outgoingRepaymentIntent ? "expense" : explicitTransactionKind(userContext);
           const promptCategory = findCategoryInText(userContext, categories, explicitKind ?? kindHint ?? undefined);
@@ -1135,7 +1162,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           const requestedCategory = requestedCategoryHint?.type === providerPreferredType || !providerPreferredType ? requestedCategoryHint : undefined;
           const categoryText = `${userContext} ${description}`;
           const textCategory = findCategoryInText(categoryText, categories, providerPreferredType);
-          const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, providerPreferredType);
+          const categoryHint = latestCategoryHintFromMessages(hintText, categories, providerPreferredType);
           const categoryAmbiguous = promptCategoryAmbiguous || categoryHint.mentioned && !categoryHint.category || requestedCategory === null || textCategory === null;
           const category = categoryHint.mentioned ? categoryHint.category : (promptCategory && promptCategory !== null ? promptCategory : undefined)
             ?? (requestedCategory && requestedCategory !== null ? requestedCategory : undefined)
