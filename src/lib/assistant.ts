@@ -569,9 +569,16 @@ function accountMention(text: string, accounts: Account[]): Account | undefined 
   const cues = "from|to|into|using|via|in|use|with|account(?:\\s+named)?|card";
   return [...accounts].sort((a, b) => b.name.length - a.name.length).find((account) => {
     const name = account.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-    return new RegExp(`\\b(?:${cues})\\s+(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\b`, "i").test(text)
-      // The reply the income clarification asks for, "yes, Wallet", names the account with no cue word.
-      || new RegExp(`^\\s*(?:yes|yeah|yep|sure|okay|ok)\\b[\\s,.:;-]*(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\s*[.!]?\\s*$`, "i").test(text);
+    return new RegExp(`\\b(?:${cues})\\s+(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\b`, "i").test(text);
+  });
+}
+// The reply the ordinary income clarification asks for, "yes, Wallet", names the account with no cue word. Only the
+// income write reads it, from the message that confirmed the income. Everywhere else a yes followed by a name picks a
+// payer, a payee or a bill detail, so it is not an account choice (accountMention needs a cue word).
+function incomeConfirmationAccount(prompt: string, accounts: Account[]): Account | undefined {
+  return [...accounts].sort((a, b) => b.name.length - a.name.length).find((account) => {
+    const name = account.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    return new RegExp(`^\\s*(?:yes|yeah|yep|sure|okay|ok)\\b[\\s,.:;-]*(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\s*[.!]?\\s*$`, "i").test(prompt);
   });
 }
 function accountHintFromMessages(messages: string[], accounts: Account[]): { account?: Account; mentioned: boolean; invalidName?: string } {
@@ -1090,7 +1097,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         else {
           const userContext = userMessageText.join(" ");
           const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-          const accountHint = accountHintFromMessages(userMessageText, accounts);
+          const confirmedAccount = ordinaryIncomeAccepted ? incomeConfirmationAccount(input.prompt, accounts) : undefined;
+          const accountHint = confirmedAccount ? { account: confirmedAccount, mentioned: true } : accountHintFromMessages(userMessageText, accounts);
           const defaultAccount = accounts.find((candidate) => candidate.isDefault);
           const account = accountHint.mentioned
             ? accountHint.account

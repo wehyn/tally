@@ -3655,3 +3655,105 @@ describe("assistant turn commit", () => {
     expect(messageCount(conversationId)).toBe(before);
   });
 });
+
+// "yes, <account>" names the account only when it answers the ordinary income question. In every other context a reply
+// that names a person, a payee or a bill is not an account choice, even when an account carries the same name.
+describe("assistant account named by a yes reply", () => {
+  beforeEach(() => { store.createAccount(user.id, { name: "Maya", type: "bank", openingMinor: 0 }); });
+  const balance = (name: string) => store.listAccounts(user.id).find((account) => account.name === name)!.balanceMinor;
+  const provider = (name: string, args: Record<string, unknown>) => vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+
+  async function askTwoPayers() {
+    const ana = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const mayaDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+    provider("record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet" });
+    const asked = await (await POST(assistantRequest("Ana and Maya paid me 500 into Wallet"))).json();
+    expect(asked.transaction).toBeNull();
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("repayment_payer");
+    return { ana, mayaDebt, conversationId: asked.conversationId as string };
+  }
+
+  it.each(["yes, Maya", "Maya", "yes Maya", "Yes, Maya."])("keeps the named repayment account when %s only picks the payer", async (reply) => {
+    const { ana, mayaDebt, conversationId } = await askTwoPayers();
+    provider("record_debt_payment", { counterparty: "Maya", amount: "500", account: "Wallet" });
+
+    const saved = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 50_000, accountName: "Wallet" });
+    expect(balance("Wallet")).toBe(50_000);
+    expect(balance("Maya")).toBe(0);
+    expect(store.listDebts(user.id).find((debt) => debt.id === mayaDebt.id)!.amountMinor).toBe(50_000);
+    expect(store.listDebts(user.id).find((debt) => debt.id === ana.id)!.amountMinor).toBe(100_000);
+  });
+
+  it("keeps the default account when a payer pick names a person who is also an account and no account was named", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+    provider("record_debt_payment", { counterparty: "Ana", amount: "500" });
+    const asked = await (await POST(assistantRequest("Ana and Maya paid me 500"))).json();
+    provider("record_debt_payment", { counterparty: "Maya", amount: "500" });
+
+    const saved = await (await POST(assistantRequest("yes, Maya", asked.conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Wallet" });
+    expect(balance("Maya")).toBe(0);
+  });
+
+  it("keeps the provider's account when yes and an account-named person confirm adding a debt to Transactions", async () => {
+    store.createAccount(user.id, { name: "Bank", type: "bank", openingMinor: 0 });
+    provider("log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "100", account: "Bank" });
+    const asked = await (await POST(assistantRequest("Ana owes me 100"))).json();
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("debt_transaction");
+
+    const result = await (await POST(assistantRequest("yes, Maya", asked.conversationId))).json();
+
+    expect(result.transaction).toMatchObject({ accountName: "Bank" });
+    expect(balance("Maya")).toBe(0);
+  });
+
+  // The income clarification asks for "yes, <account>", so it is the one place that reply names an account.
+  async function holdIncomeForAccount() {
+    provider("record_debt_payment", { counterparty: "Zed", amount: "500" });
+    const asked = await (await POST(assistantRequest("Zed paid me 500"))).json();
+    expect(asked.answer).toContain("ordinary income");
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Nowhere" });
+    const held = await (await POST(assistantRequest("yes, into my Nowhere account", asked.conversationId))).json();
+    expect(held.transaction).toBeNull();
+    expect(store.getConversation(user.id, asked.conversationId)!.messages.at(-1)!.followup).toBe("account_or_date");
+    return asked.conversationId as string;
+  }
+
+  it("records income into the account that yes and its name chose in the income clarification, even when a debtor has that name", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+    const conversationId = await holdIncomeForAccount();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" });
+
+    const saved = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Maya" });
+    expect(balance("Maya")).toBe(50_000);
+    expect(balance("Wallet")).toBe(0);
+    expect(store.listDebts(user.id).find((item) => item.id === debt.id)!.amountMinor).toBe(100_000);
+  });
+
+  it.each(["yes, Wallet", "Yes Wallet.", "ok, my Wallet account"])("records income into Wallet when %s answers the income clarification", async (reply) => {
+    const conversationId = await holdIncomeForAccount();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Maya" });
+
+    const saved = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Wallet" });
+    expect(balance("Wallet")).toBe(50_000);
+    expect(balance("Maya")).toBe(0);
+  });
+
+  it("does not let an earlier yes and account name choose the account for a later message that is not a yes", async () => {
+    const conversationId = await holdIncomeForAccount();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" });
+
+    const result = await (await POST(assistantRequest("Maya", conversationId))).json();
+
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+});
