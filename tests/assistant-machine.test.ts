@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, incomeFlowAccount, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -128,6 +128,25 @@ describe("the ordinary income turn", () => {
     expect(cancelHint(null, "ordinary_income")).toBeNull();
     expect(cancelHint("clarification", "ordinary_income")).toBeNull();
   });
+});
+
+describe("the account an income flow's confirmations chose", () => {
+  // The caller reads one confirmation; this stand-in names an account when the text ends in Maya or Wallet.
+  const nameIn = (text: string) => /\bMaya\b/.test(text) ? "Maya" : /\bWallet\b/.test(text) ? "Wallet" : undefined;
+  const table: [string, string[], string | undefined][] = [
+    ["confirm with an account, then confirm with a date only", ["yes, Maya", "yes, 2026-10-05"], "Maya"],
+    ["confirm with an account, then confirm naming another account", ["yes, Maya", "yes, Wallet"], "Wallet"],
+    ["confirm without an account, then with one", ["yes", "yes, Maya"], "Maya"],
+    ["a non-confirmation naming an account in between", ["yes, Maya", "Wallet", "yes, 500"], "Maya"],
+    ["a non-confirmation naming an account as the current reply", ["yes, Maya", "Wallet"], "Maya"],
+    ["a refusal naming an account in between", ["yes, Maya", "Don't record it in Wallet", "yes"], "Maya"],
+    ["no confirmation names an account", ["yes", "yes, 2026-10-05"], undefined],
+    ["only non-confirmations name an account", ["Maya", "Wallet"], undefined],
+    ["no messages", [], undefined],
+  ];
+  for (const [name, messages, expected] of table) {
+    it(`${name} picks ${expected ?? "no account"}`, () => expect(incomeFlowAccount(messages, nameIn)).toBe(expected));
+  }
 });
 
 // Replaces the capOpenRun tests, which pinned a trim of the middle of a long run. No run is trimmed any more.

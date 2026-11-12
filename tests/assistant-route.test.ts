@@ -3747,6 +3747,71 @@ describe("assistant account named by a yes reply", () => {
     expect(balance("Maya")).toBe(0);
   });
 
+  // An account the user chose in an earlier confirmation of the same income flow survives a later clarification.
+  async function askIncome() {
+    provider("record_debt_payment", { counterparty: "Zed", amount: "500" });
+    const asked = await (await POST(assistantRequest("Zed paid me 500 last Monday"))).json();
+    expect(asked.answer).toContain("ordinary income");
+    return asked.conversationId as string;
+  }
+
+  it("keeps the account a yes chose through a later yes that only supplies the date", async () => {
+    const conversationId = await askIncome();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income" });
+    const held = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
+    expect(held.transaction).toBeNull();
+    expect(held.answer).toContain("date");
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+
+    const saved = await (await POST(assistantRequest("yes, 2026-10-05", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Maya", date: "2026-10-05" });
+    expect(balance("Maya")).toBe(50_000);
+    expect(balance("Wallet")).toBe(0);
+  });
+
+  it("keeps the account a yes chose through a later yes that only supplies the amount", async () => {
+    const conversationId = await askIncome();
+    provider("log_transaction", { kind: "income", category: "Other income", date: "2026-10-05" });
+    const held = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
+    expect(held.transaction).toBeNull();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+
+    const saved = await (await POST(assistantRequest("yes, 500", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Maya" });
+    expect(balance("Maya")).toBe(50_000);
+    expect(balance("Wallet")).toBe(0);
+  });
+
+  it("lets a later yes that names another account override the earlier choice", async () => {
+    const conversationId = await askIncome();
+    provider("log_transaction", { kind: "income", category: "Other income", date: "2026-10-05" });
+    await POST(assistantRequest("yes, Maya", conversationId));
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+
+    const saved = await (await POST(assistantRequest("yes, Wallet", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet" });
+    expect(balance("Wallet")).toBe(50_000);
+    expect(balance("Maya")).toBe(0);
+  });
+
+  it("ignores an account named in a message between the confirmations that is not a confirmation", async () => {
+    const conversationId = await askIncome();
+    provider("log_transaction", { kind: "income", category: "Other income", date: "2026-10-05" });
+    await POST(assistantRequest("yes, Maya", conversationId));
+    provider("log_transaction", { kind: "income", category: "Other income", date: "2026-10-05" });
+    await POST(assistantRequest("Wallet", conversationId));
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+
+    const saved = await (await POST(assistantRequest("yes, 500", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Maya" });
+    expect(balance("Maya")).toBe(50_000);
+    expect(balance("Wallet")).toBe(0);
+  });
+
   it("does not let an earlier yes and account name choose the account for a later message that is not a yes", async () => {
     const conversationId = await holdIncomeForAccount();
     provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" });

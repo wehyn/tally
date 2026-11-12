@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeConfirmHint, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeConfirmHint, incomeFlowAccount, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -573,8 +573,9 @@ function accountMention(text: string, accounts: Account[]): Account | undefined 
   });
 }
 // The reply the ordinary income clarification asks for, "yes, Wallet", names the account with no cue word. Only the
-// income write reads it, from the message that confirmed the income. Everywhere else a yes followed by a name picks a
-// payer, a payee or a bill detail, so it is not an account choice (accountMention needs a cue word).
+// income write reads it, from the messages that confirmed the income (incomeFlowAccount). Everywhere else a yes
+// followed by a name picks a payer, a payee or a bill detail, so it is not an account choice (accountMention needs a
+// cue word).
 function incomeConfirmationAccount(prompt: string, accounts: Account[]): Account | undefined {
   return [...accounts].sort((a, b) => b.name.length - a.name.length).find((account) => {
     const name = account.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
@@ -750,6 +751,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const ordinaryIncomeQuestionIndex = history.map((message) => message.role === "assistant" ? message.followup : null).lastIndexOf("ordinary_income");
     const ordinaryIncomeQuestionPending = lastFollowup === "ordinary_income";
     const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? run.slice(ordinaryIncomeQuestionIndex + 1) : [];
+    // The confirmations of the flow start after its first question: a re-ask is another question of the same flow.
+    const ordinaryIncomeFirstQuestionIndex = history.findIndex((message) => message.role === "assistant" && message.followup === "ordinary_income");
+    const incomeFlowMessages = ordinaryIncomeFirstQuestionIndex >= 0 ? run.slice(ordinaryIncomeFirstQuestionIndex + 1) : [];
     // The income flow is open from the question until its run ends, through any account, date or amount question it
     // asks. Being open authorizes nothing: only a message that is itself a yes writes (ordinaryIncomeTurn).
     const ordinaryIncomeOpen = ordinaryIncomeQuestionPending || (ordinaryIncomeQuestionIndex >= 0
@@ -1097,7 +1101,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         else {
           const userContext = userMessageText.join(" ");
           const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-          const confirmedAccount = ordinaryIncomeAccepted ? incomeConfirmationAccount(input.prompt, accounts) : undefined;
+          // The account a confirmation of this income flow chose. The messages answered after the flow's first income question, in order,
+          // then the current one, which has just been confirmed: only confirmations among them can name an account.
+          const confirmedAccount = ordinaryIncomeAccepted
+            ? incomeFlowAccount([...userMessagesFor("hint", incomeFlowMessages).map((message) => message.content), input.prompt],
+              (confirmation) => incomeConfirmationAccount(confirmation, accounts))
+            : undefined;
           const accountHint = confirmedAccount ? { account: confirmedAccount, mentioned: true } : accountHintFromMessages(userMessageText, accounts);
           const defaultAccount = accounts.find((candidate) => candidate.isDefault);
           const account = accountHint.mentioned

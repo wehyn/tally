@@ -89,6 +89,21 @@ export function ordinaryIncomeTurn(prompt: string, call: TurnCall): OrdinaryInco
   return call === "read" ? "read" : "askAgain";
 }
 
+// The account an income confirmation chose. The messages are the user's messages of the open income flow in order,
+// the one being answered last. Only a message that is itself an income confirmation may name an account, so a reply
+// that is not a confirmation (a bare "Wallet", a refusal, a question) never contributes and free text is never scanned.
+// The latest confirmation that names one wins, so the current reply overrides an earlier choice when it names a
+// different account, and an earlier choice survives a later confirmation that only supplies a date or an amount.
+// `nameIn` reads the account out of one confirmation and is the caller's, because it knows the accounts.
+export function incomeFlowAccount<T>(userMessages: readonly string[], nameIn: (confirmation: string) => T | undefined): T | undefined {
+  let chosen: T | undefined;
+  for (const message of userMessages) {
+    if (!isIncomeConfirmation(message)) continue;
+    chosen = nameIn(message) ?? chosen;
+  }
+  return chosen;
+}
+
 // How to confirm after the code asks for the account, date or answer that income the user just said yes to still needs.
 // The yes is not carried over, so the next message says it again, with the answer in the same message.
 export function incomeConfirmHint(asked: "account_or_date" | "clarification", account?: string): string {
