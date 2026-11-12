@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, incomeFlowAccount, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
-import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
 
@@ -130,22 +130,47 @@ describe("the ordinary income turn", () => {
   });
 });
 
-describe("the account an income flow's confirmations chose", () => {
-  // The caller reads one confirmation; this stand-in names an account when the text ends in Maya or Wallet.
-  const nameIn = (text: string) => /\bMaya\b/.test(text) ? "Maya" : /\bWallet\b/.test(text) ? "Wallet" : undefined;
-  const table: [string, string[], string | undefined][] = [
-    ["confirm with an account, then confirm with a date only", ["yes, Maya", "yes, 2026-10-05"], "Maya"],
-    ["confirm with an account, then confirm naming another account", ["yes, Maya", "yes, Wallet"], "Wallet"],
-    ["confirm without an account, then with one", ["yes", "yes, Maya"], "Maya"],
-    ["a non-confirmation naming an account in between", ["yes, Maya", "Wallet", "yes, 500"], "Maya"],
-    ["a non-confirmation naming an account as the current reply", ["yes, Maya", "Wallet"], "Maya"],
-    ["a refusal naming an account in between", ["yes, Maya", "Don't record it in Wallet", "yes"], "Maya"],
-    ["no confirmation names an account", ["yes", "yes, 2026-10-05"], undefined],
-    ["only non-confirmations name an account", ["Maya", "Wallet"], undefined],
-    ["no messages", [], undefined],
+// An income write takes an account from the current reply only. An earlier confirmation of the same income question that
+// chose one makes a reply that names none ask again; it never chooses the account.
+describe("the account an income write may use", () => {
+  type Turn = [role: "user" | "assistant", text: string, followup?: FollowupKind | null, quiet?: boolean];
+  const toRun = (turns: Turn[]) => turns.map(([role, content, followup, quiet]) => ({ role, content, followup: followup ?? null, ...(quiet ? { readOnly: true } : {}) }));
+  // The caller's readers, stood in for here: a message names an account when it is "yes" and then Maya or Wallet, and a
+  // message with the word "paid" has payment wording.
+  const nameIn = (text: string) => /^yes[, ]+(Maya|Wallet)\b/.exec(text)?.[1];
+  const opensPayment = (text: string) => /\bpaid\b/.test(text);
+  const earlierAccount = (turns: Turn[]) => incomeChainAccount(incomeChainAnswers(toRun(turns), opensPayment), nameIn);
+  const question: Turn[] = [["user", "Zed paid me 500 last Monday"], ["assistant", "Record as income?", "ordinary_income"]];
+  const heldInMaya: Turn[] = [...question, ["user", "yes, Maya"], ["assistant", "What date?", "account_or_date"]];
+
+  const chain: [string, Turn[], string | undefined][] = [
+    ["the date clarification a confirmation led to", heldInMaya, "Maya"],
+    ["the amount clarification a confirmation led to", [...question, ["user", "yes, Maya"], ["assistant", "What amount?", "clarification"]], "Maya"],
+    ["a later confirmation naming another account", [...heldInMaya, ["user", "yes, Wallet"], ["assistant", "What date?", "account_or_date"]], "Wallet"],
+    ["a later confirmation naming none keeps the earlier one", [...heldInMaya, ["user", "yes, 2026-10-05"], ["assistant", "What amount?", "clarification"]], "Maya"],
+    ["a re-ask of the same question keeps the chain", [...heldInMaya, ["user", "Wallet"], ["assistant", "Please answer yes", "ordinary_income"]], "Maya"],
+    ["a reply that is not a confirmation never counts", [...question, ["user", "Maya"], ["assistant", "Please answer yes", "ordinary_income"]], undefined],
+    ["no confirmation names an account", [...question, ["user", "yes"], ["assistant", "What date?", "account_or_date"]], undefined],
+    ["a quiet turn in between is left out", [...heldInMaya, ["user", "yes, Wallet"], ["assistant", "Your spending", "account_or_date", true]], "Maya"],
+    ["a new payment question resets the chain", [...heldInMaya, ["user", "Bob paid me 200 into Wallet today"], ["assistant", "Record as income?", "ordinary_income"]], undefined],
+    ["a payer pick never counts", [...question, ["user", "Ana and Maya paid me 500"], ["assistant", "Which person?", "repayment_payer"], ["user", "yes, Maya"], ["assistant", "What date?", "account_or_date"]], undefined],
+    ["a payer pick between two income questions never counts", [...question, ["user", "Ana and Maya paid me 500"], ["assistant", "Which person?", "repayment_payer"], ["user", "yes, Maya"], ["assistant", "What date?", "account_or_date"], ["user", "Zed"], ["assistant", "Record as income?", "ordinary_income"]], undefined],
+    ["a repayment amount question ends the chain", [...heldInMaya, ["user", "yes"], ["assistant", "How much?", "repayment_amount"]], undefined],
+    ["no run", [], undefined],
   ];
-  for (const [name, messages, expected] of table) {
-    it(`${name} picks ${expected ?? "no account"}`, () => expect(incomeFlowAccount(messages, nameIn)).toBe(expected));
+  for (const [name, turns, expected] of chain) {
+    it(`earlier choice: ${name} -> ${expected ?? "none"}`, () => expect(earlierAccount(turns)).toBe(expected));
+  }
+
+  const choice: [string, { confirmed?: string; names?: boolean }, string | undefined, ReturnType<typeof incomeAccountChoice<string>>][] = [
+    ["the current reply names an account", { confirmed: "Wallet" }, undefined, { use: "account", account: "Wallet" }],
+    ["the current reply overrides an earlier choice", { confirmed: "Wallet" }, "Maya", { use: "account", account: "Wallet" }],
+    ["the current reply names an account by a cue word (or one that does not exist), which the ordinary reading decides", { names: true }, "Maya", { use: "none" }],
+    ["the reply names none and an earlier confirmation chose one", {}, "Maya", { use: "ask", earlier: "Maya" }],
+    ["no confirmation names an account", {}, undefined, { use: "none" }],
+  ];
+  for (const [name, current, earlier, expected] of choice) {
+    it(`choice: ${name} -> ${expected.use}`, () => expect(incomeAccountChoice({ confirmed: current.confirmed, names: current.names ?? false }, earlier)).toEqual(expected));
   }
 });
 

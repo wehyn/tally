@@ -89,19 +89,65 @@ export function ordinaryIncomeTurn(prompt: string, call: TurnCall): OrdinaryInco
   return call === "read" ? "read" : "askAgain";
 }
 
-// The account an income confirmation chose. The messages are the user's messages of the open income flow in order,
-// the one being answered last. Only a message that is itself an income confirmation may name an account, so a reply
-// that is not a confirmation (a bare "Wallet", a refusal, a question) never contributes and free text is never scanned.
-// The latest confirmation that names one wins, so the current reply overrides an earlier choice when it names a
-// different account, and an earlier choice survives a later confirmation that only supplies a date or an amount.
-// `nameIn` reads the account out of one confirmation and is the caller's, because it knows the accounts.
-export function incomeFlowAccount<T>(userMessages: readonly string[], nameIn: (confirmation: string) => T | undefined): T | undefined {
-  let chosen: T | undefined;
-  for (const message of userMessages) {
-    if (!isIncomeConfirmation(message)) continue;
-    chosen = nameIn(message) ?? chosen;
+// An income write never carries an account across turns. It uses one only from the current reply, or, when the reply
+// names none, from the provider, a cue word or the default exactly as any other write does. The one safety rule: when
+// an earlier confirmation of the same income question chose an account and this reply names none, the code cannot
+// tell whether the choice still stands, so it writes nothing and asks again, echoing the earlier choice.
+//
+// "The same income question" is the chain a pure walk over the open run finds, decided by the kind each reply stored,
+// never by what the user's words say. A chain starts at an ordinary_income question that opened a payment, goes on
+// through the account, date and amount clarifications it led to, and its re-asks, and ends at any other turn: a
+// repayment_payer, repayment_amount or other kind of reply, or a new ordinary_income question (the user's message had
+// payment wording, so the code ran the repayment path, not the income flow). A reply that answered another kind of
+// question, such as "yes, Maya" picking a payer, is therefore never in the chain.
+type IncomeChainTurn = RunMessage & { content: string };
+
+export function incomeChainAnswers(run: readonly IncomeChainTurn[], opensPayment: (userMessage: string) => boolean): string[] {
+  let answers: string[] = [];
+  let open = false;
+  for (let index = 0; index < run.length; index++) {
+    const message = run[index];
+    const reply = run[index + 1];
+    if (message.role !== "user" || reply?.role !== "assistant") continue;
+    // A quiet reply handled its own request and left the question pending: the message says nothing about it.
+    if (isQuietReply(reply)) continue;
+    const inChain = open && !opensPayment(message.content);
+    if (reply.followup === "ordinary_income") {
+      if (!inChain) answers = [];
+      open = true;
+    } else if (inChain && (reply.followup === "account_or_date" || reply.followup === "clarification")) {
+      answers.push(message.content);
+    } else {
+      answers = [];
+      open = false;
+    }
   }
-  return chosen;
+  return open ? answers : [];
+}
+
+// The account the chain's earlier confirmations chose, the latest one that names one. Only a message that is itself an
+// income confirmation counts, so a bare "Wallet" or a refusal naming an account never does. `nameIn` reads the account
+// out of one confirmation and is the caller's, because it knows the accounts.
+export function incomeChainAccount<T>(answers: readonly string[], nameIn: (confirmation: string) => T | undefined): T | undefined {
+  for (let index = answers.length - 1; index >= 0; index--) {
+    if (!isIncomeConfirmation(answers[index])) continue;
+    const named = nameIn(answers[index]);
+    if (named !== undefined) return named;
+  }
+  return undefined;
+}
+
+// "account": the current reply chose this account. "ask": it chose none while an earlier confirmation of the chain
+// chose `earlier`, so write nothing and ask again. "none": no account was chosen by a confirmation, and the write
+// uses what any other write uses (the account the reply names by a cue word, the provider's, the default). When the
+// current reply names an account by a cue word or names one that does not exist, that is its own choice, which the
+// ordinary account reading honors or asks about, so an earlier choice never overrides it and never answers for it.
+export type IncomeAccountChoice<T> = { use: "account"; account: T } | { use: "ask"; earlier: T } | { use: "none" };
+
+export function incomeAccountChoice<T>(current: { confirmed: T | undefined; names: boolean }, earlier: T | undefined): IncomeAccountChoice<T> {
+  if (current.confirmed !== undefined) return { use: "account", account: current.confirmed };
+  if (current.names || earlier === undefined) return { use: "none" };
+  return { use: "ask", earlier };
 }
 
 // How to confirm after the code asks for the account, date or answer that income the user just said yes to still needs.

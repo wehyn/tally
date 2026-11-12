@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeConfirmHint, incomeFlowAccount, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -439,6 +439,10 @@ function isUnconfirmedOutgoingDebtPayment(text: string): boolean {
 function hasOutgoingDebtRepaymentWording(text: string): boolean {
   return /\b(?:i|we)\s+(?:(?:didn't|did not|haven't|have not|hasn't|has not|hadn't|had not|never|maybe|might not)\s+)?(?:paid|pay|repaid|returned|settled)\b|\b(?:i|we)\s+paid\s+back\b/i.test(text);
 }
+// A message with payment wording is handled by the repayment path, never by the income flow, so it opens a payment.
+function hasPaymentWording(text: string): boolean {
+  return hasIncomingDebtRepaymentWording(text) || hasOutgoingDebtRepaymentWording(text);
+}
 function hasOutgoingPayeeOrPurpose(text: string): boolean {
   const match = /\b(?:i|we)\s+(?:paid\s+back|paid|repaid|returned|settled)\s+(.+?)\s*[.!?]?\s*$/i.exec(text);
   if (!match) return false;
@@ -572,14 +576,15 @@ function accountMention(text: string, accounts: Account[]): Account | undefined 
     return new RegExp(`\\b(?:${cues})\\s+(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\b`, "i").test(text);
   });
 }
-// The reply the ordinary income clarification asks for, "yes, Wallet", names the account with no cue word. Only the
-// income write reads it, from the messages that confirmed the income (incomeFlowAccount). Everywhere else a yes
+// The reply the ordinary income clarification asks for, "yes, Wallet", names the account with no cue word, and may
+// restate the date after it ("yes, Maya, 2026-10-05"). Only the income write reads it, from the reply that confirms the
+// income and from the earlier confirmations of the same income question (incomeAccountChoice). Everywhere else a yes
 // followed by a name picks a payer, a payee or a bill detail, so it is not an account choice (accountMention needs a
 // cue word).
 function incomeConfirmationAccount(prompt: string, accounts: Account[]): Account | undefined {
   return [...accounts].sort((a, b) => b.name.length - a.name.length).find((account) => {
     const name = account.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-    return new RegExp(`^\\s*(?:yes|yeah|yep|sure|okay|ok)\\b[\\s,.:;-]*(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\s*[.!]?\\s*$`, "i").test(prompt);
+    return new RegExp(`^\\s*(?:yes|yeah|yep|sure|okay|ok)\\b[\\s,.:;-]*(?:my\\s+)?${name}(?:\\s+(?:account|card))?(?:[\\s,.:;-]+(?:on\\s+)?(?:\\d{4}-\\d{2}-\\d{2}|today|yesterday|tomorrow))?\\s*[.!]?\\s*$`, "i").test(prompt);
   });
 }
 function accountHintFromMessages(messages: string[], accounts: Account[]): { account?: Account; mentioned: boolean; invalidName?: string } {
@@ -751,14 +756,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const ordinaryIncomeQuestionIndex = history.map((message) => message.role === "assistant" ? message.followup : null).lastIndexOf("ordinary_income");
     const ordinaryIncomeQuestionPending = lastFollowup === "ordinary_income";
     const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? run.slice(ordinaryIncomeQuestionIndex + 1) : [];
-    // The confirmations of the flow start after its first question: a re-ask is another question of the same flow.
-    const ordinaryIncomeFirstQuestionIndex = history.findIndex((message) => message.role === "assistant" && message.followup === "ordinary_income");
-    const incomeFlowMessages = ordinaryIncomeFirstQuestionIndex >= 0 ? run.slice(ordinaryIncomeFirstQuestionIndex + 1) : [];
     // The income flow is open from the question until its run ends, through any account, date or amount question it
     // asks. Being open authorizes nothing: only a message that is itself a yes writes (ordinaryIncomeTurn).
     const ordinaryIncomeOpen = ordinaryIncomeQuestionPending || (ordinaryIncomeQuestionIndex >= 0
-      && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
-    const ordinaryIncomeFlow = !hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && ordinaryIncomeOpen;
+      && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasPaymentWording(message.content)));
+    const ordinaryIncomeFlow = !hasPaymentWording(input.prompt) && ordinaryIncomeOpen;
     const incomeTurn = ordinaryIncomeFlow ? ordinaryIncomeTurn(input.prompt, turnCallOf(providerCall.name)) : null;
     const ordinaryIncomeAccepted = incomeTurn === "write";
     const ordinaryIncomeDeclined = incomeTurn === "decline";
@@ -870,6 +872,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       // The refusal decision is taken here, on the call as it will run, before any branch below can write.
       const refusal = refusalOutcome({ earlier: refusedEarlier, now: refusedNow }, lastFollowup, turnCallOf(call.name));
       let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
+      // The account an earlier confirmation of this income question chose, when this reply names none and the turn asks again.
+      let incomeEchoedAccount: string | undefined;
       if (refusal === "askAgain") {
         // The question stays pending and the turn is quiet, so this message is not read as an answer to it.
         answer = REFUSED_AGAIN_REPLY; answeredReadOnly = true;
@@ -1101,13 +1105,15 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         else {
           const userContext = userMessageText.join(" ");
           const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-          // The account a confirmation of this income flow chose. The messages answered after the flow's first income question, in order,
-          // then the current one, which has just been confirmed: only confirmations among them can name an account.
-          const confirmedAccount = ordinaryIncomeAccepted
-            ? incomeFlowAccount([...userMessagesFor("hint", incomeFlowMessages).map((message) => message.content), input.prompt],
-              (confirmation) => incomeConfirmationAccount(confirmation, accounts))
-            : undefined;
-          const accountHint = confirmedAccount ? { account: confirmedAccount, mentioned: true } : accountHintFromMessages(userMessageText, accounts);
+          // An income write takes an account from the current reply only. When the reply names none and an earlier confirmation
+          // of this income question chose one, it asks again instead of guessing that the choice still stands (incomeAccountChoice).
+          const incomeChoice = ordinaryIncomeAccepted
+            ? incomeAccountChoice(
+              { confirmed: incomeConfirmationAccount(input.prompt, accounts), names: accountHintFromMessages([input.prompt], accounts).mentioned },
+              incomeChainAccount(incomeChainAnswers(run, hasPaymentWording), (confirmation) => incomeConfirmationAccount(confirmation, accounts)))
+            : { use: "none" as const };
+          if (incomeChoice.use === "ask") incomeEchoedAccount = incomeChoice.earlier.name;
+          const accountHint = incomeChoice.use === "account" ? { account: incomeChoice.account, mentioned: true } : accountHintFromMessages(userMessageText, accounts);
           const defaultAccount = accounts.find((candidate) => candidate.isDefault);
           const account = accountHint.mentioned
             ? accountHint.account
@@ -1137,7 +1143,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             ?? (!categoryAmbiguous ? guessCategory(categoryText, categories) : undefined);
           const kind = explicitKind ?? category?.type ?? (!categoryAmbiguous ? transactionKind(kindHint, categoryText) : null);
           const resolvedCategory = category ?? (!categoryAmbiguous && kind ? fallbackCategory(kind, categories) : undefined);
-          if (!account) {
+          if (incomeChoice.use === "ask") { answer = `You chose ${incomeChoice.earlier.name} earlier.`; followup = "account_or_date"; }
+          else if (!account) {
             const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
             answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording a transaction.";
             followup = "account_or_date";
@@ -1165,7 +1172,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else if (ordinaryIncomeDeclined && refusal === "proceed") { answer = endedQuestionReply("declined", answer, wrote); followup = null; }
       // A yes the user just gave does not carry over: when the turn still needs an account, date or answer, it says how to confirm.
       const confirmHint = ordinaryIncomeAccepted && !wrote && (followup === "account_or_date" || followup === "clarification")
-        ? incomeConfirmHint(followup, (accounts.find((candidate) => candidate.isDefault) ?? accounts[0])?.name) : null;
+        ? incomeConfirmHint(followup, incomeEchoedAccount ?? (accounts.find((candidate) => candidate.isDefault) ?? accounts[0])?.name) : null;
       const hint = confirmHint ?? cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
       const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");

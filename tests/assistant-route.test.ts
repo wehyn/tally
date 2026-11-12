@@ -3747,41 +3747,98 @@ describe("assistant account named by a yes reply", () => {
     expect(balance("Maya")).toBe(0);
   });
 
-  // An account the user chose in an earlier confirmation of the same income flow survives a later clarification.
+  // An income write never carries an account across turns. The current reply's own account wins, and a reply that names
+  // none, after an earlier confirmation of the same income question chose one, asks again and echoes that choice.
+  const ECHO_MAYA = 'You chose Maya earlier. Reply with yes and the account, like "yes, Maya", or say cancel.';
   async function askIncome() {
     provider("record_debt_payment", { counterparty: "Zed", amount: "500" });
     const asked = await (await POST(assistantRequest("Zed paid me 500 last Monday"))).json();
     expect(asked.answer).toContain("ordinary income");
     return asked.conversationId as string;
   }
-
-  it("keeps the account a yes chose through a later yes that only supplies the date", async () => {
+  // "Zed paid me 500 last Monday", then "yes, Maya", which is held because the date was not given.
+  async function holdIncomeInMaya() {
     const conversationId = await askIncome();
     provider("log_transaction", { kind: "income", amount: "500", category: "Other income" });
     const held = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
     expect(held.transaction).toBeNull();
     expect(held.answer).toContain("date");
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("account_or_date");
+    return conversationId;
+  }
+  const lastFollowup = (conversationId: string) => store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup;
+  const noIncomeWritten = () => ({ saved: store.listTransactions(user.id).length, wallet: balance("Wallet"), maya: balance("Maya") });
+
+  it("asks again and echoes the earlier choice when a later yes only supplies the date", async () => {
+    const conversationId = await holdIncomeInMaya();
     provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
 
-    const saved = await (await POST(assistantRequest("yes, 2026-10-05", conversationId))).json();
+    const asked = await (await POST(assistantRequest("yes, 2026-10-05", conversationId))).json();
 
-    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Maya", date: "2026-10-05" });
-    expect(balance("Maya")).toBe(50_000);
-    expect(balance("Wallet")).toBe(0);
+    expect(asked.transaction).toBeNull();
+    expect(asked.answer).toContain(ECHO_MAYA);
+    expect(lastFollowup(conversationId)).toBe("account_or_date");
+    expect(noIncomeWritten()).toEqual({ saved: 0, wallet: 0, maya: 0 });
   });
 
-  it("keeps the account a yes chose through a later yes that only supplies the amount", async () => {
+  it("records the income into Maya when yes, the account and the date are restated in one message", async () => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+
+    const saved = await (await POST(assistantRequest("yes, Maya, 2026-10-05", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Maya", date: "2026-10-05" });
+    expect(noIncomeWritten()).toEqual({ saved: 1, wallet: 0, maya: 50_000 });
+  });
+
+  it("records the income into Maya when the user answers the echo with yes and the account", async () => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+    await POST(assistantRequest("yes, 2026-10-05", conversationId));
+
+    const saved = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Maya", date: "2026-10-05" });
+    expect(noIncomeWritten()).toEqual({ saved: 1, wallet: 0, maya: 50_000 });
+  });
+
+  it("asks again and echoes the earlier choice when a later yes only supplies the amount", async () => {
     const conversationId = await askIncome();
     provider("log_transaction", { kind: "income", category: "Other income", date: "2026-10-05" });
     const held = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
     expect(held.transaction).toBeNull();
     provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
 
-    const saved = await (await POST(assistantRequest("yes, 500", conversationId))).json();
+    const asked = await (await POST(assistantRequest("yes, 500", conversationId))).json();
 
+    expect(asked.transaction).toBeNull();
+    expect(asked.answer).toContain(ECHO_MAYA);
+    expect(noIncomeWritten()).toEqual({ saved: 0, wallet: 0, maya: 0 });
+    const saved = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
     expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Maya" });
-    expect(balance("Maya")).toBe(50_000);
-    expect(balance("Wallet")).toBe(0);
+  });
+
+  it("does not use the provider's account when only an earlier confirmation chose one", async () => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet", date: "2026-10-05" });
+
+    const asked = await (await POST(assistantRequest("yes", conversationId))).json();
+
+    expect(asked.transaction).toBeNull();
+    expect(asked.answer).toContain(ECHO_MAYA);
+    expect(noIncomeWritten()).toEqual({ saved: 0, wallet: 0, maya: 0 });
+  });
+
+  it("drops the echoed question on cancel", async () => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+    await POST(assistantRequest("yes", conversationId));
+
+    const cancelled = await (await POST(assistantRequest("cancel", conversationId))).json();
+
+    expect(cancelled.answer).toContain("dropped that question");
+    expect(lastFollowup(conversationId)).toBeNull();
+    expect(noIncomeWritten()).toEqual({ saved: 0, wallet: 0, maya: 0 });
   });
 
   it("lets a later yes that names another account override the earlier choice", async () => {
@@ -3805,11 +3862,124 @@ describe("assistant account named by a yes reply", () => {
     await POST(assistantRequest("Wallet", conversationId));
     provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
 
-    const saved = await (await POST(assistantRequest("yes, 500", conversationId))).json();
+    const asked = await (await POST(assistantRequest("yes, 500", conversationId))).json();
 
-    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Maya" });
-    expect(balance("Maya")).toBe(50_000);
-    expect(balance("Wallet")).toBe(0);
+    expect(asked.transaction).toBeNull();
+    expect(asked.answer).toContain(ECHO_MAYA);
+    expect(noIncomeWritten()).toEqual({ saved: 0, wallet: 0, maya: 0 });
+  });
+
+  it.each(["yes, use Wallet on 2026-10-05", "yes, switch to my default account on 2026-10-05"])("a later explicit account instruction overrides an earlier cue-free choice: %s", async (prompt) => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet", date: "2026-10-05" });
+
+    const saved = await (await POST(assistantRequest(prompt, conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet" });
+    expect(store.listTransactions(user.id)[0]?.accountName).toBe("Wallet");
+    expect(noIncomeWritten()).toEqual({ saved: 1, wallet: 50_000, maya: 0 });
+  });
+
+  it("a later unknown account asks instead of using an earlier cue-free choice", async () => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Nowhere", date: "2026-10-05" });
+
+    const asked = await (await POST(assistantRequest("yes, into my Nowhere account on 2026-10-05", conversationId))).json();
+
+    expect(asked.transaction).toBeNull();
+    expect(asked.answer).toContain("couldn't find the account");
+    expect(asked.answer).not.toContain("You chose Maya earlier");
+    expect(noIncomeWritten()).toEqual({ saved: 0, wallet: 0, maya: 0 });
+  });
+
+  it("an old income choice does not reach the next payment's income question", async () => {
+    const conversationId = await holdIncomeInMaya();
+    provider("record_debt_payment", { counterparty: "Bob", amount: "200", account: "Wallet" });
+    const asked = await (await POST(assistantRequest("Bob paid me 200 into Wallet today", conversationId))).json();
+    expect(asked.transaction).toBeNull();
+    expect(lastFollowup(conversationId)).toBe("ordinary_income");
+    provider("log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet" });
+
+    const saved = await (await POST(assistantRequest("yes", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 20_000, accountName: "Wallet" });
+    expect(noIncomeWritten()).toEqual({ saved: 1, wallet: 20_000, maya: 0 });
+  });
+
+  it("an old income choice does not reach a new payment question that names no account", async () => {
+    provider("record_debt_payment", { counterparty: "Zed", amount: "500" });
+    const conversationId = (await (await POST(assistantRequest("Zed paid me 500"))).json()).conversationId as string;
+    provider("log_transaction", { kind: "income", category: "Other income" });
+    const held = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
+    expect(held.transaction).toBeNull();
+    expect(held.answer).toContain("amount");
+    provider("record_debt_payment", { counterparty: "Ben", amount: "200" });
+    const asked = await (await POST(assistantRequest("Actually Ben paid me 200", conversationId))).json();
+    expect(asked.transaction).toBeNull();
+    expect(lastFollowup(conversationId)).toBe("ordinary_income");
+    provider("log_transaction", { kind: "income", amount: "200", category: "Other income" });
+
+    const saved = await (await POST(assistantRequest("yes", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 20_000, accountName: "Wallet" });
+    expect(noIncomeWritten()).toEqual({ saved: 1, wallet: 20_000, maya: 0 });
+  });
+
+  it.each(["cancel", "no"])("an earlier income choice is gone after the question ended with %s", async (ending) => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500" });
+    expect((await (await POST(assistantRequest(ending, conversationId))).json()).transaction).toBeNull();
+    provider("record_debt_payment", { counterparty: "Bob", amount: "200", account: "Wallet" });
+    const asked = await (await POST(assistantRequest("Bob paid me 200 into Wallet today", conversationId))).json();
+    expect(asked.transaction).toBeNull();
+    provider("log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet" });
+
+    const saved = await (await POST(assistantRequest("yes", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", amountMinor: 20_000 });
+  });
+
+  it("a payer pick from another question kind never becomes an income account choice", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const mayaDebt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+    provider("record_debt_payment", { counterparty: "Zed", amount: "500" });
+    const first = await (await POST(assistantRequest("Zed paid me 500"))).json();
+    const conversationId = first.conversationId as string;
+    expect(lastFollowup(conversationId)).toBe("ordinary_income");
+    provider("record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet" });
+    const payerQuestion = await (await POST(assistantRequest("Ana and Maya paid me 500 last Monday into Wallet", conversationId))).json();
+    expect(payerQuestion.transaction).toBeNull();
+    expect(lastFollowup(conversationId)).toBe("repayment_payer");
+    provider("record_debt_payment", { counterparty: "Maya", amount: "500", account: "Wallet" });
+    const heldRepayment = await (await POST(assistantRequest("yes, Maya", conversationId))).json();
+    expect(heldRepayment.transaction).toBeNull();
+    expect(heldRepayment.answer).toContain("date");
+    expect(lastFollowup(conversationId)).toBe("account_or_date");
+    provider("record_debt_payment", { counterparty: "Zed", amount: "200", account: "Wallet" });
+    const payerReask = await (await POST(assistantRequest("Zed paid me 200 today into Wallet", conversationId))).json();
+    expect(payerReask.transaction).toBeNull();
+    expect(lastFollowup(conversationId)).toBe("repayment_payer");
+    provider("record_debt_payment", { counterparty: "Zed", amount: "200", account: "Wallet" });
+    const incomeQuestion = await (await POST(assistantRequest("Zed", conversationId))).json();
+    expect(incomeQuestion.transaction).toBeNull();
+    expect(lastFollowup(conversationId)).toBe("ordinary_income");
+    provider("log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet" });
+
+    const saved = await (await POST(assistantRequest("yes", conversationId))).json();
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", amountMinor: 20_000 });
+    expect(noIncomeWritten()).toEqual({ saved: 1, wallet: 20_000, maya: 0 });
+    expect(store.listDebts(user.id).find((debt) => debt.id === mayaDebt.id)!.amountMinor).toBe(100_000);
+  });
+
+  it.each(["Don't record it", "I changed my mind, don't record it", "Wallet, but don't record it", "Actually, skip recording it as income", "Not as income", "Hold on, don't record that"])("a refusal does not write after an earlier account confirmation: %s", async (prompt) => {
+    const conversationId = await holdIncomeInMaya();
+    provider("log_transaction", { kind: "income", amount: "500", category: "Other income", date: "2026-10-05" });
+
+    const result = await (await POST(assistantRequest(prompt, conversationId))).json();
+
+    expect(result.transaction).toBeNull();
+    expect(noIncomeWritten()).toEqual({ saved: 0, wallet: 0, maya: 0 });
   });
 
   it("does not let an earlier yes and account name choose the account for a later message that is not a yes", async () => {
