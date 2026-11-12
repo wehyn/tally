@@ -5023,4 +5023,39 @@ describe("a carried debt is context, never consent (round 22, finding 22)", () =
     expect(answer.transaction).toMatchObject({ amountMinor: 2_700, debtId: first.debt.id });
   });
 
+  it("finding 22b: a finance question while the account question is pending reads the ledger and writes nothing", async () => {
+    const args = { direction: "owed_to_you", counterparty: "Ana", amount: "500", account: "Wallet", description: "food", category: "Food", date: "2026-10-09" };
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const asked = await say("Add it to Transactions for food into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+    expect(asked.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+
+    const read = await say("How much did I spend using Wallet on 2026-10-09?", "finance_question", { start: "2026-10-09", end: "2026-10-09" }, first.conversationId);
+
+    expect(read.transaction).toBeNull();
+    expect(read.answer).toContain("Total Spent");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(wallet()).toBe(0);
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+  });
+  it("finding 22b: a finance question while the Transactions offer is pending, even one led by yes, only reads and the offer stays", async () => {
+    const first = await say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
+
+    const read = await say("yes, but first how much did I spend this month?", "finance_question", { start: "2026-10-01", end: "2026-10-09" }, first.conversationId);
+
+    expect(read.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
+  });
+
+  it("an unclear model answer to a yes the user gave still goes on with the one saved debt", async () => {
+    const first = await say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
+
+    const saved = await say("yes, for food", "ask_clarification", { question: "Which account?" }, first.conversationId);
+
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(saved.transaction).toMatchObject({ amountMinor: 50_000, debtId: first.debt.id });
+  });
+
 });

@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -874,7 +874,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // A question the debt flow asked about a saved debt (its account, its date, its amount, the choice between two readings of the
     // hints) stores that debt with it, so its answer goes on with the same debt instead of saving a second one. That is the debt
     // the answer links to and nothing more: it is never the user's opt-in to add the debt to Transactions (debtTransactionRequested).
-    const debtContinues = (lastFollowup === "account_or_date" || lastFollowup === "clarification") && recordedDebtId !== undefined;
+    const debtContinues = debtFlowContinues(lastFollowup, recordedDebtId !== undefined);
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo;
@@ -967,7 +967,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         call = uncertainNewDebt
           ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
           : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
-      } else if ((debtTransactionQuestion || debtContinues) && (debtTransactionRequested || debtTransactionOptOut) && statedDebtIntent) {
+      } else if (debtContinuationRewrites(turnCallOf(providerCall.name), lastFollowup, recordedDebtId !== undefined, debtTransactionRequested ? "optIn" : debtTransactionOptOut ? "optOut" : null) && statedDebtIntent) {
         const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
           && item.direction === statedDebtIntent.direction
           && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)
@@ -1021,7 +1021,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const dueDate = typeof call.args.dueDate === "string" ? call.args.dueDate.trim() || null : null;
         const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
         const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
-        const isExistingDebtFollowup = (debtTransactionQuestion || debtContinues) && !currentDebtIntent;
+        const isExistingDebtFollowup = debtContinues && !currentDebtIntent;
         if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
         else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
         else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }

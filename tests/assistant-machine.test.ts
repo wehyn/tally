@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -750,5 +750,47 @@ describe("where a write would put the money under two readings", () => {
     expect(isAmbiguousHintsQuestion(question)).toBe(true);
     expect(isAmbiguousHintsQuestion(`${question} Reply with yes and the account, like "yes, BPI", or say cancel.`)).toBe(true);
     expect(isAmbiguousHintsQuestion("What amount should I use?")).toBe(false);
+  });
+});
+
+// The debt flow of a saved debt (finding 22). The debt a pending question carries is only the debt an answer links to. The provider's
+// call is replaced by the debt write only when the user said yes or no to Transactions, and only a call that writes or asks is.
+describe("debt flow continuation", () => {
+  const calls: { name: string; kind: TurnCall }[] = [
+    { name: "log_debt", kind: "write" }, { name: "log_transaction", kind: "write" }, { name: "record_debt_payment", kind: "write" },
+    { name: "record_debt_repayment", kind: "write" }, { name: "create_bill", kind: "bill" }, { name: "update_bill", kind: "bill" },
+    { name: "finance_question", kind: "read" }, { name: "ask_clarification", kind: "ask" },
+  ];
+  const answers: DebtTransactionAnswer[] = ["optIn", "optOut", null];
+
+  it("continues only the offer and a generic, account or date question that carries the debt", () => {
+    for (const pending of [null, ...FOLLOWUP_KINDS]) {
+      for (const carriesDebt of [false, true]) {
+        const expected = pending === "debt_transaction" || ((pending === "account_or_date" || pending === "clarification") && carriesDebt);
+        expect(debtFlowContinues(pending, carriesDebt), `${pending} ${carriesDebt}`).toBe(expected);
+      }
+    }
+  });
+
+  it("rewrites the provider's call for every call x pending kind x answer exactly when the rule says", () => {
+    for (const pending of [null, ...FOLLOWUP_KINDS]) for (const carriesDebt of [false, true]) for (const answer of answers) for (const call of calls) {
+      const expected = debtFlowContinues(pending, carriesDebt) && answer !== null && (call.kind === "write" || call.kind === "ask");
+      expect(debtContinuationRewrites(turnCallOf(call.name), pending, carriesDebt, answer), `${call.name} / ${pending} / debt ${carriesDebt} / ${answer}`).toBe(expected);
+    }
+  });
+
+  it("never rewrites a call that only reads, or a bill, whatever the pending question and the answer", () => {
+    for (const pending of [null, ...FOLLOWUP_KINDS]) for (const carriesDebt of [false, true]) for (const answer of answers) {
+      expect(debtContinuationRewrites("read", pending, carriesDebt, answer)).toBe(false);
+      expect(debtContinuationRewrites("bill", pending, carriesDebt, answer)).toBe(false);
+    }
+  });
+
+  it("never rewrites without the user's yes or no, so a carried debt alone writes nothing", () => {
+    for (const pending of [null, ...FOLLOWUP_KINDS]) for (const carriesDebt of [false, true]) for (const call of ["write", "ask"] as const) {
+      expect(debtContinuationRewrites(call, pending, carriesDebt, null)).toBe(false);
+    }
+    expect(debtContinuationRewrites("write", "account_or_date", true, "optIn")).toBe(true);
+    expect(debtContinuationRewrites("write", "debt_transaction", false, "optOut")).toBe(true);
   });
 });

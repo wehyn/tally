@@ -478,6 +478,27 @@ export function turnCallOf(name: string): TurnCall {
   return name === "finance_question" ? "read" : "ask";
 }
 
+// The debt flow of a saved debt: the question that is pending after "Added to Debts only" (debt_transaction), and any account,
+// date or generic question the flow asked about that debt, which stores the debt's id (debtId). The id is the debt a later
+// answer links to and nothing else. It is never the user's opt-in to add the debt to Transactions, and which question carries it
+// says nothing about whether the user agreed.
+export function debtFlowContinues(pending: FollowupKind | null, carriesDebt: boolean): boolean {
+  return pending === "debt_transaction" || ((pending === "account_or_date" || pending === "clarification") && carriesDebt);
+}
+
+// What the user said about adding the debt to Transactions in the statement being answered: "optIn" only from an opt-in the
+// user gave (the statement's own words, or a yes to the stored debt_transaction offer), "optOut" from a no, null when they said
+// neither. It is read from the user's messages and never from the question that is pending.
+export type DebtTransactionAnswer = "optIn" | "optOut" | null;
+
+// Whether the debt flow replaces the provider's call with the debt write for the saved debt. Only a call that writes (the model's
+// own version of the same write) or asks (the model did not understand the answer) is replaced, and only when the user has said
+// yes or no to Transactions: a yes writes the transaction, a no keeps the debt in Debts only. A call that only reads, a bill, or
+// anything else is its own request. It runs as it is, and the pending question is left exactly as it was.
+export function debtContinuationRewrites(call: TurnCall, pending: FollowupKind | null, carriesDebt: boolean, answer: DebtTransactionAnswer): boolean {
+  return debtFlowContinues(pending, carriesDebt) && answer !== null && (call === "write" || call === "ask");
+}
+
 // "proceed": no refusal applies, run the call. "askAgain": the call would write after a refusal said in an earlier
 // turn; write nothing, say so, and leave the pending question exactly as it was, which cancel can still drop.
 // "refuse": write nothing, say nothing was recorded, and end the question. "endQuestion": the refusal is in the
