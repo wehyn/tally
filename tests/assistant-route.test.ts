@@ -3997,7 +3997,7 @@ describe("assistant account named by a yes reply", () => {
 // asks one question that names the earlier statement's place and stores nothing (ambiguousHints).
 function expectBothChoicesAsked(reply: { transaction: unknown; answer: string }, followup: string | null | undefined, kind = "account_or_date") {
   expect(reply.transaction).toBeNull();
-  expect(reply.answer).toMatch(/^Do you mean the earlier .+, or a new one\? Reply with the account and date, or say cancel\./);
+  expect(reply.answer).toMatch(/^Do you mean the earlier .+, or a new one\? Reply "earlier" or "new one" with the account and date, or say cancel\./);
   expect(followup).toBe(kind);
 }
 
@@ -4028,7 +4028,9 @@ describe("a hint applies to the statement it was said for", () => {
     expect(asked.answer).toContain("Maya");
     expect(store.listTransactions(user.id)).toHaveLength(0);
 
-    const saved = await say("yes, Wallet", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
+    // An answer with no "earlier" and no "new one" is the restart only when it names the account and the date (ambiguityVerdict).
+    expectAsked(await say("yes, Wallet", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id), id);
+    const saved = await say("yes, Wallet, today", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
 
     expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
     expect({ wallet: balance("Wallet"), maya: balance("Maya") }).toEqual({ wallet: 20_000, maya: 0 });
@@ -4145,7 +4147,7 @@ describe("a hint applies to the statement it was said for", () => {
 
     const asked = await say("I have a Netflix bill for ₱549 under Entertainment. It is monthly, starts today, and ends December 15.", "create_bill", { name: "Netflix", amount: "549", frequency: "monthly", category: "Entertainment", firstDueDate: "2026-10-09", endDate: "2026-12-15" }, id);
     expect(asked.bill).toBeNull();
-    expect(asked.answer).toMatch(/^Do you mean the earlier bill Netflix in Maya, or a new one\? Reply with the account and date, or say cancel\.$/);
+    expect(asked.answer).toMatch(/^Do you mean the earlier bill Netflix in Maya, or a new one\? Reply "earlier" or "new one" with the account and date, or say cancel\.$/);
     expect(lastFollowup(id)).toBe("bill_account");
     expect(store.listBills(user.id)).toHaveLength(0);
 
@@ -4444,7 +4446,7 @@ describe("a reply the text rule is unsure about never writes a place the reading
         const asked = await say(reply, "create_bill", { ...bill, amount: "549" }, first.conversationId);
 
         expect(asked.bill).toBeNull();
-        expect(asked.answer).toMatch(/^Do you mean the earlier bill Internet in BPI, or a new one\? Reply with the account and date, or say cancel\./);
+        expect(asked.answer).toMatch(/^Do you mean the earlier bill Internet in BPI, or a new one\? Reply "earlier" or "new one" with the account and date, or say cancel\./);
         expect(last(first.conversationId).followup).toBe("bill_account");
         expect(store.listBills(user.id)).toHaveLength(0);
         expect(rows()).toEqual([]);
@@ -4748,6 +4750,126 @@ describe("the question that names both choices keeps the flow it interrupts (rou
       const result = await (await POST(assistantRequest("I have a monthly Internet bill for 549 starting tomorrow until 2026-12-31."))).json();
 
       expect(result.bill).toMatchObject({ name: "Internet", nextDueDate: "2026-10-10" });
+    });
+  });
+  // The answer to the question chooses the reading it writes. "new one" (or an answer that names the account and the date and does
+  // not say "earlier") writes the restart whole: none of the earlier statement's account, date, time or category. "earlier" writes the
+  // earlier statement's hints with the account and date the answer names. Anything else asks again and names both choices.
+  describe("finding 21d: the answer chooses the reading", () => {
+    const lunch = { kind: "expense", amount: "300", category: "Food", description: "Lunch", account: "Wallet", date: "2026-10-09" };
+    const salary = { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" };
+    const rows = () => store.listTransactions(user.id).map(({ accountName, date, time, amountMinor, categoryName, description }) => ({ accountName, date, time, amountMinor, categoryName, description }));
+    const unwritten = (reply: { transaction: unknown }) => { expect(reply.transaction).toBeNull(); expect(rows()).toEqual([]); };
+    async function askedAboutTaxi() {
+      const first = await say("Log taxi 120 into Maya on 2026-02-31 under Transport", "log_transaction", { ...lunch, amount: "120", description: "Taxi", category: "Transport", account: "Maya", date: "2026-02-31" });
+      expect(last(first.conversationId).followup).toBe("account_or_date");
+      const asked = await say("Make it lunch 300 instead", "log_transaction", lunch, first.conversationId);
+      expectAsked(asked, first.conversationId);
+      expect(asked.answer).toContain("Lunch in Maya on Oct 9");
+      expect(asked.answer).toMatch(/Reply "earlier" or "new one" with the account and date, or say cancel\.$/);
+      return first.conversationId as string;
+    }
+
+    it('"new one" writes the restart whole: the new category, not the earlier taxi\'s', async () => {
+      const id = await askedAboutTaxi();
+
+      const saved = await say("new one, use Wallet on 2026-10-09", "log_transaction", lunch, id);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09", amountMinor: 30_000, categoryName: "Food", description: "Lunch" });
+      expect(rows()).toHaveLength(1);
+    });
+
+    it("an answer that names the account and the date and does not say earlier writes the restart too", async () => {
+      const id = await askedAboutTaxi();
+
+      const saved = await say("use Wallet on 2026-10-09", "log_transaction", lunch, id);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", categoryName: "Food", description: "Lunch", amountMinor: 30_000 });
+    });
+
+    it('"earlier" writes the earlier statement\'s hints with the account and date the answer names', async () => {
+      const id = await askedAboutTaxi();
+
+      const saved = await say("the earlier one, use Maya on 2026-10-09", "log_transaction", lunch, id);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Maya", date: "2026-10-09", categoryName: "Transport", description: "Lunch" });
+    });
+
+    it('"new one" does not keep the earlier statement\'s time', async () => {
+      const first = await say("Log coffee into Maya on 2026-02-31 at 8pm", "log_transaction", { ...lunch, description: "Coffee", amount: "120", account: "Maya", date: "2026-02-31" });
+      expectAsked(await say("Make it salary 5000 instead", "log_transaction", salary, first.conversationId), first.conversationId);
+
+      const saved = await say("new one, use Wallet on 2026-10-09", "log_transaction", salary, first.conversationId);
+
+      // The restart said no time, so it is the time of the request (16:00 in Manila), not 20:00.
+      expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", date: "2026-10-09", time: "16:00", amountMinor: 500_000 });
+    });
+
+    it('"earlier" keeps the earlier statement\'s time', async () => {
+      const first = await say("Log coffee into Maya on 2026-02-31 at 8pm", "log_transaction", { ...lunch, description: "Coffee", amount: "120", account: "Maya", date: "2026-02-31" });
+      expectAsked(await say("Make it salary 5000 instead", "log_transaction", salary, first.conversationId), first.conversationId);
+
+      const saved = await say("earlier, use Maya on 2026-10-09", "log_transaction", salary, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Maya", date: "2026-10-09", time: "20:00" });
+    });
+
+    it('a repayment chosen "new one" has no time from the coffee, and chosen "earlier" has it', async () => {
+      store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+      const payment = { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" };
+      for (const [reply, account, time] of [["new one, use Wallet on 2026-10-09", "Wallet", "16:00"], ["earlier, use BPI on 2026-10-05", "BPI", "20:00"]] as const) {
+        const first = await say("Log coffee into BPI on 2026-10-05 at 8pm", "ask_clarification", { question: "What amount should I use for the coffee?" });
+        expectAsked(await say("Maya paid me 200", "record_debt_payment", payment, first.conversationId), first.conversationId);
+
+        const saved = await say(reply, "record_debt_payment", payment, first.conversationId);
+
+        expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: account, time });
+      }
+    });
+
+    it("an answer that says both choices, or denies one, asks again and names both", async () => {
+      const id = await askedAboutTaxi();
+
+      for (const reply of ["earlier or a new one, use Wallet on 2026-10-09", "not the earlier one, use Wallet on 2026-10-09", "new one, not the earlier one, use Wallet on 2026-10-09"]) {
+        const again = await say(reply, "log_transaction", lunch, id);
+        expectAsked(again, id);
+        expect(again.answer).toContain("Lunch in ");
+        expect(rows()).toEqual([]);
+      }
+    });
+
+    it('a debt with its transaction: "earlier" keeps the coffee\'s place and time, "new one" drops them', async () => {
+      const debtArgs = { counterparty: "Ana", direction: "owed_to_you", amount: "500", account: "Wallet", date: "2026-10-09", description: "lunch", category: "Food" };
+      for (const [reply, account, date, time] of [["earlier, use BPI on 2026-10-05", "BPI", "2026-10-05", "20:00"], ["new one, use Wallet on 2026-10-09", "Wallet", "2026-10-09", "16:00"]] as const) {
+        const first = await say("Log coffee into BPI on 2026-10-05 at 8pm", "ask_clarification", { question: "What amount should I use for the coffee?" });
+        expectAsked(await say("Ana owes me 500, add it to Transactions for lunch", "log_debt", debtArgs, first.conversationId), first.conversationId);
+
+        const saved = await say(reply, "log_debt", debtArgs, first.conversationId);
+
+        expect(saved.transaction).toMatchObject({ accountName: account, date, time });
+        store.deleteDebt(user.id, saved.debt.id);
+      }
+    });
+
+    it("a bill's answer that says both choices asks again, and one that names its account chooses", async () => {
+      store.createCategory(user.id, { name: "Bills", type: "expense" });
+      const bill = { name: "Internet", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-12-31", category: "Bills" };
+      const first = await say("I have a monthly Internet bill via BPI starting Oct 20 until Dec 31.", "create_bill", bill);
+      await say("Actually 549 pesos every month", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+      expect(last(first.conversationId)).toMatchObject({ followup: "bill_account" });
+
+      const again = await say("earlier or a new one, use Wallet, the bill is 549", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+      expect(again.bill).toBeNull();
+      expect(again.answer).toMatch(/^Do you mean the earlier bill Internet in BPI, or a new one\?/);
+
+      const saved = await say("new one, use Wallet, the bill is 549", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+      expect(saved.bill).toMatchObject({ accountName: "Wallet", amountMinor: 54_900 });
+    });
+
+    it("a choice word alone, with no account and date, asks again", async () => {
+      const id = await askedAboutTaxi();
+
+      for (const reply of ["new one", "the earlier one", "yes", "use Wallet"]) unwritten(await say(reply, "log_transaction", lunch, id));
     });
   });
 });

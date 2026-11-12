@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, ambiguityVerdict, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, ambiguityChoice, ambiguityVerdict, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -652,26 +652,72 @@ describe("where a write would put the money under two readings", () => {
   for (const [name, change, expected] of table) it(`${name} -> ${expected ? "ambiguous" : "not ambiguous"}`, () => expect(ambiguousHints(place, { ...place, ...change })).toBe(expected));
 
   const other = { account: "wallet", date: "2026-10-09", time: "16:00" };
-  const verdicts: [string, { namesAccount: boolean; namesDate: boolean } | null, "write" | "ask"][] = [
+  type Answer = { namesAccount: boolean; namesDate: boolean; choice: "earlier" | "new" | "unmarked" | "unclear" };
+  const unmarked = (namesAccount: boolean, namesDate: boolean): Answer => ({ namesAccount, namesDate, choice: "unmarked" });
+  const verdicts: [string, Answer | null, "write" | "ask"][] = [
     ["no question was answered", null, "ask"],
-    ["the answer names neither", { namesAccount: false, namesDate: false }, "ask"],
-    ["the answer names only the account", { namesAccount: true, namesDate: false }, "ask"],
-    ["the answer names only the date", { namesAccount: false, namesDate: true }, "ask"],
-    ["the answer names both", { namesAccount: true, namesDate: true }, "write"],
+    ["the answer names neither", unmarked(false, false), "ask"],
+    ["the answer names only the account", unmarked(true, false), "ask"],
+    ["the answer names only the date", unmarked(false, true), "ask"],
+    ["the answer names both", unmarked(true, true), "write"],
+    ["\"earlier\" names neither", { namesAccount: false, namesDate: false, choice: "earlier" }, "ask"],
+    ["\"earlier\" names both", { namesAccount: true, namesDate: true, choice: "earlier" }, "write"],
+    ["\"new one\" names neither", { namesAccount: false, namesDate: false, choice: "new" }, "ask"],
+    ["\"new one\" names both", { namesAccount: true, namesDate: true, choice: "new" }, "write"],
+    ["the answer says both choices or denies one, and names both", { namesAccount: true, namesDate: true, choice: "unclear" }, "ask"],
   ];
   for (const [name, answer, expected] of verdicts) it(`readings differ in account and date, ${name} -> ${expected}`, () => expect(ambiguityVerdict(place, other, answer)).toBe(expected));
-  it("readings that agree are written, answered or not", () => {
+  it("readings that agree are written when nothing was asked, and an answer to the question must still be a valid answer", () => {
     expect(ambiguityVerdict(place, place, null)).toBe("write");
-    expect(ambiguityVerdict(place, place, { namesAccount: false, namesDate: false })).toBe("write");
+    expect(ambiguityVerdict(place, place, { namesAccount: false, namesDate: false, choice: "new" })).toBe("write");
+    expect(ambiguityVerdict(place, place, { namesAccount: false, namesDate: false, choice: "earlier" })).toBe("write");
+    expect(ambiguityVerdict(place, place, unmarked(true, true))).toBe("write");
+    expect(ambiguityVerdict(place, place, unmarked(false, false))).toBe("ask");
+    expect(ambiguityVerdict(place, place, unmarked(true, false))).toBe("ask");
+    expect(ambiguityVerdict(place, place, { namesAccount: true, namesDate: true, choice: "unclear" })).toBe("ask");
   });
-  it("a difference in time alone is settled by any answer, and a difference in account needs only the account", () => {
-    expect(ambiguityVerdict(place, { ...place, time: "16:00" }, { namesAccount: false, namesDate: false })).toBe("write");
-    expect(ambiguityVerdict(place, { ...place, account: "wallet" }, { namesAccount: true, namesDate: false })).toBe("write");
+  it("a difference in time alone needs a choice word, or an answer that names the account and the date", () => {
+    const time = { ...place, time: "16:00" };
+    expect(ambiguityVerdict(place, time, null)).toBe("ask");
+    expect(ambiguityVerdict(place, time, unmarked(false, false))).toBe("ask");
+    expect(ambiguityVerdict(place, time, { namesAccount: false, namesDate: false, choice: "unclear" })).toBe("ask");
+    expect(ambiguityVerdict(place, time, { namesAccount: false, namesDate: false, choice: "new" })).toBe("write");
+    expect(ambiguityVerdict(place, time, { namesAccount: false, namesDate: false, choice: "earlier" })).toBe("write");
+    expect(ambiguityVerdict(place, time, unmarked(true, true))).toBe("write");
   });
+  it("a difference in account needs only the account", () => {
+    expect(ambiguityVerdict(place, { ...place, account: "wallet" }, { namesAccount: true, namesDate: false, choice: "new" })).toBe("write");
+  });
+
+  // The words that choose a reading are this exact list and nothing else: "earlier", "earlier one", "the earlier" and
+  // "the earlier one" choose the earlier statement; "new one", "a new one" and "the new one" choose the restart. A reply that
+  // carries neither is unmarked, and one that carries both, or denies the one it carries, is unclear and is asked again.
+  const choices: [string, "earlier" | "new" | "unmarked" | "unclear"][] = [
+    ["earlier", "earlier"],
+    ["the earlier one", "earlier"],
+    ["Earlier one, use BPI on 2026-10-05", "earlier"],
+    ["use BPI on 2026-10-05 for the earlier.", "earlier"],
+    ["new one", "new"],
+    ["A new one, use Wallet on 2026-10-09", "new"],
+    ["NEW ONE: Wallet, today", "new"],
+    ["the new one", "new"],
+    ["use Wallet on 2026-10-09", "unmarked"],
+    ["yes, Wallet, today", "unmarked"],
+    ["a new account, Wallet", "unmarked"],
+    ["the earliest one", "unmarked"],
+    ["newer", "unmarked"],
+    ["", "unmarked"],
+    ["earlier or a new one, Wallet, today", "unclear"],
+    ["new one, not the earlier one", "unclear"],
+    ["not the earlier one, use Wallet on 2026-10-09", "unclear"],
+    ["it is not a new one, use BPI on 2026-10-05", "unclear"],
+    ["don't mean the new one", "unclear"],
+  ];
+  for (const [reply, expected] of choices) it(`${JSON.stringify(reply)} -> ${expected}`, () => expect(ambiguityChoice(reply)).toBe(expected));
 
   it("names the earlier statement and the way out, and is recognized when it comes back stored", () => {
     const question = ambiguousHintsQuestion("coffee", "BPI on Oct 5 at 20:00");
-    expect(question).toBe("Do you mean the earlier coffee in BPI on Oct 5 at 20:00, or a new one? Reply with the account and date, or say cancel.");
+    expect(question).toBe("Do you mean the earlier coffee in BPI on Oct 5 at 20:00, or a new one? Reply \"earlier\" or \"new one\" with the account and date, or say cancel.");
     expect(isAmbiguousHintsQuestion(question)).toBe(true);
     expect(isAmbiguousHintsQuestion(`${question} Reply with yes and the account, like "yes, BPI", or say cancel.`)).toBe(true);
     expect(isAmbiguousHintsQuestion("What amount should I use?")).toBe(false);

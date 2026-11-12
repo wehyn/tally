@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguousHintsQuestion, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguousHintsQuestion, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -277,7 +277,7 @@ function missingBillFollowup(missing: string[]): FollowupKind {
 function handleAssistantBillAction(
   store: ReturnType<typeof getStore>, userId: string, action: "create_bill" | "update_bill", args: Record<string, unknown>,
   userMessages: string[], hintMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null, now: Date,
-  otherReading: { hintMessages: string[]; carriesEarlier: boolean } | null = null,
+  otherReading: { hintMessages: string[]; carriesEarlier: boolean; unclear: boolean } | null = null,
 ): AssistantBillResult {
   const today = todayInManila(now);
   const duplicateFollowup = followup === "bill_duplicate" || followup === "bill_schedule";
@@ -390,8 +390,13 @@ function handleAssistantBillAction(
     return { answer: `Please provide the ${missingDetails.join(", ")}.`, bill: null, followup: amountMinor === undefined ? "bill_amount" : !firstDueDate ? "bill_start_date" : !endDate ? "bill_end_date" : "bill_details" };
   }
 
-  if (otherReading && !ownDetailsOnly && otherAccount?.id !== account?.id) {
-    const earlier = otherReading.carriesEarlier ? otherAccount : account;
+  if (otherReading && !ownDetailsOnly && (otherAccount?.id !== account?.id || otherReading.unclear)) {
+    // The question names the earlier statement's account as it stood before this message, not the account this message named.
+    const earlierMessages = (otherReading.carriesEarlier ? otherReading.hintMessages : hintDetailMessages).slice(0, -1);
+    const earlierHint = accountHintFromMessages(earlierMessages, accounts);
+    const earlier = earlierHint.mentioned ? earlierHint.account
+      : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
+        : accounts.find((candidate) => candidate.isDefault);
     return { answer: ambiguousHintsQuestion(`bill ${name}`, earlier?.name ?? "an account I could not find"), bill: null, followup: "bill_account", ambiguous: true };
   }
 
@@ -604,6 +609,11 @@ function incomeConfirmationAccount(prompt: string, accounts: Account[]): Account
     return new RegExp(`^\\s*(?:yes|yeah|yep|sure|okay|ok)\\b[\\s,.:;-]*(?:my\\s+)?${name}(?:\\s+(?:account|card))?(?:[\\s,.:;-]+(?:on\\s+)?(?:\\d{4}-\\d{2}-\\d{2}|today|yesterday|tomorrow))?\\s*[.!]?\\s*$`, "i").test(prompt);
   });
 }
+// The account an answer to the question naming both choices chooses with no cue word: "yes, Wallet", or the same after the
+// choice words ("new one, Wallet, today", "earlier, BPI").
+function ambiguityAnswerAccount(prompt: string, accounts: Account[]): Account | undefined {
+  return incomeConfirmationAccount(prompt, accounts) ?? incomeConfirmationAccount(`yes, ${withoutAmbiguityChoice(prompt)}`, accounts);
+}
 function accountHintFromMessages(messages: string[], accounts: Account[]): { account?: Account; mentioned: boolean; invalidName?: string } {
   for (let index = messages.length - 1; index >= 0; index--) {
     if (/\b(?:use|choose|select|set|switch(?:\s+to)?|change\s+to)\s+(?:my\s+)?default(?:\s+account)?\b/i.test(messages[index])) return { account: accounts.find((candidate) => candidate.isDefault), mentioned: true };
@@ -787,28 +797,41 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       ...messages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
       { content: input.prompt, createdAt: receivedAt },
     ];
-    const hintMessages = withCurrent(readings.primary);
-    const otherHintMessages = readings.other ? withCurrent(readings.other) : null;
+    // Which reading carries the earlier statement's hints: the longer list of messages. The other is the restart.
+    const primaryIsEarlier = !readings.other || readings.other.length <= readings.primary.length;
+    // The message answering the question that named both choices says which one it means ("earlier" or "new one"), and the
+    // reading it picks is the one written. Any other message is read by the text rule's own reading.
+    const answersAmbiguity = isAmbiguousHintsQuestion(history.at(-1)?.content ?? "");
+    const answerChoice = answersAmbiguity && readings.other ? ambiguityChoice(input.prompt) : null;
+    const chosenIsEarlier = answerChoice === null ? primaryIsEarlier : answerChoice === "earlier";
+    const chosenReading = !readings.other ? readings.primary : chosenIsEarlier === primaryIsEarlier ? readings.primary : readings.other;
+    const unchosenReading = !readings.other ? null : chosenReading === readings.primary ? readings.other : readings.primary;
+    const hintMessages = withCurrent(chosenReading);
+    const otherHintMessages = unchosenReading ? withCurrent(unchosenReading) : null;
     const hintText = hintMessages.map((message) => message.content);
-    // Which reading carries the earlier statement's hints: the longer list of messages.
-    const otherCarriesEarlier = !!readings.other && readings.other.length > readings.primary.length;
+    // Whether the other reading is the one that carries the earlier statement.
+    const otherCarriesEarlier = !!otherHintMessages && !chosenIsEarlier;
     // One instant for the whole request: the default date, the default time, a relative date and a bill's "today" all read it, so a
     // provider call that crosses midnight cannot give a date from one side and a time from the other.
     const requestedAt = new Date(receivedAt);
     // The message answering the question that named both choices states the account and the date it means.
-    const answeringAmbiguity = isAmbiguousHintsQuestion(history.at(-1)?.content ?? "")
-      ? { namesAccount: accountHintFromMessages([input.prompt], accounts).mentioned || incomeConfirmationAccount(input.prompt, accounts) !== undefined, namesDate: dateHintFromMessage(input.prompt, requestedAt).mentioned }
+    // "yes, Wallet" and "new one, Wallet, today" name their account with no cue word, so no hint reads it. The answer's account is
+    // the one every write uses, as the verdict counts it.
+    const answeredAccount = answersAmbiguity ? ambiguityAnswerAccount(input.prompt, accounts) : undefined;
+    const answeringAmbiguity = answersAmbiguity
+      ? { namesAccount: accountHintFromMessages([input.prompt], accounts).mentioned || answeredAccount !== undefined, namesDate: dateHintFromMessage(input.prompt, requestedAt).mentioned, choice: answerChoice ?? "unmarked" as const }
       : null;
-    // "yes, Wallet" names its account with no cue word, so no hint reads it. The answer's account is the one every write uses,
-    // as the verdict above already counts it.
-    const answeredAccount = answeringAmbiguity ? incomeConfirmationAccount(input.prompt, accounts) : undefined;
     // The write's place under each reading. When they differ the write is not made: ask once, naming the earlier statement's
     // place, and store nothing (ambiguityVerdict).
     const placesOf = (args: Record<string, unknown>, providerTime: boolean, accountChoice?: Account) => {
       const choice = accountChoice ?? answeredAccount;
       const primary = writePlaceOf(hintMessages, args, accounts, { accountChoice: choice, providerTime, now: requestedAt });
       const other = otherHintMessages ? writePlaceOf(otherHintMessages, args, accounts, { accountChoice: choice, providerTime, now: requestedAt }) : null;
-      const earlier = other && otherCarriesEarlier ? other : primary;
+      // The question names where the earlier statement alone would put the money. Asked again after an answer, that is read without
+      // the answer, whose account and date are the user's choice and not the earlier statement's.
+      const earlierMessages = otherCarriesEarlier ? otherHintMessages : hintMessages;
+      const earlierAlone = answeringAmbiguity && earlierMessages ? writePlaceOf(earlierMessages.slice(0, -1), args, accounts, { providerTime, now: requestedAt }) : null;
+      const earlier = earlierAlone ?? (other && otherCarriesEarlier ? other : primary);
       const question = (what: string) => other && ambiguityVerdict(placeKey(primary), placeKey(other), answeringAmbiguity) === "ask" ? ambiguousHintsQuestion(what, describePlace(earlier)) : null;
       return { place: primary, question };
     };
@@ -969,7 +992,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else if (refusal === "refuse") { answer = endedQuestionReply("refused", "", false); followup = null; }
       else if (call.name === "create_bill" || call.name === "update_bill") {
         const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup, requestedAt,
-          otherHintMessages ? { hintMessages: otherHintMessages.map((message) => message.content), carriesEarlier: otherCarriesEarlier } : null);
+          otherHintMessages ? { hintMessages: otherHintMessages.map((message) => message.content), carriesEarlier: otherCarriesEarlier, unclear: answerChoice === "unclear" } : null);
         answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup; modelWorded = !!result.ambiguous;
       }
       else if (call.name === "ask_clarification") {

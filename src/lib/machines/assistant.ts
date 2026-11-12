@@ -382,24 +382,60 @@ export function ambiguousHints(a: WritePlace, b: WritePlace): boolean {
   return a.account !== b.account || a.date !== b.date || a.time !== b.time;
 }
 
-// What the turn does with two readings. "write": they agree, or the message answering the question that named both choices
-// states the account and the date on which they differ, so the user chose. "ask": anything else, including an answer that
-// says neither ("yes", "the first one"), which asks the same question again. After an answer the code's own reading (the
-// first) is written, the one the answer's account and date were read against. A time is never asked for, so a difference
-// in time alone is settled by any answer.
-export type AmbiguityAnswer = { namesAccount: boolean; namesDate: boolean };
+// Which reading a reply to the question that named both choices picks, by an exact small list of words and nothing else. The
+// earlier statement is chosen by "earlier", "earlier one", "the earlier" or "the earlier one", the restart (a new statement,
+// with none of the earlier one's account, date, time or category) by "new one", "a new one" or "the new one". A reply that says
+// neither is "unmarked": it is taken for the restart when it names the account and the date, as "use Wallet on 2026-10-09"
+// does. A reply that says both, or says "not" (or "no", "don't", "never", "neither") anywhere beside either, is "unclear": the
+// code will not guess which one is denied, so it asks again.
+export const EARLIER_CHOICE_WORDS: readonly string[] = ["earlier", "earlier one", "the earlier", "the earlier one"];
+export const NEW_CHOICE_WORDS: readonly string[] = ["new one", "a new one", "the new one"];
+export type AmbiguityChoice = "earlier" | "new" | "unmarked" | "unclear";
+
+const CHOICE_DENIAL = /\b(?:not|no|nope|never|neither|nor|dont|don t|isn t|isnt|wasn t|wasnt)\b/;
+
+function choiceWordsIn(normalized: string, words: readonly string[]): boolean {
+  return words.some((word) => ` ${normalized} `.includes(` ${word} `));
+}
+
+export function ambiguityChoice(reply: string): AmbiguityChoice {
+  const normalized = normalizedPhrase(reply.replace(/['’]/g, " "));
+  const earlier = choiceWordsIn(normalized, EARLIER_CHOICE_WORDS);
+  const fresh = choiceWordsIn(normalized, NEW_CHOICE_WORDS);
+  if (!earlier && !fresh) return "unmarked";
+  if (earlier && fresh || CHOICE_DENIAL.test(normalized)) return "unclear";
+  return earlier ? "earlier" : "new";
+}
+
+// The reply with its choice words taken out, so what is left can be read for an account and a date ("new one, Wallet, today").
+export function withoutAmbiguityChoice(reply: string): string {
+  let text = reply;
+  for (const word of [...EARLIER_CHOICE_WORDS, ...NEW_CHOICE_WORDS].sort((a, b) => b.length - a.length)) {
+    text = text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${word.replace(/\s+/g, "\\s+")}(?![\\p{L}\\p{N}])`, "giu"), " ");
+  }
+  return text;
+}
+
+// What the turn does with two readings. "write": they agree and no question was answered, or the message answering the question
+// that named both choices chose between them. "ask": anything else. An answer is asked again when it says both choices or denies
+// one ("unclear"), and when it says neither ("yes", "the first one") unless it names both an account and a date, which takes it
+// for the restart ("use Wallet on 2026-10-09"). An answer with a choice word is taken at its word, but where the readings put the
+// money in different accounts or dates it must also name them. The caller writes the reading the choice picks (AmbiguityChoice),
+// so readings that differ in their time or their category alone are settled by the choice too, with nothing else to ask.
+export type AmbiguityAnswer = { namesAccount: boolean; namesDate: boolean; choice: AmbiguityChoice };
 
 export function ambiguityVerdict(a: WritePlace, b: WritePlace, answer: AmbiguityAnswer | null): "write" | "ask" {
-  if (!ambiguousHints(a, b)) return "write";
-  if (!answer) return "ask";
+  if (!answer) return ambiguousHints(a, b) ? "ask" : "write";
+  if (answer.choice === "unclear") return "ask";
+  if (answer.choice === "unmarked" && !(answer.namesAccount && answer.namesDate)) return "ask";
   return (a.account === b.account || answer.namesAccount) && (a.date === b.date || answer.namesDate) ? "write" : "ask";
 }
 
 // The one question that names both choices. `what` is the earlier statement's own wording ("coffee", "the payment from
-// Maya"), `earlier` is where its hints would put the money. It stores nothing and asks for the account and date, so the
-// answer is the next message, and says how to drop it.
+// Maya"), `earlier` is where its hints would put the money. It stores nothing, says how to choose and asks for the account and
+// date, so the answer is the next message, and says how to drop it.
 const AMBIGUOUS_OPENING = "Do you mean the earlier ";
-const AMBIGUOUS_CLOSING = ", or a new one? Reply with the account and date, or say cancel.";
+const AMBIGUOUS_CLOSING = ', or a new one? Reply "earlier" or "new one" with the account and date, or say cancel.';
 export function ambiguousHintsQuestion(what: string, earlier: string): string {
   return `${AMBIGUOUS_OPENING}${what} in ${earlier}${AMBIGUOUS_CLOSING}`;
 }
