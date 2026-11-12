@@ -1,0 +1,71 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Warning: Please run the Java VM which executes TLC with a throughput optimized garbage collector by passing the "-XX:+UseParallelGC" property.
+(Use the -nowarning option to disable this warning.)
+Running breadth-first search Model-Checking with fp 0 and seed 2742390515396899278 with 1 worker on 8 cores with 4948MB heap and 64MB offheap memory [pid: 577026] (Linux 6.12.96+deb13-amd64 amd64, Eclipse Adoptium 25.0.5 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tally-goal-verification/GoalConcurrency.tla
+Parsing file /tmp/statechart-A8H6zv/statechart-wnpKnc/tmp-verdict-1/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module GoalConcurrency
+Starting... (2026-11-12 22:16:49)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-12 22:16:49.
+Error: Invariant CompletionRecognized is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ savedRaised = 0
+/\ contribution = "ready"
+/\ savedTarget = 0
+/\ raised = 0
+/\ target = 2
+/\ editor = "ready"
+/\ status = "active"
+
+State 2: <ReadContributionGoal line 12, col 3 to line 14, col 62 of module GoalConcurrency>
+/\ savedRaised = 0
+/\ contribution = "read"
+/\ savedTarget = 2
+/\ raised = 0
+/\ target = 2
+/\ editor = "ready"
+/\ status = "active"
+
+State 3: <ReadEditorGoal line 31, col 3 to line 32, col 81 of module GoalConcurrency>
+/\ savedRaised = 0
+/\ contribution = "read"
+/\ savedTarget = 2
+/\ raised = 0
+/\ target = 2
+/\ editor = "goal read"
+/\ status = "active"
+
+State 4: <ReadEditorTotal line 35, col 3 to line 36, col 68 of module GoalConcurrency>
+/\ savedRaised = 0
+/\ contribution = "read"
+/\ savedTarget = 2
+/\ raised = 0
+/\ target = 2
+/\ editor = "total read"
+/\ status = "active"
+
+State 5: <CommitContribution line 22, col 3 to line 26, col 59 of module GoalConcurrency>
+/\ savedRaised = 0
+/\ contribution = "done"
+/\ savedTarget = 2
+/\ raised = 1
+/\ target = 2
+/\ editor = "total read"
+/\ status = "active"
+
+State 6: <CommitEditor line 39, col 3 to line 42, col 65 of module GoalConcurrency>
+/\ savedRaised = 0
+/\ contribution = "done"
+/\ savedTarget = 2
+/\ raised = 1
+/\ target = 1
+/\ editor = "done"
+/\ status = "active"
+
+18 states generated, 15 distinct states found, 3 states left on queue.
+The depth of the complete state graph search is 6.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 2 and the 95th percentile is 2).
+Finished in 00s at (2026-11-12 22:16:49)

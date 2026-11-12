@@ -1,0 +1,161 @@
+raise:
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 32 and seed 8541750814582744565 with 1 worker on 8 cores with 4398MB heap and 64MB offheap memory [pid: 600631] (Linux 6.12.96+deb13-amd64 amd64, Eclipse Adoptium 25.0.5 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tally-goal-check-cUy7YO/GoalConcurrency.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module GoalConcurrency
+Starting... (2026-11-12 22:29:56)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-12 22:29:57.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 4.3E-19
+6 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 01s at (2026-11-12 22:29:57)
+
+lower:
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 116 and seed -1185702791098570574 with 1 worker on 8 cores with 4398MB heap and 64MB offheap memory [pid: 600785] (Linux 6.12.96+deb13-amd64 amd64, Eclipse Adoptium 25.0.5 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tally-goal-check-cUy7YO/GoalConcurrency.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module GoalConcurrency
+Starting... (2026-11-12 22:29:58)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-12 22:29:59.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 4.3E-19
+6 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 01s at (2026-11-12 22:29:59)
+
+{
+  "baseline": [
+    {
+      "name": "current-equality",
+      "lockProbe": null,
+      "stored": {
+        "target": 100,
+        "status": "completed",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+    },
+    {
+      "name": "current-raise-contribution-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 200,
+        "status": "active",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "accepted"
+    },
+    {
+      "name": "current-raise-editor-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 200,
+        "status": "active",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "accepted"
+    },
+    {
+      "name": "current-lower-contribution-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 100,
+        "status": "completed",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+    },
+    {
+      "name": "current-lower-editor-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 100,
+        "status": "completed",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+    }
+  ]
+}
+{
+  "scratchBreak": {
+    "name": "unlocked-contribution-read",
+    "lockProbe": "competing write succeeded",
+    "stored": {
+      "target": 200,
+      "status": "completed",
+      "raised": 100
+    },
+    "violations": [
+      "CompletionSound"
+    ],
+    "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+  }
+}
+{
+  "scratchBreak": {
+    "name": "unlocked-target-edit",
+    "lockProbe": "competing write succeeded",
+    "stored": {
+      "target": 100,
+      "status": "active",
+      "raised": 100
+    },
+    "violations": [
+      "CompletionRecognized"
+    ],
+    "nextContribution": "accepted"
+  }
+}
+{
+  "scratchBreak": {
+    "name": "strict-equality",
+    "lockProbe": null,
+    "stored": {
+      "target": 100,
+      "status": "active",
+      "raised": 100
+    },
+    "violations": [
+      "CompletionRecognized"
+    ],
+    "nextContribution": "accepted"
+  }
+}
+{
+  "scratchBreak": {
+    "name": "premature-completion",
+    "lockProbe": null,
+    "stored": {
+      "target": 200,
+      "status": "completed",
+      "raised": 100
+    },
+    "violations": [
+      "CompletionSound"
+    ],
+    "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+  }
+}
+SELF-TEST PASS: all four scratch breaks caught; original invariants and lock probes pass again.
+
+Evidence: /tmp/tally-goal-check-cUy7YO
+Interpret both models with /statechart using the copied spec, configs, and view.

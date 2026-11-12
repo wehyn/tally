@@ -1,0 +1,100 @@
+raise:
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 20 and seed -2284475615007374865 with 1 worker on 8 cores with 4398MB heap and 64MB offheap memory [pid: 592486] (Linux 6.12.96+deb13-amd64 amd64, Eclipse Adoptium 25.0.5 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tally-goal-check-3j0pW4/GoalConcurrency.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module GoalConcurrency
+Starting... (2026-11-12 22:25:27)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-12 22:25:27.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 4.3E-19
+6 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 00s at (2026-11-12 22:25:27)
+
+lower:
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 57 and seed -5641388241431607140 with 1 worker on 8 cores with 4398MB heap and 64MB offheap memory [pid: 592701] (Linux 6.12.96+deb13-amd64 amd64, Eclipse Adoptium 25.0.5 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tally-goal-check-3j0pW4/GoalConcurrency.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module GoalConcurrency
+Starting... (2026-11-12 22:25:28)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-12 22:25:28.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 4.3E-19
+6 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 00s at (2026-11-12 22:25:28)
+
+{
+  "baseline": [
+    {
+      "name": "current-equality",
+      "lockProbe": null,
+      "stored": {
+        "target": 100,
+        "status": "completed",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+    },
+    {
+      "name": "current-raise-contribution-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 200,
+        "status": "active",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "accepted"
+    },
+    {
+      "name": "current-raise-editor-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 200,
+        "status": "active",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "accepted"
+    },
+    {
+      "name": "current-lower-contribution-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 100,
+        "status": "completed",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+    },
+    {
+      "name": "current-lower-editor-first",
+      "lockProbe": "SQLITE_BUSY",
+      "stored": {
+        "target": 100,
+        "status": "completed",
+        "raised": 100
+      },
+      "violations": [],
+      "nextContribution": "This goal is complete. Its manager must raise the target before continuing."
+    }
+  ]
+}
+
+Evidence: /tmp/tally-goal-check-3j0pW4
+Interpret both models with /statechart using the copied spec, configs, and view.
