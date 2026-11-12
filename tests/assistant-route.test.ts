@@ -5617,3 +5617,77 @@ describe("an inherited yes or debt link needs an answer-shaped message (round 26
     });
   });
 });
+
+// Review round 26, finding 26d. The user's choice of "another" is recorded on the question row, so it survives the account question
+// that follows and the second debt is never merged into the first.
+describe("the choice of another debt is recorded (round 26, finding 26d)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    const response = await POST(assistantRequest(prompt, conversationId));
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+  const args = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
+  const wallet = () => store.listAccounts(user.id).find((account) => account.name === "Wallet")!;
+
+  it("finding 26d: another stays a new groceries debt through the account question, and the transaction links to it", async () => {
+    const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+    const secondArgs = { ...args, note: "groceries", description: "groceries", account: "Nowhere" };
+    const duplicate = await say("Ana owes me 500 for groceries, add it to Transactions into Nowhere account", "log_debt", secondArgs, first.conversationId);
+    expect(duplicate.answer).toContain("You already added Ana owes you ₱500.00");
+    const another = await say("another", "log_debt", secondArgs, first.conversationId);
+    expect(another.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date" });
+
+    const done = await say("use Wallet", "log_debt", { ...secondArgs, account: "Wallet" }, first.conversationId);
+
+    expect(store.listDebts(user.id)).toHaveLength(2);
+    expect(done.debt.id).not.toBe(first.debt.id);
+    expect(done.debt).toMatchObject({ note: "groceries" });
+    expect(done.transaction).toMatchObject({ debtId: done.debt.id, amountMinor: 50_000 });
+    expect(store.listDebts(user.id).find((debt) => debt.id === first.debt.id)!.activity).toHaveLength(0);
+    expect(wallet().balanceMinor).toBe(-50_000);
+  });
+
+  it("finding 26d: the choice survives a second question and a turn that only reads the ledger", async () => {
+    const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+    const secondArgs = { ...args, note: "groceries", description: "groceries", account: "Nowhere" };
+    await say("Ana owes me 500 for groceries, add it to Transactions into Nowhere account", "log_debt", secondArgs, first.conversationId);
+    await say("another", "log_debt", secondArgs, first.conversationId);
+    await say("use Savings", "log_debt", { ...secondArgs, account: "Savings" }, first.conversationId);
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date" });
+    const read = await say("How much did I spend this month?", "finance_question", { start: "2026-10-01", end: "2026-10-09" }, first.conversationId);
+    expect(read.transaction).toBeNull();
+
+    const done = await say("use Wallet", "log_debt", { ...secondArgs, account: "Wallet" }, first.conversationId);
+
+    expect(store.listDebts(user.id)).toHaveLength(2);
+    expect(done.transaction).toMatchObject({ debtId: done.debt.id });
+    expect(done.debt.id).not.toBe(first.debt.id);
+  });
+
+  it("finding 26d: a debt created through another is distinct, but a third identical statement is still a duplicate", async () => {
+    const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+    await say("Ana owes me 500 for groceries", "log_debt", { ...args, note: "groceries" }, first.conversationId);
+    const second = await say("another", "log_debt", { ...args, note: "groceries" }, first.conversationId);
+    expect(second.debt.id).not.toBe(first.debt.id);
+    const third = await say("Ana owes me 500 for rent", "log_debt", { ...args, note: "rent" }, first.conversationId);
+    expect(third.debt).toBeNull();
+    expect(third.answer).toContain("You already added Ana owes you ₱500.00");
+    expect(store.listDebts(user.id)).toHaveLength(2);
+  });
+
+  it("finding 26d: a debt statement said while the second debt waits on its account is a new statement and is asked about again", async () => {
+    const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+    const secondArgs = { ...args, note: "groceries", description: "groceries", account: "Nowhere" };
+    await say("Ana owes me 500 for groceries, add it to Transactions into Nowhere account", "log_debt", secondArgs, first.conversationId);
+    await say("another", "log_debt", secondArgs, first.conversationId);
+
+    const again = await say("Ana owes me 500 for rent", "log_debt", { ...args, note: "rent" }, first.conversationId);
+
+    expect(again.debt).toBeNull();
+    expect(again.answer).toContain("You already added Ana owes you ₱500.00");
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+});

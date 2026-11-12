@@ -1,7 +1,7 @@
 // Pure rules for one Ask Tally conversation turn. assistant.ts and store.ts ask this module for
 // each decision and persist the answer; they never re-derive these rules inline.
 
-import { isBillFollowup, type FollowupKind } from "../assistant-followup";
+import { isBillFollowup, type FollowupKind, type ReplyData } from "../assistant-followup";
 import { normalizeCounterparty } from "../counterparty";
 
 // An assistant-saved transaction can be undone for this long after it is saved.
@@ -186,7 +186,7 @@ export function runExpired(runLength: number, outcome: PendingOutcome): boolean 
 }
 
 // A message of the open run, as stored. readOnly marks a reply that only read the ledger.
-export type RunMessage = { role: "user" | "assistant"; followup?: FollowupKind | null; billId?: string | null; readOnly?: boolean };
+export type RunMessage = { role: "user" | "assistant"; followup?: FollowupKind | null; billId?: string | null; readOnly?: boolean; data?: ReplyData | null };
 
 // A reply is quiet when it handled its own request and left the pending question pending: a bill saved without
 // a question (the reply carries the bill) or a read-only answer. The user message it answered says nothing about
@@ -727,6 +727,20 @@ const THAT_DEBT_WORDS: readonly string[] = ["that one", "use that one", "the sam
 export function duplicateDebtChoice(reply: string): DuplicateChoice | null {
   const normalized = reply.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").replace(/\s+/g, " ").trim();
   return ANOTHER_DEBT_WORDS.includes(normalized) ? "another" : THAT_DEBT_WORDS.includes(normalized) ? "that" : null;
+}
+
+// What the question the run is waiting on stored about the user's choice of another debt (ReplyData). `another`: the user chose
+// "another" at the duplicate question and the question open now is still about that second debt, so a debt that repeats the
+// first is not a duplicate for as long as that question stays open. `duplicateCall`: the write the duplicate question asked about.
+export function openQuestionData(run: readonly RunMessage[]): ReplyData | null {
+  return openQuestionOf(run)?.data ?? null;
+}
+
+// Whether the reply to the current turn must keep the choice of another debt: the turn is still working on the second debt (a debt
+// write that made no debt yet and asks again), so the next answer must not merge it into the first. Once the second debt exists the
+// question carries that debt and the flag has done its work.
+export function keepsAnotherChoice(turn: { chosen: boolean; call: string; debtCreated: boolean; asks: boolean; debtOnQuestion: boolean }): boolean {
+  return turn.chosen && turn.call === "log_debt" && !turn.debtCreated && turn.asks && !turn.debtOnQuestion;
 }
 
 // Whether the question the run is waiting on is the duplicate question.

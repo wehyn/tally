@@ -400,6 +400,30 @@ describe("owner-scoped ledger", () => {
     expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.readOnly)).toEqual([false, true, false]);
   });
 
+  it("adds the reply-data column to legacy assistant messages idempotently, reads old rows as having none, and stores the choice of another debt", () => {
+    const user = store.registerUser("message_followup_data_column", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
+      bill_id TEXT REFERENCES bills(id) ON DELETE SET NULL, read_only INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,needs_followup,followup_kind,created_at) VALUES('old-reply',?,?,'assistant','Asked',1,'clarification','2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+    store.migrate();
+    store.migrate();
+
+    store.addMessage(user.id, conversationId, "assistant", "Which account?", undefined, "account_or_date", undefined, undefined, undefined, false, { another: true });
+    store.addMessage(user.id, conversationId, "assistant", "Plain", undefined, "clarification");
+
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.data)).toEqual([
+      null, { another: true }, null,
+    ]);
+  });
+
   it("names the last stored message of a conversation by insertion order, and null when it has none", () => {
     const user = store.registerUser("last_message_id", "hash");
     const other = store.registerUser("last_message_other", "hash");

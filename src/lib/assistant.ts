@@ -6,8 +6,8 @@ import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } fro
 import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
-import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, SHORT_ANSWER_REPLY, answerShaped, debtFlowAnswers, debtFlowContinues, debtFlowStatement, statesNewStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { isBillFollowup, type FollowupKind, type ReplyData } from "@/lib/assistant-followup";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, SHORT_ANSWER_REPLY, answerShaped, debtFlowAnswers, debtFlowContinues, debtFlowStatement, statesNewStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -902,6 +902,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const savedInRunIds = new Set(runDebtIds(run));
     const savedInRun = store.listDebts(user.id).filter((item) => savedInRunIds.has(item.id));
     const duplicateChoice = isDuplicateDebtQuestionOf(run) ? duplicateDebtChoice(input.prompt) : null;
+    // "another" is the user's choice to add a second debt on purpose. It is recorded on the question row (ReplyData), so it holds for the
+    // account or date question that follows, and the debt that question is about is never merged into the first one.
+    const questionData = openQuestionData(run);
+    // A message that states a debt again is a new statement, not the answer to the second debt's question, so it is asked about again.
+    const anotherOpen = duplicateChoice === "another" || (questionData?.another === true && !currentDebtIntent);
     // The debt flow's recorded consent and its link to the saved debt belong to an answer to that debt's own question and to nothing
     // else (debtFlowAnswers). A turn that is a refusal, a new statement (a different debt, an expense, a restart) or a write for
     // another debt carries neither: it is handled as its own statement. A question the debt flow asked about its saved debt (its
@@ -932,7 +937,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
     // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
     // the carried debt id, which stays link context only. It applies only to an answer to that flow.
-    const debtChainAnswer = debtAnswers && duplicateChoice !== "another" ? debtOfferChainAnswer(run, (content) => answerShaped(content, "offer", answerContext)) : null;
+    const debtChainAnswer = debtAnswers && !anotherOpen ? debtOfferChainAnswer(run, (content) => answerShaped(content, "offer", answerContext)) : null;
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || (debtAnswers && debtQuestionNo) || debtChainAnswer === "optOut";
     const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || (debtAnswers && debtQuestionYes) || debtChainAnswer === "optIn");
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
@@ -966,6 +971,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       // The answer to the duplicate question is the write it asked about: "another" repeats the debt on purpose, "that one" goes on
       // with the saved one. The call is built from the saved debt, whatever the model made of a bare "another".
       const duplicateOf = duplicateChoice && savedDebt && savedDebt.status === "open" && !currentDebtIntent ? savedDebt : undefined;
+      // The data stored on the reply this turn stores (ReplyData).
+      let replyData: ReplyData | null = null;
       if (duplicateOf) {
         call = { name: "log_debt", args: { ...(providerCall.name === "log_debt" ? providerCall.args : {}), direction: duplicateOf.direction, counterparty: duplicateOf.counterparty, amount: String(duplicateOf.amountMinor / 100) } };
       } else if (repaymentReportQuestion) {
@@ -1080,10 +1087,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
         const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
         // "another" is the user's own choice to add a second debt, so it never goes on with the saved one.
-        const isExistingDebtFollowup = debtAnswers && !currentDebtIntent && duplicateChoice !== "another";
+        const isExistingDebtFollowup = debtAnswers && !currentDebtIntent && !anotherOpen;
         // The net: a write that would create a debt this run already saved never does (duplicateOfRunDebt).
         const amountForDuplicate = (() => { try { return amount ? parsePHPToMinor(amount) : undefined; } catch { return undefined; } })();
-        const runDuplicate = direction && counterparty && amountForDuplicate && !isExistingDebtFollowup && duplicateChoice !== "another"
+        const runDuplicate = direction && counterparty && amountForDuplicate && !isExistingDebtFollowup && !anotherOpen
           ? duplicateOfRunDebt(savedInRun, { direction, counterparty, amountMinor: amountForDuplicate }) : undefined;
         const continuing = isExistingDebtFollowup || !!runDuplicate;
         if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
@@ -1321,8 +1328,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         ? incomeConfirmHint(followup, incomeEchoedAccount ?? (accounts.find((candidate) => candidate.isDefault) ?? accounts[0])?.name) : null;
       const hint = confirmHint ?? cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
+      // A second debt the user chose on purpose and that still waits on an account or a date stays distinct from the first.
+      if (keepsAnotherChoice({ chosen: anotherOpen, call: call.name, debtCreated: debt !== null, asks: followup !== null, debtOnQuestion: debtInFlow !== undefined })) replyData = { another: true };
       const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
-      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : followup !== null ? debtInFlow : undefined), undefined, bill?.id, answeredReadOnly && stored !== null);
+      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : followup !== null ? debtInFlow : undefined), undefined, bill?.id, answeredReadOnly && stored !== null, stored !== null ? replyData : null);
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });
 }

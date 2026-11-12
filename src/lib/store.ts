@@ -8,7 +8,7 @@ import { isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } f
 import { canScheduleDueDate, planPosting, type BillSchedule } from "./machines/bill";
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
-import { isFollowupKind, type FollowupKind } from "./assistant-followup";
+import { isFollowupKind, parseReplyData, type FollowupKind, type ReplyData } from "./assistant-followup";
 import { canUndo, canWrite, undoUntilFor, type ConsentState } from "./machines/assistant";
 import { isManualTransactionKind, type ManualTransactionKind, type TransactionKind } from "./transaction-model";
 
@@ -162,7 +162,7 @@ export function createStore(db: Database.Database) {
         id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
         content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
-        needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, bill_id TEXT REFERENCES bills(id) ON DELETE SET NULL, read_only INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+        needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, bill_id TEXT REFERENCES bills(id) ON DELETE SET NULL, read_only INTEGER NOT NULL DEFAULT 0, followup_data TEXT, created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS goals (
         id TEXT PRIMARY KEY, manager_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -304,6 +304,7 @@ export function createStore(db: Database.Database) {
     if (!messageColumns.some((column) => column.name === "debt_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL");
     if (!messageColumns.some((column) => column.name === "bill_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN bill_id TEXT REFERENCES bills(id) ON DELETE SET NULL");
     if (!messageColumns.some((column) => column.name === "read_only")) db.exec("ALTER TABLE assistant_messages ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0");
+    if (!messageColumns.some((column) => column.name === "followup_data")) db.exec("ALTER TABLE assistant_messages ADD COLUMN followup_data TEXT");
     if (!messageColumns.some((column) => column.name === "needs_followup")) db.exec("ALTER TABLE assistant_messages ADD COLUMN needs_followup INTEGER NOT NULL DEFAULT 0");
     // Older rows only have needs_followup = 1; read them back as a generic clarification.
     if (!messageColumns.some((column) => column.name === "followup_kind")) db.exec("ALTER TABLE assistant_messages ADD COLUMN followup_kind TEXT");
@@ -1090,13 +1091,13 @@ export function createStore(db: Database.Database) {
   function getConversation(userId: string, id: string) {
     const conversation = db.prepare("SELECT id,title FROM conversations WHERE user_id=? AND id=?").get(userId, id) as { id: string; title: string } | undefined;
     if (!conversation) return null;
-    const messages = db.prepare(`SELECT m.id,m.role,m.content,m.created_at AS createdAt,m.transaction_id AS transactionId,m.needs_followup AS needsFollowup,m.followup_kind AS followupKind,m.debt_id AS messageDebtId,m.bill_id AS messageBillId,m.read_only AS readOnly,
+    const messages = db.prepare(`SELECT m.id,m.role,m.content,m.created_at AS createdAt,m.transaction_id AS transactionId,m.needs_followup AS needsFollowup,m.followup_kind AS followupKind,m.debt_id AS messageDebtId,m.bill_id AS messageBillId,m.read_only AS readOnly,m.followup_data AS followupData,
       t.kind,t.amount_minor AS amountMinor,t.account_id AS accountId,t.category_id AS categoryId,t.debt_id AS debtId,t.description AS transactionDescription,
       t.date AS transactionDate,t.time AS transactionTime,c.name AS categoryName,a.name AS accountName,t.source,t.undo_until AS undoUntil
       FROM assistant_messages m LEFT JOIN transactions t ON t.id=m.transaction_id
       LEFT JOIN categories c ON c.id=t.category_id LEFT JOIN financial_accounts a ON a.id=t.account_id
       WHERE m.user_id=? AND m.conversation_id=? ORDER BY m.rowid`).all(userId, id) as Record<string, unknown>[];
-    return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), followup: followupFromRow(message), debtId: message.messageDebtId ? String(message.messageDebtId) : null, billId: message.messageBillId ? String(message.messageBillId) : null, readOnly: message.readOnly === 1,
+    return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), followup: followupFromRow(message), debtId: message.messageDebtId ? String(message.messageDebtId) : null, billId: message.messageBillId ? String(message.messageBillId) : null, readOnly: message.readOnly === 1, data: parseReplyData(message.followupData),
       transaction: message.transactionId ? {
         id: String(message.transactionId), kind: message.kind as TransactionKind, amountMinor: Number(message.amountMinor), accountId: String(message.accountId),
         categoryId: message.categoryId ? String(message.categoryId) : undefined, debtId: message.debtId ? String(message.debtId) : undefined,
@@ -1110,12 +1111,12 @@ export function createStore(db: Database.Database) {
     const row = db.prepare("SELECT id FROM assistant_messages WHERE conversation_id=? AND user_id=? ORDER BY rowid DESC LIMIT 1").get(conversationId, userId) as { id: string } | undefined;
     return row?.id ?? null;
   }
-  function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, followup: FollowupKind | null = null, debtId?: string, createdAt?: string, billId?: string, readOnly = false): void {
+  function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, followup: FollowupKind | null = null, debtId?: string, createdAt?: string, billId?: string, readOnly = false, data?: ReplyData | null): void {
     if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");
     const now = stamp();
     // A user message keeps the time its request was received, which relative dates in later follow-ups read.
     // The turn commits prompt then reply in one transaction, so rowid order is their order whatever the clock did.
-    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,bill_id,read_only,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, billId ?? null, readOnly ? 1 : 0, createdAt ?? now);
+    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,bill_id,read_only,followup_data,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, billId ?? null, readOnly ? 1 : 0, data ? JSON.stringify(data) : null, createdAt ?? now);
     db.prepare("UPDATE conversations SET updated_at=? WHERE id=? AND user_id=?").run(now, conversationId, userId);
   }
   function deleteConversation(userId: string, id: string): void {

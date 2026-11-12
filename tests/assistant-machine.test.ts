@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, answerShaped, statesNewStatement, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { parseReplyData } from "../src/lib/assistant-followup";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, statesNewStatement, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -1084,6 +1085,24 @@ describe("statesNewStatement", () => {
   for (const reply of ["I don't want to record it. Use Wallet.", "I don't want to record the 500 lunch. Use Wallet.", "Don't record the money. Use Wallet.", "make it 30", "use Wallet", "maybe spent 500 on lunch", "no, spent 500 on lunch", "skip the 500 lunch"]) {
     it(`is not a statement: ${reply}`, () => expect(statesNewStatement(reply, accounts)).toBe(false));
   }
+});
+
+describe("the choice of another debt (ReplyData)", () => {
+  it("reads the stored JSON back and ignores anything that is not the shape written", () => {
+    expect(parseReplyData(JSON.stringify({ another: true }))).toEqual({ another: true });
+    for (const raw of [null, undefined, "", "not json", "[]", "5", JSON.stringify({ another: "yes" }), JSON.stringify({})]) expect(parseReplyData(raw), String(raw)).toBeNull();
+  });
+  const reply = (followup: FollowupKind | null, data: { another?: true } | null, extra: { readOnly?: boolean } = {}) => ({ role: "assistant" as const, content: "", followup, data, ...extra });
+  it("reads the data of the question the run waits on, a quiet reply in between left out", () => {
+    expect(openQuestionData([reply("account_or_date", { another: true }), reply("account_or_date", null, { readOnly: true })])).toEqual({ another: true });
+    expect(openQuestionData([reply("account_or_date", { another: true }), reply("clarification", null)])).toBeNull();
+    expect(openQuestionData([])).toBeNull();
+  });
+  it("keeps the choice only while a debt write for the second debt asks again with no debt on its question", () => {
+    const turn = { chosen: true, call: "log_debt", debtCreated: false, asks: true, debtOnQuestion: false };
+    expect(keepsAnotherChoice(turn)).toBe(true);
+    for (const over of [{ chosen: false }, { call: "log_transaction" }, { debtCreated: true }, { asks: false }, { debtOnQuestion: true }]) expect(keepsAnotherChoice({ ...turn, ...over }), JSON.stringify(over)).toBe(false);
+  });
 });
 
 describe("debtFlowStatement", () => {

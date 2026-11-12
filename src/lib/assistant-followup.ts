@@ -22,6 +22,22 @@ export const FOLLOWUP_KINDS = [
 
 export type FollowupKind = (typeof FOLLOWUP_KINDS)[number];
 
+// Structured facts the code stores on an assistant reply (`followup_data`, JSON), for a decision that must survive the next turns and
+// that no wording can carry. `another`: the user chose to add a second debt that repeats one the run already saved, and the question
+// this reply asks is still about that second debt, so a duplicate of the first is not a duplicate any more.
+export type ReplyData = { another?: true };
+
+// Reads the stored JSON back, ignoring anything that is not the shape written above (an old row, a hand-edited one).
+export function parseReplyData(raw: unknown): ReplyData | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as { another?: unknown }).another === true ? { another: true } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isFollowupKind(value: unknown): value is FollowupKind {
   return typeof value === "string" && (FOLLOWUP_KINDS as readonly string[]).includes(value);
 }
