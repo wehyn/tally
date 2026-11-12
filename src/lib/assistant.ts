@@ -871,13 +871,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const ordinaryIncomeAccepted = incomeTurn === "write";
     const ordinaryIncomeDeclined = incomeTurn === "decline";
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
-    // A question the debt branch asked while adding a saved debt to Transactions (its account, its date, the choice between two
-    // readings of the hints) stores that debt with it, so its answer goes on with the same debt instead of saving a second one.
+    // A question the debt flow asked about a saved debt (its account, its date, its amount, the choice between two readings of the
+    // hints) stores that debt with it, so its answer goes on with the same debt instead of saving a second one. That is the debt
+    // the answer links to and nothing more: it is never the user's opt-in to add the debt to Transactions (debtTransactionRequested).
     const debtContinues = (lastFollowup === "account_or_date" || lastFollowup === "clarification") && recordedDebtId !== undefined;
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo;
-    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes || debtContinues);
+    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes);
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
     const currentDebtIntent = explicitNewDebtIntent(input.prompt);
     const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);

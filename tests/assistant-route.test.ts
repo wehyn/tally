@@ -4983,3 +4983,44 @@ describe("the question that names both choices keeps the flow it interrupts (rou
     });
   });
 });
+
+// Review round 22. The saved debt a question carries (ccee790) is only the debt a later answer links to. It is never the user's
+// opt-in to add the debt to Transactions, and a call that only reads is never rewritten into a write.
+describe("a carried debt is context, never consent (round 22, finding 22)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    return (await POST(assistantRequest(prompt, conversationId))).json();
+  }
+  const wallet = () => store.listAccounts(user.id).find((account) => account.name === "Wallet")!.balanceMinor;
+
+  it("finding 22a: a question about the amount keeps the debt, and its answer without an opt-in stays in Debts only", async () => {
+    const first = await say("Mom owes me 27", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27", note: "Jollibee", recordTransaction: true });
+    expect(first.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
+    const mismatch = await say("make it 30", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "30" }, first.conversationId);
+    expect(mismatch.answer).toContain("doesn't match the open debt");
+    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+
+    const answer = await say("27 then", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27" }, first.conversationId);
+
+    expect(answer.transaction).toBeNull();
+    expect(answer.answer).toContain("Added it to Debts only");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(wallet()).toBe(0);
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
+  });
+
+  it("finding 22a: the same answer after a real opt-in still links the transaction to the one debt", async () => {
+    const first = await say("Mom owes me 27", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27" });
+    await say("add it to Transactions for lunch, make it 30", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "30", account: "Wallet", date: "2026-10-09", category: "Food", description: "lunch" }, first.conversationId);
+    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+
+    const answer = await say("27 then", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27", account: "Wallet", date: "2026-10-09", category: "Food", description: "lunch" }, first.conversationId);
+
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(answer.transaction).toMatchObject({ amountMinor: 2_700, debtId: first.debt.id });
+  });
+
+});
