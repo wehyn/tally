@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -792,5 +792,51 @@ describe("debt flow continuation", () => {
     }
     expect(debtContinuationRewrites("write", "account_or_date", true, "optIn")).toBe(true);
     expect(debtContinuationRewrites("write", "debt_transaction", false, "optOut")).toBe(true);
+  });
+});
+
+// A yes or a no to the stored Transactions offer is a recorded answer for that debt's whole flow (finding 23). The walk reads the
+// stored reply kinds and debt ids of the open run, never the text of a reply, and a user message only for the yes or no itself.
+describe("debt offer chain", () => {
+  type Turn = { role: "user" | "assistant"; content: string; followup?: FollowupKind | null; debtId?: string | null; readOnly?: boolean };
+  const u = (content: string): Turn => ({ role: "user", content });
+  const a = (followup: FollowupKind | null, debtId: string | null = "D1", extra: Partial<Turn> = {}): Turn => ({ role: "assistant", content: "reply", followup, debtId, ...extra });
+  const offer = [u("Ana owes me 500"), a("debt_transaction")];
+
+  const cases: { name: string; run: Turn[]; expected: "optIn" | "optOut" | null }[] = [
+    { name: "no offer at all", run: [u("what is this"), a("clarification", null)], expected: null },
+    { name: "the offer is the last reply, so the current message is its answer", run: offer, expected: null },
+    { name: "yes, then an account question", run: [...offer, u("yes, for lunch into Nowhere account"), a("account_or_date")], expected: "optIn" },
+    { name: "yes, then a date question", run: [...offer, u("yes for food on 2026-13-45"), a("account_or_date")], expected: "optIn" },
+    { name: "yes, then a generic question", run: [...offer, u("yes, for food"), a("clarification")], expected: "optIn" },
+    { name: "yes, an account question, an answer that asks again", run: [...offer, u("yes"), a("account_or_date"), u("Nowhere"), a("account_or_date")], expected: "optIn" },
+    { name: "yes, an account question, then a date question", run: [...offer, u("yes"), a("account_or_date"), u("Wallet"), a("clarification")], expected: "optIn" },
+    { name: "no, then a question", run: [...offer, u("no, but make it 600"), a("clarification")], expected: "optOut" },
+    { name: "a reply that is not a yes or a no to the offer records nothing", run: [...offer, u("make it 600"), a("clarification")], expected: null },
+    { name: "an unrelated kind ends the chain", run: [...offer, u("yes"), a("account_or_date"), u("Maya paid me"), a("repayment_payer")], expected: null },
+    { name: "an ordinary income question ends the chain", run: [...offer, u("yes"), a("account_or_date"), u("x"), a("ordinary_income")], expected: null },
+    { name: "a reply that dropped the debt ends the chain", run: [...offer, u("yes"), a("account_or_date"), u("Nowhere"), a("clarification", null)], expected: null },
+    { name: "a different debt ends the chain", run: [...offer, u("yes"), a("account_or_date", "D2")], expected: null },
+    { name: "a new offer for a different debt starts over", run: [...offer, u("yes"), a("account_or_date"), u("Ben owes me 3"), a("debt_transaction", "D2")], expected: null },
+    { name: "a new offer for a different debt, then its yes", run: [...offer, u("Ben owes me 3"), a("debt_transaction", "D2"), u("yes"), a("account_or_date", "D2")], expected: "optIn" },
+    { name: "an offer for another debt answered no, after an earlier yes", run: [...offer, u("yes"), a("account_or_date"), u("Ben owes me 3"), a("debt_transaction", "D2"), u("no"), a("clarification", "D2")], expected: "optOut" },
+    { name: "an offer with no debt id is no offer", run: [u("x"), a("debt_transaction", null), u("yes"), a("account_or_date", null)], expected: null },
+    { name: "a quiet read between the yes and the current message does not end it", run: [...offer, u("yes"), a("account_or_date"), u("how much did I spend?"), a("account_or_date", "D1", { readOnly: true })], expected: "optIn" },
+    { name: "a quiet read before the yes does not answer the offer", run: [...offer, u("how much did I spend?"), a("debt_transaction", "D1", { readOnly: true }), u("yes"), a("account_or_date")], expected: "optIn" },
+    { name: "a quiet read on the offer alone records nothing", run: [...offer, u("how much did I spend?"), a("debt_transaction", "D1", { readOnly: true })], expected: null },
+    { name: "a quiet bill between does not end it", run: [...offer, u("yes"), a("account_or_date"), u("Netflix bill"), { ...a("account_or_date"), billId: "B1" } as Turn], expected: "optIn" },
+    { name: "the offer asked again after a yes is a new, unanswered offer", run: [...offer, u("yes"), a("debt_transaction")], expected: null },
+  ];
+  for (const { name, run, expected } of cases) it(name, () => expect(debtOfferChainAnswer(run)).toBe(expected));
+
+  it("reads the stored kinds and ids only: a reply's wording changes nothing", () => {
+    const worded = (content: string) => [...offer, u("yes"), { ...a("account_or_date"), content }];
+    for (const content of ["", "Added it to Debts only", "yes yes yes", "Okay, Ana's debt stays in Debts only."]) expect(debtOfferChainAnswer(worded(content))).toBe("optIn");
+  });
+
+  it("recognizes the same yes and no the offer answer always did", () => {
+    for (const text of ["yes", "Yes, for lunch", "yeah", "yep", "sure", "okay", "ok", "go ahead", "add it", "record it please"]) expect(isDebtOfferYes(text), text).toBe(true);
+    for (const text of ["no", "nope", "nah, keep it", "No."]) expect(isDebtOfferNo(text), text).toBe(true);
+    for (const text of ["maybe", "yesterday", "nothing", "Wallet", ""]) { expect(isDebtOfferYes(text), text).toBe(false); expect(isDebtOfferNo(text), text).toBe(false); }
   });
 });

@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -875,10 +875,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // hints) stores that debt with it, so its answer goes on with the same debt instead of saving a second one. That is the debt
     // the answer links to and nothing more: it is never the user's opt-in to add the debt to Transactions (debtTransactionRequested).
     const debtContinues = debtFlowContinues(lastFollowup, recordedDebtId !== undefined);
-    const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
-    const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
-    const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo;
-    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes);
+    const debtQuestionYes = debtTransactionQuestion && isDebtOfferYes(input.prompt);
+    const debtQuestionNo = debtTransactionQuestion && isDebtOfferNo(input.prompt);
+    // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
+    // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
+    // the carried debt id, which stays link context only.
+    const debtChainAnswer = debtOfferChainAnswer(run);
+    const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo || debtChainAnswer === "optOut";
+    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes || debtChainAnswer === "optIn");
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
     const currentDebtIntent = explicitNewDebtIntent(input.prompt);
     const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
@@ -1002,6 +1006,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         answer = safeClarification(call.args.question);
         followup = clarificationKind ?? expectedRepaymentAmount ?? "clarification";
         modelWorded = call === providerCall;
+        // A question asked inside a saved debt's flow keeps that debt, so its answer links to it and a later opt-in never saves a second one.
+        if (debtContinues && !currentDebtIntent) debtInFlow = recordedDebtId;
       }
       else if (call.name === "finance_question") {
         const defaultRange = monthToDateRange(requestedAt);

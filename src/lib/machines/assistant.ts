@@ -491,6 +491,50 @@ export function debtFlowContinues(pending: FollowupKind | null, carriesDebt: boo
 // neither. It is read from the user's messages and never from the question that is pending.
 export type DebtTransactionAnswer = "optIn" | "optOut" | null;
 
+// The user's yes or no to the stored "add it to Transactions" offer. One recognizer, used for the current message and for the
+// messages of the run, so the answer means the same wherever it is read.
+export const isDebtOfferYes = (text: string): boolean => /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(text);
+export const isDebtOfferNo = (text: string): boolean => /^\s*(?:no|nope|nah)\b/i.test(text);
+
+// A yes or a no said to the stored debt_transaction offer is a recorded answer, and it stays valid for the rest of that debt's
+// flow: through the account, date or generic question the answer itself led to, however many times the flow asks again. The
+// walk reads only what the run stored (the kind of each reply and the debt id it carried) and the user message that answered
+// the offer. A reply's wording says nothing. It starts at an offer (a debt_transaction reply that carries a debt) and takes
+// the next message that is not a quiet turn as its answer: a yes or a no records "optIn" or "optOut", anything else records
+// nothing. It ends at any reply that is not an account_or_date or clarification question carrying the same debt (another kind,
+// a different debt, no debt, a new offer for another debt, a cancel or a completed write, which end the run). Quiet turns
+// (a read or a saved bill) answered their own request and are skipped. The offer being the last reply means the current message
+// is its answer, which the caller reads itself, so the walk says null. The debt a question carries is link context only: the
+// answer comes from the yes, never from the id.
+type DebtChainTurn = RunMessage & { content: string; debtId?: string | null };
+
+export function debtOfferChainAnswer(run: readonly DebtChainTurn[]): DebtTransactionAnswer {
+  let debtId: string | undefined;
+  let awaitingAnswer = false;
+  let answer: DebtTransactionAnswer = null;
+  for (let index = 0; index < run.length; index++) {
+    const message = run[index];
+    const reply = run[index + 1];
+    if (message.role !== "user" || reply?.role !== "assistant") continue;
+    if (isQuietReply(reply)) continue;
+    if (reply.followup === "debt_transaction" && reply.debtId) {
+      // The offer opens the question, and the next message that is not a quiet turn is its answer.
+      debtId = reply.debtId; awaitingAnswer = true; answer = null;
+      continue;
+    }
+    if (debtId === undefined) continue;
+    const carries = reply.debtId === debtId && (reply.followup === "account_or_date" || reply.followup === "clarification");
+    if (awaitingAnswer) {
+      awaitingAnswer = false;
+      answer = carries ? isDebtOfferYes(message.content) ? "optIn" : isDebtOfferNo(message.content) ? "optOut" : null : null;
+      if (answer === null) debtId = undefined;
+    } else if (!carries) {
+      debtId = undefined; answer = null;
+    }
+  }
+  return debtId !== undefined && !awaitingAnswer ? answer : null;
+}
+
 // Whether the debt flow replaces the provider's call with the debt write for the saved debt. Only a call that writes (the model's
 // own version of the same write) or asks (the model did not understand the answer) is replaced, and only when the user has said
 // yes or no to Transactions: a yes writes the transaction, a no keeps the debt in Debts only. A call that only reads, a bill, or
