@@ -5058,4 +5058,43 @@ describe("a carried debt is context, never consent (round 22, finding 22)", () =
     expect(saved.transaction).toMatchObject({ amountMinor: 50_000, debtId: first.debt.id });
   });
 
+  // The same two faults, checked in every other flow that continues a pending question: a carried flag is never consent, and a
+  // call that only reads is answered as a read and leaves the question pending.
+  describe("finding 22c: a call that only reads leaves every other pending question and writes nothing", () => {
+    const read = { start: "2026-10-01", end: "2026-10-09" };
+    const bill = { name: "Netflix", frequency: "monthly", category: "Entertainment" };
+    const cases: { name: string; ask: () => Promise<{ conversationId: string }>; followup: string; reading: string }[] = [
+      { name: "the ordinary income question", followup: "ordinary_income", reading: "how much did I spend this month?",
+        ask: () => say("Zed paid me 500", "record_debt_payment", { counterparty: "Zed", amount: "500" }) },
+      { name: "the account question of the income flow", followup: "ordinary_income", reading: "how much did I spend this month?",
+        ask: () => say("Zed paid me 500 into Nowhere account", "record_debt_payment", { counterparty: "Zed", amount: "500", account: "Nowhere" }) },
+      { name: "the repayment amount question", followup: "repayment_amount", reading: "how much did I spend this month?",
+        ask: async () => { store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 }); return say("Maya paid me", "record_debt_payment", { counterparty: "Maya" }); } },
+      { name: "the repayment payer question", followup: "repayment_payer", reading: "how much did I spend this month?",
+        ask: async () => {
+          store.createDebt(user.id, { direction: "you_owe", counterparty: "Mom", amountMinor: 20_000 });
+          store.createDebt(user.id, { direction: "you_owe", counterparty: "Dad", amountMinor: 30_000 });
+          return say("I paid Mom and Dad 100", "record_debt_repayment", { counterparty: "Mom", amount: "100" });
+        } },
+      { name: "a bill question", followup: "bill_amount", reading: "how much did I spend this month?",
+        ask: () => say("I have a Netflix bill under Entertainment. It is monthly, starts today, and ends December 15.", "create_bill", bill) },
+      { name: "a bill question, asked about the bill", followup: "bill_amount", reading: "how much is my Netflix bill this month?",
+        ask: () => say("I have a Netflix bill under Entertainment. It is monthly, starts today, and ends December 15.", "create_bill", bill) },
+    ];
+    for (const { name, ask, followup, reading } of cases) {
+      it(`${name}: a finance question only reads`, async () => {
+        const first = await ask();
+        expect(last(first.conversationId).followup).toBe(followup);
+        const before = { transactions: store.listTransactions(user.id).length, debts: store.listDebts(user.id).map((debt) => debt.amountMinor), bills: store.listBills(user.id).length };
+
+        const answered = await say(reading, "finance_question", read, first.conversationId);
+
+        expect(answered.transaction).toBeNull();
+        expect(answered.bill ?? null).toBeNull();
+        expect({ transactions: store.listTransactions(user.id).length, debts: store.listDebts(user.id).map((debt) => debt.amountMinor), bills: store.listBills(user.id).length }).toEqual(before);
+        expect(last(first.conversationId).followup).toBe(followup);
+      });
+    }
+  });
+
 });

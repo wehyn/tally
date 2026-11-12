@@ -978,7 +978,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       }
 
       const billFollowupPending = ownMessages.some((message) => isBillTrackingIntent(message.content)) && isBillFollowup(lastFollowup);
-      const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && providerCall.name !== "finance_question");
+      const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && turnCallOf(providerCall.name) !== "read");
       if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
       // The refusal decision is taken here, on the call as it will run, before any branch below can write.
