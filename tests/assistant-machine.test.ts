@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseReplyData } from "../src/lib/assistant-followup";
+import { duplicateCallData, parseReplyData } from "../src/lib/assistant-followup";
 import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, statesNewStatement, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
@@ -1088,9 +1088,14 @@ describe("statesNewStatement", () => {
 });
 
 describe("the choice of another debt (ReplyData)", () => {
+  it("keeps only the known plain keys of a debt write, each string cut", () => {
+    expect(duplicateCallData({ note: "groceries", dueDate: "2026-10-20", amount: 500, recordTransaction: true, extra: "x", description: { a: 1 }, account: "W".repeat(900) }))
+      .toEqual({ note: "groceries", dueDate: "2026-10-20", amount: 500, recordTransaction: true, account: "W".repeat(600) });
+  });
   it("reads the stored JSON back and ignores anything that is not the shape written", () => {
     expect(parseReplyData(JSON.stringify({ another: true }))).toEqual({ another: true });
-    for (const raw of [null, undefined, "", "not json", "[]", "5", JSON.stringify({ another: "yes" }), JSON.stringify({})]) expect(parseReplyData(raw), String(raw)).toBeNull();
+    expect(parseReplyData(JSON.stringify({ another: true, duplicateCall: { note: "x", bogus: 1 } }))).toEqual({ another: true, duplicateCall: { note: "x" } });
+    for (const raw of [null, undefined, "", "not json", "[]", "5", JSON.stringify({ another: "yes" }), JSON.stringify({ duplicateCall: [] }), JSON.stringify({})]) expect(parseReplyData(raw), String(raw)).toBeNull();
   });
   const reply = (followup: FollowupKind | null, data: { another?: true } | null, extra: { readOnly?: boolean } = {}) => ({ role: "assistant" as const, content: "", followup, data, ...extra });
   it("reads the data of the question the run waits on, a quiet reply in between left out", () => {

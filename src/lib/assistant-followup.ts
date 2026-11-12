@@ -24,15 +24,36 @@ export type FollowupKind = (typeof FOLLOWUP_KINDS)[number];
 
 // Structured facts the code stores on an assistant reply (`followup_data`, JSON), for a decision that must survive the next turns and
 // that no wording can carry. `another`: the user chose to add a second debt that repeats one the run already saved, and the question
-// this reply asks is still about that second debt, so a duplicate of the first is not a duplicate any more.
-export type ReplyData = { another?: true };
+// this reply asks is still about that second debt, so a duplicate of the first is not a duplicate any more. `duplicateCall`: the
+// debt write the duplicate question asked about (its note, due date, purpose, account and the rest), so "another" adds that debt and
+// not a bare one rebuilt from the saved debt.
+export type ReplyData = { another?: true; duplicateCall?: Record<string, string | number | boolean> };
+
+const DUPLICATE_CALL_KEYS = ["direction", "counterparty", "amount", "note", "dueDate", "description", "category", "account", "date", "time", "recordTransaction"] as const;
+
+// The part of a debt write worth keeping on a reply: the known keys with plain values, each string cut to a sane length.
+export function duplicateCallData(args: Record<string, unknown>): Record<string, string | number | boolean> {
+  const kept: Record<string, string | number | boolean> = {};
+  for (const key of DUPLICATE_CALL_KEYS) {
+    const value = args[key];
+    if (typeof value === "string") kept[key] = value.slice(0, 600);
+    else if (typeof value === "number" && Number.isFinite(value)) kept[key] = value;
+    else if (typeof value === "boolean") kept[key] = value;
+  }
+  return kept;
+}
 
 // Reads the stored JSON back, ignoring anything that is not the shape written above (an old row, a hand-edited one).
 export function parseReplyData(raw: unknown): ReplyData | null {
   if (typeof raw !== "string" || !raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as { another?: unknown }).another === true ? { another: true } : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const data: ReplyData = {};
+    if ((parsed as { another?: unknown }).another === true) data.another = true;
+    const call = (parsed as { duplicateCall?: unknown }).duplicateCall;
+    if (call && typeof call === "object" && !Array.isArray(call)) data.duplicateCall = duplicateCallData(call as Record<string, unknown>);
+    return data.another || data.duplicateCall ? data : null;
   } catch {
     return null;
   }

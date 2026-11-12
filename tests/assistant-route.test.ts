@@ -5618,9 +5618,9 @@ describe("an inherited yes or debt link needs an answer-shaped message (round 26
   });
 });
 
-// Review round 26, finding 26d. The user's choice of "another" is recorded on the question row, so it survives the account question
-// that follows and the second debt is never merged into the first.
-describe("the choice of another debt is recorded (round 26, finding 26d)", () => {
+// Review round 26, findings 26d and 26e. The user's choice of "another" is recorded on the question row, so it survives the account
+// question that follows, and the second debt keeps the purpose and the due date of the statement that asked about it.
+describe("the choice of another debt is recorded and keeps its details (round 26, findings 26d and 26e)", () => {
   const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
   async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
@@ -5688,6 +5688,38 @@ describe("the choice of another debt is recorded (round 26, finding 26d)", () =>
 
     expect(again.debt).toBeNull();
     expect(again.answer).toContain("You already added Ana owes you ₱500.00");
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+
+  it("finding 26e: another keeps the second debt's purpose and due date when the provider asks a question", async () => {
+    const first = await say("Ana owes me 500 for lunch due 2026-10-10", "log_debt", { ...args, note: "lunch", dueDate: "2026-10-10" });
+    const asked = await say("Ana owes me 500 for groceries due 2026-10-20", "log_debt", { ...args, note: "groceries", dueDate: "2026-10-20", description: "groceries" }, first.conversationId);
+    expect(asked.debt).toBeNull();
+
+    const done = await say("another", "ask_clarification", { question: "Another what?" }, first.conversationId);
+
+    expect(store.listDebts(user.id)).toHaveLength(2);
+    expect(done.debt).toMatchObject({ note: "groceries", dueDate: "2026-10-20" });
+    expect(store.listDebts(user.id).find((debt) => debt.id === first.debt.id)).toMatchObject({ note: "lunch", dueDate: "2026-10-10" });
+  });
+
+  it("finding 26e: another keeps the second debt's own opt-in, account and purpose for the transaction", async () => {
+    const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+    const secondArgs = { ...args, note: "groceries", description: "groceries", account: "Wallet", dueDate: "2026-10-20" };
+    await say("Ana owes me 500 for groceries due 2026-10-20, add it to Transactions using Wallet", "log_debt", secondArgs, first.conversationId);
+
+    const done = await say("another", "ask_clarification", { question: "Another what?" }, first.conversationId);
+
+    expect(done.debt).toMatchObject({ note: "groceries", dueDate: "2026-10-20" });
+    expect(done.debt.id).not.toBe(first.debt.id);
+    expect(done.transaction).toMatchObject({ debtId: done.debt.id, description: "Owed by Ana for groceries" });
+  });
+
+  it("finding 26e: \"that one\" still goes on with the saved debt and creates nothing", async () => {
+    const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+    await say("Ana owes me 500 for groceries", "log_debt", { ...args, note: "groceries" }, first.conversationId);
+    const chosen = await say("that one", "ask_clarification", { question: "Which?" }, first.conversationId);
+    expect(chosen.debt).toMatchObject({ id: first.debt.id });
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
 });

@@ -417,10 +417,11 @@ describe("owner-scoped ledger", () => {
     store.migrate();
 
     store.addMessage(user.id, conversationId, "assistant", "Which account?", undefined, "account_or_date", undefined, undefined, undefined, false, { another: true });
+    store.addMessage(user.id, conversationId, "assistant", "Add another?", undefined, "clarification", undefined, undefined, undefined, false, { duplicateCall: { note: "groceries", dueDate: "2026-10-20", amount: "500", ignored: { nested: true } } as never });
     store.addMessage(user.id, conversationId, "assistant", "Plain", undefined, "clarification");
 
     expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.data)).toEqual([
-      null, { another: true }, null,
+      null, { another: true }, { duplicateCall: { note: "groceries", dueDate: "2026-10-20", amount: "500" } }, null,
     ]);
   });
 

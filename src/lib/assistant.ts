@@ -6,7 +6,7 @@ import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } fro
 import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
-import { isBillFollowup, type FollowupKind, type ReplyData } from "@/lib/assistant-followup";
+import { duplicateCallData, isBillFollowup, type FollowupKind, type ReplyData } from "@/lib/assistant-followup";
 import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, SHORT_ANSWER_REPLY, answerShaped, debtFlowAnswers, debtFlowContinues, debtFlowStatement, statesNewStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
@@ -974,7 +974,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       // The data stored on the reply this turn stores (ReplyData).
       let replyData: ReplyData | null = null;
       if (duplicateOf) {
-        call = { name: "log_debt", args: { ...(providerCall.name === "log_debt" ? providerCall.args : {}), direction: duplicateOf.direction, counterparty: duplicateOf.counterparty, amount: String(duplicateOf.amountMinor / 100) } };
+        // "another" adds the debt the question asked about, with the note, due date, purpose and account of that statement, which the
+        // question stored. The bare word says none of it, so a model that did not understand it cannot drop them.
+        const askedAbout = duplicateChoice === "another" && questionData?.duplicateCall ? questionData.duplicateCall : providerCall.name === "log_debt" ? providerCall.args : {};
+        call = { name: "log_debt", args: { ...askedAbout, direction: duplicateOf.direction, counterparty: duplicateOf.counterparty, amount: String(duplicateOf.amountMinor / 100) } };
       } else if (repaymentReportQuestion) {
         call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
       } else if (ordinaryIncomeFlow) {
@@ -1110,6 +1113,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           // A message that states the debt again is asked about once. The question carries the saved debt, so "that one" goes on with it.
           answer = duplicateDebtQuestion(runDuplicate, formatPHP(runDuplicate.amountMinor));
           followup = "clarification"; debtInFlow = runDuplicate.id;
+          replyData = { duplicateCall: duplicateCallData(call.args) };
         }
         else {
           // The debt this write continues: the saved debt the flow answers, or the run's own debt it would have duplicated.
