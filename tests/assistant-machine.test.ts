@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type DebtTransactionAnswer, type StatementReading, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -772,26 +772,80 @@ describe("debt flow continuation", () => {
     }
   });
 
-  it("rewrites the provider's call for every call x pending kind x answer exactly when the rule says", () => {
-    for (const pending of [null, ...FOLLOWUP_KINDS]) for (const carriesDebt of [false, true]) for (const answer of answers) for (const call of calls) {
-      const expected = debtFlowContinues(pending, carriesDebt) && answer !== null && (call.kind === "write" || call.kind === "ask");
-      expect(debtContinuationRewrites(turnCallOf(call.name), pending, carriesDebt, answer), `${call.name} / ${pending} / debt ${carriesDebt} / ${answer}`).toBe(expected);
+  it("rewrites the provider's call for every call x answers-the-flow x answer exactly when the rule says", () => {
+    for (const answersFlow of [false, true]) for (const answer of answers) for (const call of calls) {
+      const expected = answersFlow && answer !== null && (call.kind === "write" || call.kind === "ask");
+      expect(debtContinuationRewrites(turnCallOf(call.name), answersFlow, answer), `${call.name} / answers ${answersFlow} / ${answer}`).toBe(expected);
     }
   });
 
-  it("never rewrites a call that only reads, or a bill, whatever the pending question and the answer", () => {
-    for (const pending of [null, ...FOLLOWUP_KINDS]) for (const carriesDebt of [false, true]) for (const answer of answers) {
-      expect(debtContinuationRewrites("read", pending, carriesDebt, answer)).toBe(false);
-      expect(debtContinuationRewrites("bill", pending, carriesDebt, answer)).toBe(false);
+  it("never rewrites a call that only reads, or a bill, whatever the answer", () => {
+    for (const answersFlow of [false, true]) for (const answer of answers) {
+      expect(debtContinuationRewrites("read", answersFlow, answer)).toBe(false);
+      expect(debtContinuationRewrites("bill", answersFlow, answer)).toBe(false);
     }
   });
 
   it("never rewrites without the user's yes or no, so a carried debt alone writes nothing", () => {
-    for (const pending of [null, ...FOLLOWUP_KINDS]) for (const carriesDebt of [false, true]) for (const call of ["write", "ask"] as const) {
-      expect(debtContinuationRewrites(call, pending, carriesDebt, null)).toBe(false);
+    for (const answersFlow of [false, true]) for (const call of ["write", "ask"] as const) {
+      expect(debtContinuationRewrites(call, answersFlow, null)).toBe(false);
     }
-    expect(debtContinuationRewrites("write", "account_or_date", true, "optIn")).toBe(true);
-    expect(debtContinuationRewrites("write", "debt_transaction", false, "optOut")).toBe(true);
+    expect(debtContinuationRewrites("write", true, "optIn")).toBe(true);
+    expect(debtContinuationRewrites("ask", true, "optOut")).toBe(true);
+  });
+
+  it("never rewrites a turn that does not answer the debt flow, even with a recorded yes", () => {
+    for (const call of ["write", "ask"] as const) expect(debtContinuationRewrites(call, false, "optIn")).toBe(false);
+  });
+});
+
+// Finding 24: the debt flow's recorded yes and its link to the saved debt apply only to a turn that answers that debt's own
+// question. One pure function says whether the current turn does.
+describe("debtFlowAnswers", () => {
+  const ana: DebtRef = { direction: "owed_to_you", counterparty: "Ana" };
+  const answer: StatementReading = { starts: false, uncertain: false };
+  const turn = (over: Partial<DebtFlowTurn> = {}): DebtFlowTurn => ({
+    pending: "account_or_date", carriesDebt: true, refused: false, reading: answer, stated: undefined, saved: ana, call: { kind: "write" }, ...over,
+  });
+  const cases: { name: string; turn: DebtFlowTurn; expected: boolean }[] = [
+    { name: "an answer to its own account question", turn: turn(), expected: true },
+    { name: "an answer to the offer", turn: turn({ pending: "debt_transaction" }), expected: true },
+    { name: "an answer to its own generic question", turn: turn({ pending: "clarification" }), expected: true },
+    { name: "a write that names the saved debt (a different spelling of the same counterparty)", turn: turn({ call: { kind: "write", names: { direction: "owed_to_you", counterparty: " ANA " } } }), expected: true },
+    { name: "the same debt stated again", turn: turn({ stated: ana }), expected: true },
+    { name: "a call that asks", turn: turn({ call: { kind: "ask" } }), expected: true },
+    { name: "a read-only call", turn: turn({ call: { kind: "read" } }), expected: true },
+    { name: "a refusal anywhere in the run", turn: turn({ refused: true }), expected: false },
+    { name: "a refusal anywhere in the run, even for the offer", turn: turn({ pending: "debt_transaction", refused: true }), expected: false },
+    { name: "a new debt: a different counterparty stated", turn: turn({ stated: { direction: "owed_to_you", counterparty: "Ben" } }), expected: false },
+    { name: "a new debt: a different direction stated", turn: turn({ stated: { direction: "you_owe", counterparty: "Ana" } }), expected: false },
+    { name: "a write for a different counterparty", turn: turn({ call: { kind: "write", names: { counterparty: "Ben" } } }), expected: false },
+    { name: "a write in a different direction", turn: turn({ call: { kind: "write", names: { direction: "you_owe" } } }), expected: false },
+    { name: "a new expense: the message starts a new statement", turn: turn({ reading: { starts: true, uncertain: false } }), expected: false },
+    { name: "an uncertain restart", turn: turn({ reading: { starts: false, uncertain: true } }), expected: false },
+    { name: "no debt flow open: nothing pending", turn: turn({ pending: null }), expected: false },
+    { name: "no debt flow open: a question that carries no debt", turn: turn({ carriesDebt: false }), expected: false },
+    { name: "no debt flow open: another kind of question", turn: turn({ pending: "repayment_amount" }), expected: false },
+  ];
+  for (const { name, turn: input, expected } of cases) it(`${expected ? "answers" : "does not answer"}: ${name}`, () => expect(debtFlowAnswers(input)).toBe(expected));
+
+  it("never answers when the question does not belong to the debt flow, whatever else holds", () => {
+    for (const pending of FOLLOWUP_KINDS) for (const carriesDebt of [false, true]) {
+      if (debtFlowContinues(pending, carriesDebt)) continue;
+      expect(debtFlowAnswers(turn({ pending, carriesDebt })), `${pending} ${carriesDebt}`).toBe(false);
+    }
+  });
+
+  it("lets a refusal, a new statement or another debt each take the answer away on their own", () => {
+    expect(debtFlowAnswers(turn())).toBe(true);
+    for (const over of [{ refused: true }, { reading: { starts: true, uncertain: false } }, { reading: { starts: false, uncertain: true } }, { stated: { counterparty: "Ben" } }, { call: { kind: "write" as const, names: { counterparty: "Ben" } } }]) {
+      expect(debtFlowAnswers(turn(over)), JSON.stringify(over)).toBe(false);
+    }
+  });
+
+  it("does not compare a debt the turn leaves unnamed or a saved debt it cannot find", () => {
+    expect(debtFlowAnswers(turn({ saved: undefined, stated: { counterparty: "Ben" }, call: { kind: "write", names: { counterparty: "Ben" } } }))).toBe(true);
+    expect(debtFlowAnswers(turn({ call: { kind: "write", names: { direction: null, counterparty: null } } }))).toBe(true);
   });
 });
 

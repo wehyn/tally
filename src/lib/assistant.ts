@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -877,12 +877,6 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const debtContinues = debtFlowContinues(lastFollowup, recordedDebtId !== undefined);
     const debtQuestionYes = debtTransactionQuestion && isDebtOfferYes(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && isDebtOfferNo(input.prompt);
-    // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
-    // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
-    // the carried debt id, which stays link context only.
-    const debtChainAnswer = debtOfferChainAnswer(run);
-    const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo || debtChainAnswer === "optOut";
-    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes || debtChainAnswer === "optIn");
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
     const currentDebtIntent = explicitNewDebtIntent(input.prompt);
     const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
@@ -904,6 +898,25 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const debtRefusedEarlier = debtFlowOpen && userMessagesFor("guard", run).some((message) => refusesToRecord(message.content));
     const debtRefusedNow = debtFlowOpen && !debtQuestionNo && refusesToRecord(input.prompt);
     const debtRefusalOnly = (debtRefusedEarlier || debtRefusedNow) && !uncertainRepayment;
+    // The debt flow's recorded consent and its link to the saved debt belong to an answer to that debt's own question and to nothing
+    // else (debtFlowAnswers). A turn that is a refusal, a new statement (a different debt, an expense, a restart) or a write for
+    // another debt carries neither: it is handled as its own statement.
+    const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
+    const debtAnswers = debtFlowAnswers({
+      pending: lastFollowup,
+      carriesDebt: recordedDebtId !== undefined,
+      refused: refusedEarlier || refusedNow || debtRefusedEarlier || debtRefusedNow,
+      reading: readStatementStart(lastFollowup, input.prompt, ownMessages.map((message) => message.content), accounts.map((account) => account.name)),
+      stated: currentDebtIntent,
+      saved: savedDebt,
+      call: { kind: turnCallOf(providerCall.name), names: { direction: providerCall.args.direction === "owed_to_you" || providerCall.args.direction === "you_owe" ? providerCall.args.direction : null, counterparty: typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty : null } },
+    });
+    // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
+    // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
+    // the carried debt id, which stays link context only. It applies only to an answer to that flow.
+    const debtChainAnswer = debtAnswers ? debtOfferChainAnswer(run) : null;
+    const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || (debtAnswers && debtQuestionNo) || debtChainAnswer === "optOut";
+    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || (debtAnswers && debtQuestionYes) || debtChainAnswer === "optIn");
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const outgoingRepaymentIntent = !repaymentReportQuestion && hasOutgoingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const repaymentIntent = incomingRepaymentIntent || outgoingRepaymentIntent;
@@ -979,7 +992,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         call = uncertainNewDebt
           ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
           : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
-      } else if (debtContinuationRewrites(turnCallOf(providerCall.name), lastFollowup, recordedDebtId !== undefined, debtTransactionRequested ? "optIn" : debtTransactionOptOut ? "optOut" : null) && statedDebtIntent) {
+      } else if (debtContinuationRewrites(turnCallOf(providerCall.name), debtAnswers, debtTransactionRequested ? "optIn" : debtTransactionOptOut ? "optOut" : null) && statedDebtIntent) {
         const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
           && item.direction === statedDebtIntent.direction
           && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)

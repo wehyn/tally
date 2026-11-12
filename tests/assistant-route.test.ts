@@ -5256,4 +5256,43 @@ describe("the debt flow's yes and link apply only to answers to its own question
     expect(wallet().balanceMinor).toBe(0);
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
+
+  it("a new debt statement under a recorded yes is its own debt with no consent: Ben is in Debts only", async () => {
+    const first = await heldYes();
+
+    const ben = await say("Ben owes me 700 using Wallet.", "log_transaction", { kind: "expense", amount: "700", category: "Food", description: "money Ben owes me", account: "Wallet" }, first.conversationId);
+
+    expect(ben.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(wallet().balanceMinor).toBe(0);
+    expect(store.listDebts(user.id).map((debt) => debt.counterparty).sort()).toEqual(["Ana", "Ben"]);
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction" });
+    expect(last(first.conversationId).debtId).not.toBe(first.debt.id);
+  });
+
+  it("a new debt statement from the model's log_debt for Ben is created, not swallowed by Ana's saved debt", async () => {
+    const first = await heldYes();
+
+    const ben = await say("Ben owes me 300", "log_debt", { direction: "owed_to_you", counterparty: "Ben", amount: "300" }, first.conversationId);
+
+    expect(ben.answer).not.toContain("couldn't find");
+    expect(ben.transaction).toBeNull();
+    expect(store.listDebts(user.id).map((debt) => debt.counterparty).sort()).toEqual(["Ana", "Ben"]);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(ben.debt).toMatchObject({ counterparty: "Ben" });
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: ben.debt.id });
+  });
+
+  it("a separate expense under a recorded yes is an ordinary unlinked expense", async () => {
+    const first = await heldYes();
+
+    const groceries = await say("Log groceries 500 using Wallet", "log_transaction", { kind: "expense", amount: "500", category: "Food", description: "groceries", account: "Wallet" }, first.conversationId);
+
+    expect(groceries.debt).toBeNull();
+    expect(groceries.transaction).toMatchObject({ amountMinor: 50_000 });
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+    expect(store.listTransactions(user.id)[0].debtId).toBeUndefined();
+    expect(groceries.undoUntil).not.toBeNull();
+    expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
+  });
 });

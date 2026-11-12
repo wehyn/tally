@@ -2,6 +2,7 @@
 // each decision and persist the answer; they never re-derive these rules inline.
 
 import { isBillFollowup, type FollowupKind } from "../assistant-followup";
+import { normalizeCounterparty } from "../counterparty";
 
 // An assistant-saved transaction can be undone for this long after it is saved.
 export const UNDO_WINDOW_MS = 10_000;
@@ -495,6 +496,47 @@ export function isDebtRecordRefusal(text: string): boolean {
   return RECORD_REFUSAL.test(text.replace(/[\u2018\u2019]/g, "'"));
 }
 
+// The debt a message or a call names: its direction and its counterparty, each only when it names one.
+export type DebtRef = { direction?: "owed_to_you" | "you_owe" | null; counterparty?: string | null };
+
+// Everything one turn knows when it asks whether it answers the debt flow of a saved debt (debtFlowAnswers).
+// `pending` and `carriesDebt` are the stored kind of the question the run waits on and whether it carries the saved debt's id.
+// `refused` is refusal wording anywhere in the open run, the current message included. `reading` is readStatementStart's verdict on
+// the current message under that question. `stated` is the debt the current message states in its own words, `saved` the debt the
+// question carries, and `call` the provider's call: its kind and the debt it names, if it names one.
+export type DebtFlowTurn = {
+  pending: FollowupKind | null;
+  carriesDebt: boolean;
+  refused: boolean;
+  reading: StatementReading;
+  stated: DebtRef | undefined;
+  saved: DebtRef | undefined;
+  call: { kind: TurnCall; names?: DebtRef };
+};
+
+function namesOtherDebt(saved: DebtRef | undefined, other: DebtRef | undefined): boolean {
+  if (!saved || !other) return false;
+  if (other.direction && saved.direction && other.direction !== saved.direction) return true;
+  return !!other.counterparty && !!saved.counterparty && normalizeCounterparty(other.counterparty) !== normalizeCounterparty(saved.counterparty);
+}
+
+// Whether the current turn is an ANSWER to the debt flow's own question. Only an answer may use what the flow recorded: the yes or
+// no said to the Transactions offer, and the saved debt's id the question carries. A turn is not an answer when
+//  (a) refusal wording is in the open run (the whole run, as every guard reads it): the refusal wins over any recorded yes and the
+//      caller writes nothing (refusalOutcome),
+//  (b) the current message starts a new statement or may have (readStatementStart), or it names a different counterparty or
+//      direction than the saved debt, or
+//  (c) the provider's call is a write that names a different counterparty or direction than the saved debt.
+// A turn that is not an answer is its own statement: no consent and no link are carried to it. A call that only reads or asks
+// names no debt, so the existing rules for those calls keep holding (debtContinuationRewrites).
+export function debtFlowAnswers(turn: DebtFlowTurn): boolean {
+  if (!debtFlowContinues(turn.pending, turn.carriesDebt)) return false;
+  if (turn.refused) return false;
+  if (turn.reading.starts || turn.reading.uncertain) return false;
+  if (namesOtherDebt(turn.saved, turn.stated)) return false;
+  return !(turn.call.kind === "write" && namesOtherDebt(turn.saved, turn.call.names));
+}
+
 // What the user said about adding the debt to Transactions in the statement being answered: "optIn" only from an opt-in the
 // user gave (the statement's own words, or a yes to the stored debt_transaction offer), "optOut" from a no, null when they said
 // neither. It is read from the user's messages and never from the question that is pending.
@@ -546,10 +588,11 @@ export function debtOfferChainAnswer(run: readonly DebtChainTurn[]): DebtTransac
 
 // Whether the debt flow replaces the provider's call with the debt write for the saved debt. Only a call that writes (the model's
 // own version of the same write) or asks (the model did not understand the answer) is replaced, and only when the user has said
-// yes or no to Transactions: a yes writes the transaction, a no keeps the debt in Debts only. A call that only reads, a bill, or
+// yes or no to Transactions in an answer to the debt flow (debtFlowAnswers): a yes writes the transaction, a no keeps the debt in
+// Debts only. A turn that is its own statement, a call that only reads, a bill, or
 // anything else is its own request. It runs as it is, and the pending question is left exactly as it was.
-export function debtContinuationRewrites(call: TurnCall, pending: FollowupKind | null, carriesDebt: boolean, answer: DebtTransactionAnswer): boolean {
-  return debtFlowContinues(pending, carriesDebt) && answer !== null && (call === "write" || call === "ask");
+export function debtContinuationRewrites(call: TurnCall, answers: boolean, answer: DebtTransactionAnswer): boolean {
+  return answers && answer !== null && (call === "write" || call === "ask");
 }
 
 // "proceed": no refusal applies, run the call. "askAgain": the call would write after a refusal said in an earlier
