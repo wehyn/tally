@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -896,6 +896,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const refusedEarlier = !repaymentReportQuestion && userMessagesFor("guard", run).some((message) => unconfirmedPayment(message.content));
     const refusedNow = !repaymentReportQuestion && (unconfirmedPayment(input.prompt) || repaymentFollowup && isUncertainStatement(input.prompt));
     const uncertainRepayment = refusedEarlier || refusedNow;
+    // Refusal wording inside an open debt flow ("No, don't record it") is read over the whole run and the current message as the
+    // payment refusals are, and refusalOutcome decides the turn from it: a yes recorded earlier in the flow never overrides it. The
+    // clear "no transaction" opt-out keeps its own meaning (the debt stays in Debts only), and so does a plain no to the offer.
+    const refusesToRecord = (text: string) => isDebtRecordRefusal(text) && !hasClearDebtTransactionOptOut([text]);
+    const debtFlowOpen = debtFlowContinues(lastFollowup, recordedDebtId !== undefined);
+    const debtRefusedEarlier = debtFlowOpen && userMessagesFor("guard", run).some((message) => refusesToRecord(message.content));
+    const debtRefusedNow = debtFlowOpen && !debtQuestionNo && refusesToRecord(input.prompt);
+    const debtRefusalOnly = (debtRefusedEarlier || debtRefusedNow) && !uncertainRepayment;
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const outgoingRepaymentIntent = !repaymentReportQuestion && hasOutgoingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const repaymentIntent = incomingRepaymentIntent || outgoingRepaymentIntent;
@@ -986,15 +994,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
       // The refusal decision is taken here, on the call as it will run, before any branch below can write.
-      const refusal = refusalOutcome({ earlier: refusedEarlier, now: refusedNow }, lastFollowup, turnCallOf(call.name));
+      const refusal = refusalOutcome({ earlier: refusedEarlier || debtRefusedEarlier, now: refusedNow || debtRefusedNow }, lastFollowup, turnCallOf(call.name));
+      const refusalReason = debtRefusalOnly ? "declined" : "refused";
       let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
       // The account an earlier confirmation of this income question chose, when this reply names none and the turn asks again.
       let incomeEchoedAccount: string | undefined;
       if (refusal === "askAgain") {
         // The question stays pending and the turn is quiet, so this message is not read as an answer to it.
-        answer = REFUSED_AGAIN_REPLY; answeredReadOnly = true;
+        answer = debtRefusalOnly ? DEBT_REFUSED_AGAIN_REPLY : REFUSED_AGAIN_REPLY; answeredReadOnly = true;
       }
-      else if (refusal === "refuse") { answer = endedQuestionReply("refused", "", false); followup = null; }
+      else if (refusal === "refuse") { answer = endedQuestionReply(refusalReason, "", false); followup = null; }
       else if (call.name === "create_bill" || call.name === "update_bill") {
         const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup, requestedAt,
           otherHintMessages ? { hintMessages: otherHintMessages.map((message) => message.content), carriesEarlier: otherCarriesEarlier, unclear: answerChoice === "unclear" } : null);
@@ -1249,7 +1258,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       // nothing; after a write the reply keeps its receipt and says the question was dropped.
       const wrote = transaction !== null || debt !== null || bill !== null;
       const refusedTurn = refusal === "refuse" || refusal === "endQuestion";
-      if (refusal === "endQuestion") { answer = endedQuestionReply("refused", answer, wrote); followup = null; }
+      if (refusal === "endQuestion") { answer = endedQuestionReply(refusalReason, answer, wrote); followup = null; }
       else if (ordinaryIncomeDeclined && refusal === "proceed") { answer = endedQuestionReply("declined", answer, wrote); followup = null; }
       // A yes the user just gave does not carry over: when the turn still needs an account, date or answer, it says how to confirm.
       const confirmHint = ordinaryIncomeAccepted && !wrote && (followup === "account_or_date" || followup === "clarification")

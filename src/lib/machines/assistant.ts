@@ -486,6 +486,15 @@ export function debtFlowContinues(pending: FollowupKind | null, carriesDebt: boo
   return pending === "debt_transaction" || ((pending === "account_or_date" || pending === "clarification") && carriesDebt);
 }
 
+// A message that refuses to record: "don't record it", "do not add that", "won't log it", "no need to save it". It is wording only and
+// it never authorizes anything. Refusal wording anywhere in the open debt flow is read as every guard reads it, over the whole run
+// and the current message, and it wins over a yes recorded earlier in the flow: the turn writes nothing (refusalOutcome).
+const RECORD_REFUSAL = /\b(?:don'?t|do not|won'?t|will not|never|no need to|not going to)\b[^.!?]{0,30}\b(?:record|recording|add|adding|log|logging|save|saving|put|putting|write|writing|enter|entering)\b/i;
+
+export function isDebtRecordRefusal(text: string): boolean {
+  return RECORD_REFUSAL.test(text.replace(/[\u2018\u2019]/g, "'"));
+}
+
 // What the user said about adding the debt to Transactions in the statement being answered: "optIn" only from an opt-in the
 // user gave (the statement's own words, or a yes to the stored debt_transaction offer), "optOut" from a no, null when they said
 // neither. It is read from the user's messages and never from the question that is pending.
@@ -560,6 +569,7 @@ export function refusalOutcome(refusal: { earlier: boolean; now: boolean }, pend
 
 export const REFUSED_REPLY = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much.";
 export const DECLINED_REPLY = "Okay, I won't record the money.";
+export const DEBT_REFUSED_AGAIN_REPLY = "You said earlier that you don't want this recorded, so I haven't recorded anything. Say cancel to drop this question.";
 export const REFUSED_AGAIN_REPLY = "You said earlier that this payment didn't happen, so I haven't recorded anything. Say cancel to drop this question.";
 
 // The reply of a turn that ends its pending question because the user refused or declined it. A reply that says

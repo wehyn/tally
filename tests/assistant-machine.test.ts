@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -838,5 +838,22 @@ describe("debt offer chain", () => {
     for (const text of ["yes", "Yes, for lunch", "yeah", "yep", "sure", "okay", "ok", "go ahead", "add it", "record it please"]) expect(isDebtOfferYes(text), text).toBe(true);
     for (const text of ["no", "nope", "nah, keep it", "No."]) expect(isDebtOfferNo(text), text).toBe(true);
     for (const text of ["maybe", "yesterday", "nothing", "Wallet", ""]) { expect(isDebtOfferYes(text), text).toBe(false); expect(isDebtOfferNo(text), text).toBe(false); }
+  });
+});
+
+// Wording that refuses to record, read over the whole open debt flow, wins over a yes recorded earlier in it (finding 24).
+describe("debt record refusal wording", () => {
+  it("reads a refusal to record, add, log or save, curly apostrophes included", () => {
+    for (const text of ["No, don't record it. The date was 2026-10-08.", "do not add it", "I won\u2019t log that", "Don\u2019t save it yet", "no need to record this", "never put it in", "Please don't go ahead and record it"]) expect(isDebtRecordRefusal(text), text).toBe(true);
+  });
+
+  it("reads nothing else as a refusal: a plain answer, a yes or a no is not", () => {
+    for (const text of ["yes, for lunch", "no", "no, but make it 600", "use Wallet", "record it", "I don't know the date", "Ben owes me 700 using Wallet", "2026-10-08", ""]) expect(isDebtRecordRefusal(text), text).toBe(false);
+  });
+
+  it("has a re-ask that names the refusal and the way out, not the payment", () => {
+    expect(DEBT_REFUSED_AGAIN_REPLY).toContain("recorded");
+    expect(DEBT_REFUSED_AGAIN_REPLY).toContain("cancel");
+    expect(DEBT_REFUSED_AGAIN_REPLY).not.toContain("payment");
   });
 });

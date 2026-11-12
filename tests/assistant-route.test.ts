@@ -4,6 +4,7 @@ import { createStore } from "../src/lib/store";
 import { providerDisclosureHash } from "../src/lib/provider";
 import { todayInManila } from "../src/lib/dates";
 import { POST } from "../src/app/api/assistant/route";
+import { DEBT_REFUSED_AGAIN_REPLY, DECLINED_REPLY } from "../src/lib/machines/assistant";
 
 type ProviderRequest = { messages: { role: string; content: string }[]; tools: { function: { name: string } }[] };
 
@@ -5200,6 +5201,59 @@ describe("a yes to the Transactions offer outlives the question it led to (round
 
     expect(answered.transaction).toBeNull();
     expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+});
+
+// Review round 24. The debt flow's recorded yes and its link to the saved debt apply only to a turn that answers that debt's own
+// question (debtFlowAnswers). A later refusal, a different statement or a question about one never inherits them.
+describe("the debt flow's yes and link apply only to answers to its own question (round 24, finding 24)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    const response = await POST(assistantRequest(prompt, conversationId));
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+  const args = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
+  async function heldYes() {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    expect(first.transaction).toBeNull();
+    const held = await say("yes, for lunch into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+    expect(held.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+    return first;
+  }
+  const wallet = () => store.listAccounts(user.id).find((account) => account.name === "Wallet")!;
+
+  it("a later refusal in the run wins over the recorded yes and writes nothing", async () => {
+    const first = await say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
+    const asked = await say("yes, for food in Wallet on 2026-13-45", "log_debt", { ...args, description: "food", account: "Wallet", date: "2026-13-45" }, first.conversationId);
+    expect(asked.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+
+    const refused = await say("No, don't record it. The date was 2026-10-08.", "ask_clarification", { question: "Do you want to cancel recording the transaction?" }, first.conversationId);
+
+    expect(refused.transaction).toBeNull();
+    expect(refused.answer).toBe(DECLINED_REPLY);
+    expect(last(first.conversationId).followup ?? null).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(wallet().balanceMinor).toBe(0);
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+
+  it("a refusal said before a read still blocks the later answer, and nothing is written", async () => {
+    const first = await heldYes();
+    const read = await say("Don't record it yet, how much did I spend this month?", "finance_question", { start: "2026-10-01", end: "2026-10-09" }, first.conversationId);
+    expect(read.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+
+    const answered = await say("use Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+
+    expect(answered.transaction).toBeNull();
+    expect(answered.answer).toContain(DEBT_REFUSED_AGAIN_REPLY);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(wallet().balanceMinor).toBe(0);
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
 });
