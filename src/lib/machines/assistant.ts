@@ -219,40 +219,99 @@ export function userMessagesFor<T extends RunMessage>(use: UserTextUse, run: rea
 }
 
 // A hint that chooses a value (account, date, time, category, an opt-in to Transactions) applies to the statement the
-// write is for, never to an earlier different one in the same open run. A new statement starts at a user message that
-// opens a different payment, debt, bill or transaction, and the earlier messages of the run stop applying to it. The
-// answers to the pending question (an account, a date, an amount, a payer, a yes) belong to the statement they answer,
-// so they never start one.
+// write is for, never to an earlier different one in the same open run.
 //
-// What opens a statement is the caller's text recognizer (`opens`, which knows the wording); whether an opener is
-// really an answer is decided here, from the kind the reply before it stored, never from more text:
-//  - "payment" (a payment wording, incoming or outgoing) and "debt" (a new debt) always open, whatever was asked. The
-//    code runs the repayment or the debt path for them, as `incomeChainAnswers` already assumes.
-//  - "bill" opens unless a bill question was pending, because a bill question expects bill wording as its answer.
-//  - "transaction" (a message that states an amount and is no bare answer) opens unless the question pending expected
-//    one: an amount, a model-worded question or a bill detail (repayment_amount, clarification, bill kinds).
-// A message that is no opener belongs to the statement before it. In doubt a message is an opener, so an older cue
-// does not apply and the write falls back to the provider's field, the default account and today, which the existing
-// ask rules cover. The cost is that a user who restates a payment ("Ana paid me" asked for the amount, then "Ana paid
-// me 500") says the account or date again. Quiet turns are left out as in `ownUserMessages`: a read or a saved bill
-// is its own request and neither feeds a hint nor starts a statement.
-export type StatementOpener = "payment" | "debt" | "bill" | "transaction" | null;
+// The kind of the question pending decides whether a reply continues the statement it asks about. While a question of an
+// answerable kind is pending, a reply is its answer whatever its digits, payment wording or number format say: "Actually
+// 200", "use BPI 2", "use BPI 1234", "I paid 549" (a bill's amount), "5 October", "3 days ago" and "around 5" all answer, so
+// the account, date and time the statement said still apply. A reply starts a new statement only when
+//  (a) no question is pending (nothing earlier applies), or
+//  (b) it is an explicit restart, which `startsNewStatement` defines by a narrow text test below.
+// An unknown reply is an answer, so the failure direction is that an earlier cue is kept; the ask rules and the guards
+// still stop a write nobody confirmed. Quiet turns are left out as in `ownUserMessages`: a read or a saved bill is its own
+// request and neither feeds a hint nor starts a statement.
 
-function opensStatement(opener: StatementOpener, pending: FollowupKind | null): boolean {
-  if (opener === null) return false;
-  if (opener === "payment" || opener === "debt") return true;
-  if (opener === "bill") return !isBillFollowup(pending);
-  return !(pending === "repayment_amount" || pending === "clarification" || isBillFollowup(pending));
+// What a reply states, read from its words alone. Account names are the caller's to give, because "BPI 2" holds a digit.
+const MONTHS = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+const DATES_AND_TIMES: RegExp[] = [
+  /\b\d{4}-\d{2}-\d{2}\b/gi,
+  /\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/g,
+  new RegExp(`\\b(?:${MONTHS})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?\\b`, "gi"),
+  new RegExp(`\\b(?:the\\s+)?\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:${MONTHS})\\b\\.?(?:,?\\s+\\d{4})?`, "gi"),
+  /\b\d{1,3}\s+(?:day|days|week|weeks|month|months)\s+(?:ago|from\s+now)\b/gi,
+  /\b(?:last|next|this|past)\s+\d{1,3}\s+(?:days?|weeks?|months?)\b/gi,
+  /\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?(?!\w)/gi,
+  /\b\d{1,2}:\d{2}\b/g,
+  /\b(?:at|around|about|by|past|before|after|until|till)\s+\d{1,2}(?:\s*o'?clock)?\b/gi,
+  /\b\d{1,2}\s*o'?clock\b/gi,
+  /\b\d{1,2}(?:st|nd|rd|th)\b/gi,
+];
+// Words that make no purpose and name no one: the verbs of a request, the cue words of an account or a date, the
+// pronouns and the payment verbs. What is left in a reply is its purpose or its counterparty.
+const FILLER_WORDS: ReadonlySet<string> = new Set((
+  "i me my we us you it that this the a an to into from in on at of for and or but with via by as is was are be been am do did does not no yes yeah yep sure ok okay "
+  + "please just only about around also then so too very more now today yesterday tomorrow ago last next past "
+  + "log logged record recorded add added enter entered put make set use using choose select switch change save track note "
+  + "paid pay pays paying repaid repay returned return settled spent spend bought got get gave give "
+  + "peso pesos php account card default cash total amount actually instead never mind nevermind scratch forget ignore rather oh hey hi hello"
+).split(" "));
+
+// The one explicit restart wording: a leading "instead", "actually", "never mind", "scratch that", "forget that" or
+// "ignore that" (an "oh" or a "no" may come first), or a trailing "instead". The wording alone restarts nothing: "Maya
+// instead" answers an account question and "Actually 200" corrects an amount, so the reply must also state a complete
+// transaction, an amount with a purpose or a counterparty.
+const RESTART_LEAD = /^\s*(?:(?:oh|no|nope|ok|okay|hmm)[,.\s]+)*(?:instead|actually|never\s*mind|nvm|scratch\s+that|forget\s+(?:that|it)|ignore\s+that)\b/i;
+const RESTART_TRAIL = /\binstead\s*[.!]?\s*$/i;
+export function hasRestartWording(reply: string): boolean {
+  return RESTART_LEAD.test(reply) || RESTART_TRAIL.test(reply);
+}
+
+// The words of a reply that name a purpose or a counterparty, when the reply also holds an amount that is no date, no time
+// and no part of an account's name. Empty when it holds no amount or no such word, which is every answer to an account, a
+// date, a time, a payer, a yes or a bare amount. A reply that starts with an account or date command ("use", "choose",
+// "switch to") answers, whatever follows.
+const ANSWER_COMMAND = /^\s*(?:use|using|choose|select|switch|change|set|make\s+it|put\s+it)\b/i;
+function statedPurposeWords(reply: string, accountNames: readonly string[]): string[] {
+  if (ANSWER_COMMAND.test(reply)) return [];
+  let text = reply;
+  for (const name of [...accountNames].sort((a, b) => b.length - a.length)) {
+    const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    if (escaped) text = text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu"), " ");
+  }
+  for (const pattern of DATES_AND_TIMES) text = text.replace(pattern, " ");
+  if (!/\d/.test(text)) return [];
+  return text.toLowerCase().replace(/[^\p{L}\s'’-]+/gu, " ").split(/\s+/).filter((word) => word.length > 1 && !FILLER_WORDS.has(word));
+}
+
+// Kinds whose reply may be a different transaction stated in full ("Log salary 5000" after "What amount?"): the question
+// expects a small answer (an account, a date, an amount, a yes), so a message that states its own amount and its own
+// purpose or counterparty is not one. The other kinds always take the reply as their answer unless it carries restart wording.
+const MAY_RESTART_WITHOUT_WORDING: ReadonlySet<FollowupKind> = new Set(["clarification", "account_or_date", "ordinary_income", "repayment_amount"]);
+
+// Whether `reply`, sent while `pending` was asked about `statement` (the user messages of the statement so far), starts a
+// new statement. A restart states a complete transaction, an amount with a purpose or a counterparty, and either carries
+// the restart wording or comes under one of the kinds in MAY_RESTART_WITHOUT_WORDING with a purpose or a counterparty the
+// statement did not already name ("Coffee 120" under the coffee's amount question answers it, "Ben paid me 200" under
+// Zed's income question does not).
+export function startsNewStatement(pending: FollowupKind | null, reply: string, statement: readonly string[], accountNames: readonly string[]): boolean {
+  if (pending === null) return true;
+  const words = statedPurposeWords(reply, accountNames);
+  if (!words.length) return false;
+  if (hasRestartWording(reply)) return true;
+  if (!MAY_RESTART_WITHOUT_WORDING.has(pending)) return false;
+  const known = new Set(statement.join(" ").toLowerCase().replace(/[^\p{L}\s'’-]+/gu, " ").split(/\s+/));
+  return words.some((word) => !known.has(word));
 }
 
 // The user messages of the open run whose hints may apply to the write the current message is for. The result never
-// holds the current message, which the caller adds, and is empty when the current message opens its own statement.
-export function hintMessagesFor<T extends RunMessage & { content: string }>(run: readonly T[], current: string, opens: (userMessage: string) => StatementOpener): T[] {
-  if (opensStatement(opens(current), run.at(-1)?.followup ?? null)) return [];
-  let start = 0;
+// holds the current message, which the caller adds, and is empty when the current message starts its own statement.
+export function hintMessagesFor<T extends RunMessage & { content: string }>(run: readonly T[], current: string, accountNames: readonly string[] = []): T[] {
   const own = run.flatMap((message, index) => message.role === "user" && !(index + 1 < run.length && isQuietReply(run[index + 1]))
     ? [{ message, pending: index > 0 ? run[index - 1].followup ?? null : null }] : []);
-  own.forEach(({ message, pending }, index) => { if (index > 0 && opensStatement(opens(message.content), pending)) start = index; });
+  const statementEnd = (start: number, end: number) => own.slice(start, end).map(({ message }) => message.content);
+  let start = 0;
+  own.forEach(({ message, pending }, index) => { if (index > 0 && startsNewStatement(pending, message.content, statementEnd(start, index), accountNames)) start = index; });
+  if (startsNewStatement(run.at(-1)?.followup ?? null, current, statementEnd(start, own.length), accountNames)) return [];
   return own.slice(start).map(({ message }) => message);
 }
 

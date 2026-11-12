@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type StatementOpener, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -475,36 +475,83 @@ describe("the refusal decision a turn takes before it writes", () => {
   });
 });
 
-// A hint that chooses a value reads only the statement the write is for. A new statement starts at a user message that
-// opens a different payment, debt, bill or transaction and is not an answer to the question pending, which the kind
-// the reply before it stored decides. Quiet turns are left out.
+// The kind of the question pending decides whether a reply continues the statement it asks about. Only an explicit restart
+// starts a new one, and the exact wording the machine accepts for it is listed here.
+describe("whether a reply starts a new statement", () => {
+  const accounts = ["Wallet", "Maya", "BPI 2", "BPI 1234"];
+  const statement = ["Log coffee into Maya on 2026-10-05"];
+  const starts = (pending: FollowupKind | null, reply: string, earlier: string[] = statement) => startsNewStatement(pending, reply, earlier, accounts);
+
+  // Every followup kind, with a reply of each shape. true = the reply starts a new statement.
+  const answers = ["yes", "yes, Maya, 2026-10-05", "500", "Actually 200", "use BPI 2", "use BPI 1234", "BPI 2", "use Maya", "I paid 549", "I paid 549 pesos", "5 October", "5th of October", "October 5, 2026", "10/5", "3 days ago", "last 2 weeks", "yesterday", "around 5", "at 5", "5pm", "17:30", "500 cash", "Maya instead", "Actually, into Wallet"];
+  for (const pending of FOLLOWUP_KINDS) {
+    for (const reply of answers) {
+      it(`${pending}: "${reply}" answers the question and keeps the statement`, () => expect(starts(pending, reply)).toBe(false));
+    }
+  }
+
+  it("a reply with no question pending starts a statement", () => expect(starts(null, "yes")).toBe(true));
+
+  // Replies that state their own amount with a purpose or a counterparty the statement did not name restart under the kinds
+  // whose question expects a small answer, and answer under every other kind.
+  const complete = ["Log salary 5000", "Ben paid me 200", "I paid Ana 200", "Ben owes me 200 and add it to Transactions for food", "I have a Netflix bill for ₱549 under Entertainment. It is monthly, starts today, and ends December 15."];
+  const mayRestart: FollowupKind[] = ["clarification", "account_or_date", "ordinary_income", "repayment_amount"];
+  for (const pending of FOLLOWUP_KINDS) {
+    for (const reply of complete) {
+      it(`${pending}: "${reply}" ${mayRestart.includes(pending) ? "starts a new statement" : "answers"}`, () => expect(starts(pending, reply)).toBe(mayRestart.includes(pending)));
+    }
+  }
+  it("a purpose or counterparty the statement already named is an answer, not a restart", () => {
+    expect(starts("clarification", "Coffee 120")).toBe(false);
+    expect(starts("repayment_amount", "Ana paid me 500", ["Ana paid me into Maya"])).toBe(false);
+    expect(starts("repayment_amount", "Ana paid me 200", ["Zed paid me into Maya"])).toBe(true);
+  });
+
+  // The restart wording, with a complete transaction after it, restarts under every kind, answerable or not.
+  const restarts = ["Instead, log salary 5000", "instead log salary 5000", "Actually Ben paid me 200", "Actually, log salary 5000", "Never mind, Ben paid me 200", "nevermind log salary 5000", "No, instead log salary 5000", "Oh actually log salary 5000", "Scratch that, log salary 5000", "Forget that, Ben owes me 200", "Ignore that. Log salary 5000", "Log salary 5000 instead"];
+  for (const pending of FOLLOWUP_KINDS) {
+    for (const reply of restarts) {
+      it(`${pending}: "${reply}" starts a new statement`, () => expect(starts(pending, reply)).toBe(true));
+    }
+  }
+  it("recognizes exactly the restart wording", () => {
+    for (const wording of ["Instead, x", "instead x", "Actually x", "Never mind, x", "never   mind x", "nvm x", "Scratch that x", "Forget that x", "Forget it x", "Ignore that x", "no, actually x", "x instead", "x instead."]) expect(hasRestartWording(wording)).toBe(true);
+    for (const wording of ["Maya", "I would rather Maya", "in fact x", "not instead of x", "actualy x", "x insteadly", "Coffee 120"]) expect(hasRestartWording(wording)).toBe(false);
+  });
+  it("restart wording without a complete transaction restarts nothing", () => {
+    for (const pending of FOLLOWUP_KINDS) for (const reply of ["Instead, Maya", "Actually 200", "Never mind, 500", "Actually Ben paid me", "Instead, use BPI 2 for 200"]) expect(starts(pending, reply)).toBe(false);
+  });
+});
+
+// A hint that chooses a value reads only the statement the write is for. A new statement starts at a user message that is
+// an explicit restart (startsNewStatement). Quiet turns are left out.
 describe("the user messages a hint may read", () => {
   type Turn = [role: "user" | "assistant", text: string, followup?: FollowupKind | null, quiet?: boolean];
   const toRun = (turns: Turn[]) => turns.map(([role, content, followup, quiet]) => ({ role, content, followup: followup ?? null, ...(quiet ? { readOnly: true } : {}) }));
-  // The caller's recognizer, stood in for here: "paid" is a payment, "owes" a debt, "bill" a bill, and a message with
-  // letters and a number of two digits or more states a transaction.
-  const opens = (text: string): StatementOpener => /\bpaid\b/.test(text) ? "payment" : /\bowes\b/.test(text) ? "debt" : /\bbill\b/.test(text) ? "bill" : /[a-z].*\d{2}|\d{2}.*[a-z]/i.test(text) ? "transaction" : null;
-  const read = (turns: Turn[], current: string) => hintMessagesFor(toRun(turns), current, opens).map((message) => message.content);
+  const read = (turns: Turn[], current: string) => hintMessagesFor(toRun(turns), current, ["Wallet", "Maya"]).map((message) => message.content);
   const incomeQuestion: Turn[] = [["user", "Zed paid me 500 into Maya"], ["assistant", "Record as income?", "ordinary_income"]];
 
   const table: [string, Turn[], string, string[]][] = [
     ["no run, the current message stands alone", [], "Coffee 120", []],
     ["an answer stays with the statement it answers", incomeQuestion, "yes", ["Zed paid me 500 into Maya"]],
+    ["a number is a correction of the amount, not a new statement", incomeQuestion, "Actually 200", ["Zed paid me 500 into Maya"]],
     ["a correction in the same statement stays", [...incomeQuestion, ["user", "actually into Wallet"], ["assistant", "Please answer yes", "ordinary_income"]], "yes", ["Zed paid me 500 into Maya", "actually into Wallet"]],
-    ["the current message opens a payment", incomeQuestion, "Actually Ben paid me 200", []],
-    ["an earlier payment that opened a new statement hides the one before it", [...incomeQuestion, ["user", "Actually Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"]], "yes", ["Actually Ben paid me 200"]],
-    ["the answers after the new statement stay with it", [...incomeQuestion, ["user", "Actually Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"], ["user", "into Wallet"], ["assistant", "Please answer yes", "ordinary_income"]], "yes", ["Actually Ben paid me 200", "into Wallet"]],
-    ["a payment opens whatever question was pending, the amount question included", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "Ana paid me 200", []],
+    ["the current message restarts with its own payment", incomeQuestion, "Actually Ben paid me 200", []],
+    ["a different payer under the income question is a new statement", incomeQuestion, "Ben paid me 200", []],
+    ["an earlier restart hides the statement before it", [...incomeQuestion, ["user", "Actually Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"]], "yes", ["Actually Ben paid me 200"]],
+    ["the answers after the restart stay with it", [...incomeQuestion, ["user", "Actually Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"], ["user", "into Wallet"], ["assistant", "Please answer yes", "ordinary_income"]], "yes", ["Actually Ben paid me 200", "into Wallet"]],
+    ["a different payer under the amount question is a new statement", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "Ana paid me 200", []],
     ["a bare amount answers the amount question", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "500", ["Zed paid me into Maya"]],
-    ["an amount with a detail still answers the amount question", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "500 cash", ["Zed paid me into Maya"]],
-    ["a new debt opens", incomeQuestion, "Ben owes me 200", []],
-    ["a bill opens", incomeQuestion, "I have a Netflix bill", []],
-    ["a bill answers a bill question, so the statement stays", [["user", "I have a Netflix bill under Entertainment"], ["assistant", "Amount?", "bill_amount"]], "I have a Netflix bill for 549", ["I have a Netflix bill under Entertainment"]],
-    ["a transaction statement opens when the question pending did not ask for one", incomeQuestion, "Coffee 120 into Wallet", []],
-    ["a transaction statement answers a question that asked for an amount", [["user", "Coffee into Maya"], ["assistant", "What amount?", "clarification"]], "Coffee 120", ["Coffee into Maya"]],
-    ["a date answers an account or date question", [["user", "lunch 120"], ["assistant", "What date?", "account_or_date"]], "2026-10-05", ["lunch 120"]],
-    ["a payment opened earlier in the run starts the statement, not the first message", [["user", "lunch 120 into Maya"], ["assistant", "Which?", "account_or_date"], ["user", "Ben paid me 200"], ["assistant", "Record as income?", "ordinary_income"], ["user", "yes, Wallet"], ["assistant", "What date?", "account_or_date"]], "2026-10-05", ["Ben paid me 200", "yes, Wallet"]],
-    ["a quiet turn neither feeds a hint nor opens a statement", [...incomeQuestion, ["user", "How much did Ana pay me, paid?"], ["assistant", "Your answer", "ordinary_income", true]], "yes", ["Zed paid me 500 into Maya"]],
+    ["the same payer restated with an amount answers the amount question", [["user", "Zed paid me into Maya"], ["assistant", "How much?", "repayment_amount"]], "Zed paid me 500", ["Zed paid me into Maya"]],
+    ["a bill answer with payment wording stays with the bill", [["user", "I have a Netflix bill under Entertainment using Maya"], ["assistant", "Amount?", "bill_amount"]], "I paid 549", ["I have a Netflix bill under Entertainment using Maya"]],
+    ["a bill restated in full under a bill question stays the bill", [["user", "I have a Netflix bill under Entertainment"], ["assistant", "Amount?", "bill_amount"]], "I have a Netflix bill for 549", ["I have a Netflix bill under Entertainment"]],
+    ["an opt-in answer that repeats the amount stays with the debt", [["user", "Ana owes me 500 from Maya on 2026-10-05"], ["assistant", "Add it to Transactions?", "debt_transaction"]], "Add it to Transactions for the 500 lunch", ["Ana owes me 500 from Maya on 2026-10-05"]],
+    ["an account answer with digits stays with the statement", [["user", "Ana paid me 500 into Nowhere on 2026-10-05"], ["assistant", "Which account?", "account_or_date"]], "use BPI 2", ["Ana paid me 500 into Nowhere on 2026-10-05"]],
+    ["a date answer stays with the statement", [["user", "lunch 120"], ["assistant", "What date?", "account_or_date"]], "5 October", ["lunch 120"]],
+    ["an explicit replacement under a clarification starts a statement", [["user", "Log coffee into Maya on 2026-10-05"], ["assistant", "What amount?", "clarification"]], "Instead, log salary 5000", []],
+    ["the same transaction with its amount answers the clarification", [["user", "Log coffee into Maya on 2026-10-05"], ["assistant", "What amount?", "clarification"]], "Coffee 120", ["Log coffee into Maya on 2026-10-05"]],
+    ["a restart earlier in the run starts the statement, not the first message", [["user", "lunch 120 into Maya"], ["assistant", "Which?", "account_or_date"], ["user", "Instead, log salary 5000"], ["assistant", "Which account?", "account_or_date"], ["user", "use Wallet"], ["assistant", "What date?", "account_or_date"]], "2026-10-05", ["Instead, log salary 5000", "use Wallet"]],
+    ["a quiet turn neither feeds a hint nor restarts a statement", [...incomeQuestion, ["user", "Actually, how much did Ben pay me, 200?"], ["assistant", "Your answer", "ordinary_income", true]], "yes", ["Zed paid me 500 into Maya"]],
     ["a quiet turn first in the run is left out too", [["user", "Ana paid me into Maya"], ["assistant", "Debts", "repayment_amount", true], ["user", "Ben paid me"], ["assistant", "How much?", "repayment_amount"]], "200", ["Ben paid me"]],
   ];
   for (const [name, turns, current, expected] of table) {

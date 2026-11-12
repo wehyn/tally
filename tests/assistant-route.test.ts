@@ -4161,17 +4161,143 @@ describe("a hint applies to the statement it was said for", () => {
 
     expect(saved.transaction).toMatchObject({ date: "2026-10-05" });
   });
+});
 
-  // The accepted cost: a restated payment is a new statement, so the cue said before it does not carry over.
-  it("asks the user to restate the account when a payment is said again in full", async () => {
+// Whether a reply starts a new statement is decided by the kind of the question pending, not by the digits or the payment
+// wording of the reply (startsNewStatement). An answer keeps the account, date and time the statement said. Only an
+// explicit restart ("Instead, log salary 5000", or a complete new transaction under a clarification) drops them.
+describe("a reply to a pending question keeps its statement's hints", () => {
+  beforeEach(() => {
+    store.createAccount(user.id, { name: "Maya", type: "bank", openingMinor: 0 });
+    store.createAccount(user.id, { name: "BPI 1234", type: "bank", openingMinor: 0 });
+    store.createAccount(user.id, { name: "BPI 2", type: "bank", openingMinor: 0 });
+  });
+  const lastFollowup = (conversationId: string) => store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    return (await POST(assistantRequest(prompt, conversationId))).json();
+  }
+  const rows = () => store.listTransactions(user.id).map(({ accountName, date, amountMinor }) => ({ accountName, date, amountMinor }));
+  const debtAmount = (id: string) => store.listDebts(user.id).find((debt) => debt.id === id)!.amountMinor;
+  const invalidAccountRepayment = async () => {
+    const ana = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+    const first = await say("Ana paid me 500 into my Missing account on 2026-10-05", "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Missing" });
+    expect(lastFollowup(first.conversationId)).toBe("account_or_date");
+    return { ana, id: first.conversationId as string };
+  };
+
+  it("keeps the income's account and date when its amount is corrected with a number before yes", async () => {
+    const first = await say("Zed paid me 500 into Maya on 2026-10-05", "record_debt_payment", { counterparty: "Zed", amount: "500" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("ordinary_income");
+    const second = await say("Actually 200", "log_transaction", { kind: "income", amount: "200", category: "Other income" }, id);
+    expect(second.transaction).toBeNull();
+    expect(lastFollowup(id)).toBe("ordinary_income");
+
+    await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(rows()).toEqual([{ accountName: "Maya", date: "2026-10-05", amountMinor: 20_000 }]);
+  });
+
+  it("keeps a repayment's date when its account question is answered with a numbered account", async () => {
+    const { ana, id } = await invalidAccountRepayment();
+
+    const saved = await say("use BPI 1234", "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "BPI 1234", date: "2026-10-05" });
+    expect(debtAmount(ana.id)).toBe(50_000);
+  });
+
+  it("keeps a repayment's date when its account question is answered with a one-digit account name", async () => {
+    const { id } = await invalidAccountRepayment();
+
+    const saved = await say("use BPI 2", "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ accountName: "BPI 2", date: "2026-10-05" });
+  });
+
+  it("keeps an expense's date when its account question is answered with a numbered account", async () => {
+    const first = await say("I spent 120 on coffee on 2026-10-01 from Nowhere account", "log_transaction", { kind: "expense", amount: "120", description: "coffee", account: "Nowhere", date: "2026-10-01" });
+    const id = first.conversationId as string;
+    expect(first.transaction).toBeNull();
+    expect(lastFollowup(id)).toBe("account_or_date");
+
+    const saved = await say("use BPI 2", "log_transaction", { kind: "expense", amount: "120", description: "coffee", account: "BPI 2", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "expense", accountName: "BPI 2", date: "2026-10-01", amountMinor: 12_000 });
+  });
+
+  for (const [reply, why] of [["5 October", "a day-first date"], ["3 days ago", "a relative date"], ["around 5", "a time"]] as const) {
+    it(`keeps the account the statement named when the reply is ${why} (${reply})`, async () => {
+      store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
+      const first = await say("Ana paid me 500 into Maya on 2026-02-31", "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet", date: "2026-02-31" });
+      expect(first.transaction).toBeNull();
+      expect(lastFollowup(first.conversationId)).toBe("account_or_date");
+
+      const saved = await say(reply, "record_debt_payment", { counterparty: "Ana", amount: "500", account: "Wallet", date: "2026-10-05" }, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Maya" });
+    });
+  }
+
+  it("keeps the bill's account when its amount is answered with payment wording", async () => {
+    const first = await say("I have a Netflix bill under Entertainment using Maya. It is monthly, starts today, and ends December 15.", "create_bill", { name: "Netflix", frequency: "monthly", category: "Entertainment", firstDueDate: "2026-10-09", endDate: "2026-12-15" });
+    expect(first.bill).toBeNull();
+    expect(lastFollowup(first.conversationId)).toBe("bill_amount");
+
+    const saved = await say("I paid 549", "create_bill", { name: "Netflix", amount: "549", frequency: "monthly", category: "Entertainment", firstDueDate: "2026-10-09", endDate: "2026-12-15" }, first.conversationId);
+
+    expect(saved.bill).toMatchObject({ name: "Netflix", accountName: "Maya", amountMinor: 54_900 });
+    expect(store.listTransactions(user.id).map((row) => row.accountName)).toEqual(["Maya"]);
+  });
+
+  it("keeps a saved debt's account and date when its opt-in answer repeats the amount", async () => {
+    const first = await say("Ana owes me 500 from Maya on 2026-10-05", "log_debt", { counterparty: "Ana", direction: "owed_to_you", amount: "500" });
+    expect(first.transaction).toBeNull();
+    expect(lastFollowup(first.conversationId)).toBe("debt_transaction");
+
+    await say("Add it to Transactions for the 500 lunch", "log_debt", { counterparty: "Ana", direction: "owed_to_you", amount: "500", description: "lunch" }, first.conversationId);
+
+    expect(store.listDebts(user.id)).toHaveLength(1);
+    expect(rows()).toEqual([{ accountName: "Maya", date: "2026-10-05", amountMinor: 50_000 }]);
+  });
+
+  it("keeps the account of a restated payment under the amount question", async () => {
     const ana = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 100_000 });
     const first = await say("Ana paid me into Maya", "record_debt_payment", { counterparty: "Ana" });
-    const id = first.conversationId as string;
-    expect(lastFollowup(id)).toBe("repayment_amount");
+    expect(lastFollowup(first.conversationId)).toBe("repayment_amount");
 
-    const saved = await say("Ana paid me 500", "record_debt_payment", { counterparty: "Ana", amount: "500" }, id);
+    const saved = await say("Ana paid me 500", "record_debt_payment", { counterparty: "Ana", amount: "500" }, first.conversationId);
 
-    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Wallet" });
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Maya" });
     expect(debtAmount(ana.id)).toBe(50_000);
+  });
+
+  it("starts a new statement at an explicit replacement under a clarification", async () => {
+    const first = await say("Log coffee into Maya on 2026-10-05", "ask_clarification", { question: "What amount should I use for the coffee?" });
+    const id = first.conversationId as string;
+    expect(lastFollowup(id)).toBe("clarification");
+
+    const saved = await say("Instead, log salary 5000", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", date: "2026-10-09", amountMinor: 500_000 });
+    expect(rows()).toHaveLength(1);
+  });
+
+  it("starts a new statement at a complete new transaction under a clarification", async () => {
+    const first = await say("Log coffee into Maya on 2026-10-05", "ask_clarification", { question: "What amount should I use for the coffee?" });
+    const id = first.conversationId as string;
+
+    const saved = await say("Log salary 5000", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id);
+
+    expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09" });
+  });
+
+  it("keeps the statement's account when the amount of the same transaction answers its clarification", async () => {
+    const first = await say("Log coffee into Maya on 2026-10-05", "ask_clarification", { question: "What amount should I use for the coffee?" });
+
+    const saved = await say("Coffee 120", "log_transaction", { kind: "expense", amount: "120", description: "coffee", account: "Wallet", date: "2026-10-09" }, first.conversationId);
+
+    expect(saved.transaction).toMatchObject({ accountName: "Maya", date: "2026-10-05", amountMinor: 12_000 });
   });
 });

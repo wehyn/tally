@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isIncomeConfirmation, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, type StatementOpener } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -446,22 +446,6 @@ function hasOutgoingDebtRepaymentWording(text: string): boolean {
 function hasPaymentWording(text: string): boolean {
   return hasIncomingDebtRepaymentWording(text) || hasOutgoingDebtRepaymentWording(text);
 }
-// An amount in the message that is no date or time, and the message is no bare amount and no yes. "Coffee 120 into
-// Maya" states a transaction, "500", "yes, Maya, 2026-10-05" and "5pm" answer a question.
-function isTransactionStatement(text: string): boolean {
-  if (bareAmountFromPrompt(text) !== undefined || isIncomeConfirmation(text)) return false;
-  const withoutDatesAndTimes = text
-    .replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|\b\d{1,2}:\d{2}\b/gi, " ")
-    .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?/gi, " ");
-  return /(?:₱|\bPHP\s*)?\b\d[\d,]*(?:\.\d+)?\b/i.test(withoutDatesAndTimes);
-}
-// What a user message opens, for hintMessagesFor: the statement its hints belong to.
-function statementOpener(text: string): StatementOpener {
-  if (hasPaymentWording(text)) return "payment";
-  if (explicitNewDebtIntent(text)) return "debt";
-  if (isBillTrackingIntent(text)) return "bill";
-  return isTransactionStatement(text) ? "transaction" : null;
-}
 function hasOutgoingPayeeOrPurpose(text: string): boolean {
   const match = /\b(?:i|we)\s+(?:paid\s+back|paid|repaid|returned|settled)\s+(.+?)\s*[.!?]?\s*$/i.exec(text);
   if (!match) return false;
@@ -752,7 +736,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // different payment, debt, bill or transaction of the same run never applies (hintMessagesFor). The payer, the amount,
     // the bill details and the guards keep reading the whole run.
     const hintMessages = [
-      ...hintMessagesFor(run, input.prompt, statementOpener).map((message) => ({ content: message.content, createdAt: message.createdAt })),
+      ...hintMessagesFor(run, input.prompt, accounts.map((account) => account.name)).map((message) => ({ content: message.content, createdAt: message.createdAt })),
       { content: input.prompt, createdAt: receivedAt },
     ];
     const hintText = hintMessages.map((message) => message.content);
