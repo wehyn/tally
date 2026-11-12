@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, ambiguityChoice, ambiguityVerdict, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -714,6 +714,35 @@ describe("where a write would put the money under two readings", () => {
     ["don't mean the new one", "unclear"],
   ];
   for (const [reply, expected] of choices) it(`${JSON.stringify(reply)} -> ${expected}`, () => expect(ambiguityChoice(reply)).toBe(expected));
+
+  describe("the question the run is waiting on", () => {
+    const question = ambiguousHintsQuestion("coffee", "BPI on Oct 5 at 20:00");
+    const asked = [
+      { role: "user" as const, content: "Log coffee into BPI on 2026-10-05 at 8pm" },
+      { role: "assistant" as const, content: "What amount?", followup: "clarification" as const },
+      { role: "user" as const, content: "Maya paid me 200" },
+      { role: "assistant" as const, content: question, followup: "account_or_date" as const },
+    ];
+    const quiet = [
+      { role: "user" as const, content: "how much did I spend?" },
+      { role: "assistant" as const, content: "Total Spent: ₱0.00", followup: "account_or_date" as const, readOnly: true },
+    ];
+    it("is the last reply when nothing quiet follows it", () => {
+      expect(openQuestionOf(asked)?.content).toBe(question);
+      expect(isAmbiguityQuestionOf(asked)).toBe(true);
+    });
+    it("skips a read-only reply and a reply that saved a bill, and ignores user messages", () => {
+      expect(openQuestionOf([...asked, ...quiet])?.content).toBe(question);
+      expect(isAmbiguityQuestionOf([...asked, ...quiet, { role: "user", content: "list my debts" }, { role: "assistant", content: "None.", followup: "account_or_date", readOnly: true }])).toBe(true);
+      expect(isAmbiguityQuestionOf([...asked, { role: "user", content: "a bill" }, { role: "assistant", content: "Saved Internet", followup: "account_or_date", billId: "b1" }])).toBe(true);
+    });
+    it("is not the question when the last reply that is not quiet is another one, or has another kind", () => {
+      expect(isAmbiguityQuestionOf([...asked, { role: "user", content: "x" }, { role: "assistant", content: "What date should I use?", followup: "account_or_date" }])).toBe(false);
+      expect(isAmbiguityQuestionOf([...asked.slice(0, 3), { role: "assistant", content: question, followup: "clarification" }])).toBe(false);
+      expect(isAmbiguityQuestionOf([])).toBe(false);
+      expect(openQuestionOf([])).toBeUndefined();
+    });
+  });
 
   it("names the earlier statement and the way out, and is recognized when it comes back stored", () => {
     const question = ambiguousHintsQuestion("coffee", "BPI on Oct 5 at 20:00");

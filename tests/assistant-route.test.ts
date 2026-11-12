@@ -4872,4 +4872,114 @@ describe("the question that names both choices keeps the flow it interrupts (rou
       for (const reply of ["new one", "the earlier one", "yes", "use Wallet"]) unwritten(await say(reply, "log_transaction", lunch, id));
     });
   });
+  // A turn that only reads the ledger (a finance answer, the debt list) leaves the question pending and is not an answer to it,
+  // so the answer that comes after it still answers the question that names both choices, and writes on the first try.
+  describe("finding 21e: a quiet turn between the question and its answer", () => {
+    const finance = { start: "2026-10-01", end: "2026-10-09" };
+    const quiet = async (conversationId: string) => {
+      const reply = await say("how much did I spend this month?", "finance_question", finance, conversationId);
+      expect(reply.transaction).toBeNull();
+      expect(last(conversationId)).toMatchObject({ readOnly: true });
+    };
+    const askedFirst = () => say("Log coffee into BPI on 2026-10-05 at 8pm", "ask_clarification", { question: "What amount should I use for the coffee?" });
+
+    it("received repayment: the first answer after a finance question writes", async () => {
+      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+      const first = await askedFirst();
+      const payment = { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" };
+      expectAsked(await say("Maya paid me 200", "record_debt_payment", payment, first.conversationId), first.conversationId);
+      await quiet(first.conversationId);
+
+      const saved = await say("use Wallet on 2026-10-09", "record_debt_payment", payment, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Wallet", date: "2026-10-09" });
+      expect(store.listDebts(user.id).find((row) => row.id === debt.id)?.amountMinor).toBe(80_000);
+    });
+
+    it("received repayment: a debt list in between is quiet too", async () => {
+      store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+      const first = await askedFirst();
+      const payment = { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" };
+      expectAsked(await say("Maya paid me 200", "record_debt_payment", payment, first.conversationId), first.conversationId);
+      await say("List my debts", "ask_clarification", { question: "x" }, first.conversationId);
+      expect(last(first.conversationId)).toMatchObject({ readOnly: true, followup: "account_or_date" });
+
+      const saved = await say("use Wallet on 2026-10-09", "record_debt_payment", payment, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Wallet" });
+    });
+
+    it("paid repayment: the first answer after a finance question writes", async () => {
+      const debt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Maya", amountMinor: 100_000 });
+      const first = await askedFirst();
+      const repayment = { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00", category: "Other" };
+      expectAsked(await say("I paid Maya 200", "record_debt_repayment", repayment, first.conversationId), first.conversationId);
+      await quiet(first.conversationId);
+
+      const saved = await say("use Wallet on 2026-10-09", "record_debt_repayment", repayment, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", amountMinor: 20_000 });
+      expect(store.listDebts(user.id).find((row) => row.id === debt.id)?.amountMinor).toBe(80_000);
+    });
+
+    it("income: the first answer after a finance question writes", async () => {
+      const first = await askedFirst();
+      const income = { kind: "income", amount: "500", category: "Other income", account: "Wallet", date: "2026-10-09" };
+      await say("Zed paid me 500", "record_debt_payment", { counterparty: "Zed", amount: "500" }, first.conversationId);
+      expectAsked(await say("yes", "log_transaction", income, first.conversationId), first.conversationId);
+      await quiet(first.conversationId);
+
+      const saved = await say("yes, Wallet, today", "log_transaction", income, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", date: "2026-10-09" });
+    });
+
+    it("plain transaction: the first answer after a finance question writes", async () => {
+      const first = await askedFirst();
+      const salary = { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" };
+      expectAsked(await say("Make it salary 5000 instead", "log_transaction", salary, first.conversationId), first.conversationId);
+      await quiet(first.conversationId);
+
+      const saved = await say("new one, use Wallet on 2026-10-09", "log_transaction", salary, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09", amountMinor: 500_000 });
+    });
+
+    it("debt with its transaction: the first answer after a finance question writes", async () => {
+      const first = await askedFirst();
+      const debtArgs = { counterparty: "Ana", direction: "owed_to_you", amount: "500", account: "Wallet", date: "2026-10-09", description: "lunch", category: "Food" };
+      expectAsked(await say("Ana owes me 500, add it to Transactions for lunch", "log_debt", debtArgs, first.conversationId), first.conversationId);
+      await quiet(first.conversationId);
+
+      const saved = await say("new one, use Wallet on 2026-10-09", "log_debt", debtArgs, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", amountMinor: 50_000 });
+      expect(store.listDebts(user.id)).toHaveLength(1);
+    });
+
+    it("bill with its posted expense: the first answer after a finance question saves it", async () => {
+      store.createCategory(user.id, { name: "Bills", type: "expense" });
+      const bill = { name: "Internet", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-12-31", category: "Bills" };
+      const first = await say("I have a monthly Internet bill via BPI starting Oct 20 until Dec 31.", "create_bill", bill);
+      await say("Actually 549 pesos every month", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+      expect(last(first.conversationId)).toMatchObject({ followup: "bill_account" });
+      await quiet(first.conversationId);
+
+      const saved = await say("use BPI, the bill is 549", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+
+      expect(saved.bill).toMatchObject({ name: "Internet", accountName: "BPI", amountMinor: 54_900 });
+    });
+
+    it("a quiet turn does not make a different question the answered one: cancel after it still drops it", async () => {
+      store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+      const first = await askedFirst();
+      await say("Maya paid me 200", "record_debt_payment", { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" }, first.conversationId);
+      await quiet(first.conversationId);
+
+      const cancelled = await say("cancel", "ask_clarification", { question: "ok" }, first.conversationId);
+
+      expect(cancelled.answer).toBe("Okay, I dropped that question. Nothing was recorded.");
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+    });
+  });
 });

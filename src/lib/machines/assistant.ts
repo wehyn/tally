@@ -446,6 +446,23 @@ export function isAmbiguousHintsQuestion(content: string): boolean {
   return content.startsWith(AMBIGUOUS_OPENING) && content.includes(AMBIGUOUS_CLOSING);
 }
 
+// The assistant message the open run is waiting on: the last one that is not quiet. A turn that only read the ledger or saved a bill
+// left the pending question pending and is not an answer to it (isQuietReply), so the next message answers the question and not the
+// quiet reply, whatever stood last in the run.
+export function openQuestionOf<T extends RunMessage>(run: readonly T[]): T | undefined {
+  for (let index = run.length - 1; index >= 0; index--) {
+    if (run[index].role === "assistant" && !isQuietReply(run[index])) return run[index];
+  }
+  return undefined;
+}
+
+// Whether the question the run is waiting on is the one that names both choices. Its kind says it can be (an account or date
+// question, or a bill's account question) and its wording, which the code wrote, says that it is.
+export function isAmbiguityQuestionOf(run: readonly (RunMessage & { content: string })[]): boolean {
+  const open = openQuestionOf(run);
+  return !!open && (open.followup === "account_or_date" || open.followup === "bill_account") && isAmbiguousHintsQuestion(open.content);
+}
+
 // Refusal wording ("Ana did not pay me", "maybe he paid") blocks a write nobody confirmed. The block is one decision
 // taken before the turn writes anything, never a reply that replaces one after it: a turn either writes nothing and
 // says so, or writes and answers with what it wrote. The decision reads what the call is about to do, after every

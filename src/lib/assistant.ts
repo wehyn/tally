@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguousHintsQuestion, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -801,7 +801,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const primaryIsEarlier = !readings.other || readings.other.length <= readings.primary.length;
     // The message answering the question that named both choices says which one it means ("earlier" or "new one"), and the
     // reading it picks is the one written. Any other message is read by the text rule's own reading.
-    const answersAmbiguity = isAmbiguousHintsQuestion(history.at(-1)?.content ?? "");
+    const answersAmbiguity = isAmbiguityQuestionOf(run);
     const answerChoice = answersAmbiguity && readings.other ? ambiguityChoice(input.prompt) : null;
     const chosenIsEarlier = answerChoice === null ? primaryIsEarlier : answerChoice === "earlier";
     const chosenReading = !readings.other ? readings.primary : chosenIsEarlier === primaryIsEarlier ? readings.primary : readings.other;
