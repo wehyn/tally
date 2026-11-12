@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="pele pele-state" viewBox="0 0 484 563" width="484" height="563" style="max-width:100%;height:auto;--_bg:var(--pele-bg,#fff);--_fg:var(--pele-fg,#1f1f1f);--_m:var(--pele-muted,#6e6e6e);--_l:var(--pele-line,#1f1f1f);--_s:var(--pele-surface,#f3f3f3);--_a:var(--pele-surface-alt,#e6e6e6);--_b:var(--pele-border,#8a8a8a);--_c:var(--pele-accent,#5b7bd5);color:var(--_fg);--_tw:var(--pele-title-weight,bold);--_fm:var(--pele-font-mono,monospace);font:16px sans-serif;letter-spacing:normal;word-spacing:normal;text-transform:none;direction:ltr;font-family:var(--pele-font,sans-serif)" fill="var(--_fg)" role="graphics-document document" aria-roledescription="state"><style>.pele {
+  --pele-bg: #ffffff;
+  --pele-fg: #1c1c1c;
+  --pele-muted: #656565;
+  --pele-line: #808080;
+  --pele-surface: #fcfcfc;
+  --pele-surface-alt: #f1f1f1;
+  --pele-border: #c9c9c9;
+}
+.pele .blue rect { fill: #c3e0ff; }
+.pele .orange rect { fill: #f0d3bf; }
+.pele .purple rect { fill: #e3d5ff; }
+.pele .yellow rect { fill: #f0dcbf; }
+.pele .teal rect { fill: #bfe3df; }
+.pele .tan rect { fill: #e5d9ce; }
+.pele .pink rect { fill: #ffcbe6; }
+.pele .breaks rect {
+  fill: #ffecee !important;
+  stroke: #e72e3b !important;
+  stroke-width: 2.5px !important;
+}
+.pele .breaks text {
+  fill: #cd2834 !important;
+}
+.pele .mayBreak rect {
+  fill: #fff3e6 !important;
+  stroke: #e8730c !important;
+  stroke-width: 2.5px !important;
+}
+.pele .mayBreak text {
+  fill: #b85a06 !important;
+}
+.pele .bugPath rect {
+  stroke: #1680f3 !important;
+  stroke-width: 2.5px !important;
+}
+.pele .repeats rect {
+  stroke: #9b35d6 !important;
+  stroke-width: 2.5px !important;
+  stroke-dasharray: 6 3;
+}
+@media (prefers-color-scheme: dark) {
+  .pele {
+    --pele-bg: #1f1f1f;
+    --pele-fg: #f5f5f5;
+    --pele-muted: #acacac;
+    --pele-line: #939393;
+    --pele-surface: #121212;
+    --pele-surface-alt: #2c2c2c;
+    --pele-border: #4e4e4e;
+  }
+  .pele .blue rect { fill: #1b3857; }
+  .pele .orange rect { fill: #573117; }
+  .pele .purple rect { fill: #3c2e57; }
+  .pele .yellow rect { fill: #573d17; }
+  .pele .teal rect { fill: #174641; }
+  .pele .tan rect { fill: #3d3127; }
+  .pele .pink rect { fill: #57233e; }
+  .pele .breaks rect {
+    fill: #2e2021 !important;
+    stroke: #cf2b35 !important;
+  }
+  .pele .breaks text {
+    fill: #ff6463 !important;
+  }
+  .pele .mayBreak rect {
+    fill: #2e2619 !important;
+    stroke: #d0700f !important;
+  }
+  .pele .mayBreak text {
+    fill: #ffa257 !important;
+  }
+  .pele .bugPath rect {
+    stroke: #116dd2 !important;
+  }
+  .pele .repeats rect {
+    stroke: #9a3fcf !important;
+  }
+}
+</style><text class="pele-title" font-weight="var(--_tw)" text-anchor="middle" xml:space="preserve"><tspan x="242" y="25.6">Goal target edits and contributions serialize safely</tspan></text><g transform="translate(0,36)"><g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round"><g class="pele-edge pele-transition" data-id="edge0"><path d="M246.98,22L246.98,59"/><path class="pele-marker" d="M246.98,66L243.62,58L250.34,58Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge1"><path d="M197.16,149C197.16,158.25 120.05,158.25 120.05,167.5L120.05,244"/><path class="pele-marker" d="M120.05,251L116.69,243L123.41,243Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge2"><path d="M296.81,149C296.81,158.25 373.92,158.25 373.92,167.5L373.92,244"/><path class="pele-marker" d="M373.92,251L370.56,243L377.28,243Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge3"><path d="M120.05,334L120.05,410.5C120.05,417.44 197.16,417.44 197.16,424.38L197.16,429"/><path class="pele-marker" d="M197.16,436L193.8,428L200.52,428Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge4"><path d="M373.92,334L373.92,410.5C373.92,417.44 296.81,417.44 296.81,424.38L296.81,429"/><path class="pele-marker" d="M296.81,436L293.45,428L300.17,428Z" fill="var(--_l)" stroke="none"/></g></g><g class="pele-edge-labels" font-size="14"><g class="pele-edge-label" data-id="edge1"><rect x="23.84" y="169.5" width="192.41" height="54" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="120.05" y="183.4">the member reads the current</tspan><tspan x="120.05" y="201.4">goal and saves a contribution</tspan><tspan x="120.05" y="219.4">under one write lock</tspan></text></g><g class="pele-edge-label" data-id="edge2"><rect x="275.76" y="169.5" width="196.31" height="54" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="373.92" y="183.4">the manager reads the current</tspan><tspan x="373.92" y="201.4">total and saves target and</tspan><tspan x="373.92" y="219.4">status under one write lock</tspan></text></g><g class="pele-edge-label" data-id="edge3"><rect x="21.89" y="354.5" width="196.31" height="54" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="120.05" y="368.4">the manager reads the current</tspan><tspan x="120.05" y="386.4">total and saves target and</tspan><tspan x="120.05" y="404.4">status under one write lock</tspan></text></g><g class="pele-edge-label" data-id="edge4"><rect x="277.72" y="354.5" width="192.41" height="54" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="373.92" y="368.4">the member reads the current</tspan><tspan x="373.92" y="386.4">goal and saves a contribution</tspan><tspan x="373.92" y="404.4">under one write lock</tspan></text></g></g><g class="pele-nodes"><g class="pele-node pele-state" data-id="s0" transform="translate(246.98,107.5)"><rect x="-101.82" y="-41.5" width="203.65" height="83" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-15.4">Active: saved 0, target 1</tspan><tspan x="0" y="5.6">Contribution ready; edit</tspan><tspan x="0" y="26.6">ready</tspan></text></g><g class="pele-node pele-state" data-id="s1" transform="translate(120.05,292.5)"><rect x="-112.05" y="-41.5" width="224.1" height="83" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-15.4">Completed: saved 1, target</tspan><tspan x="0" y="5.6">1 Contribution done; edit</tspan><tspan x="0" y="26.6">ready</tspan></text></g><g class="pele-node pele-state" data-id="s2" transform="translate(373.92,292.5)"><rect x="-101.82" y="-41.5" width="203.65" height="83" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-15.4">Active: saved 0, target 2</tspan><tspan x="0" y="5.6">Contribution ready; edit</tspan><tspan x="0" y="26.6">done</tspan></text></g><g class="pele-node pele-state" data-id="s3" transform="translate(246.98,477.5)"><rect x="-101.82" y="-41.5" width="203.65" height="83" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-15.4">Active: saved 1, target 2</tspan><tspan x="0" y="5.6">Contribution done; edit</tspan><tspan x="0" y="26.6">done</tspan></text></g><g class="pele-node pele-state-start" data-id="root_start" transform="translate(246.98,15)"><circle r="7" fill="var(--_l)"/></g></g></g></svg>

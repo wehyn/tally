@@ -1,0 +1,13 @@
+---
+title: "Goal target edits and contributions serialize safely"
+---
+stateDiagram-v2
+  s0: Active: saved 0, target 2 Contribution ready#59; edit ready
+  s1: Active: saved 1, target 2 Contribution done#59; edit ready
+  s2: Active: saved 0, target 1 Contribution ready#59; edit done
+  s3: Completed: saved 1, target 1 Contribution done#59; edit done
+  [*] --> s0
+  s0 --> s1: the member reads the current goal and saves a contribution under one write lock
+  s0 --> s2: the manager reads the current total and saves target and status under one write lock
+  s1 --> s3: the manager reads the current total and saves target and status under one write lock
+  s2 --> s3: the member reads the current goal and saves a contribution under one write lock

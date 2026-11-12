@@ -1,0 +1,51 @@
+---
+title: "A goal target edit races with one contribution"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: Breaks CompletionRecognized
+    lg1: Path to the CompletionRecognized bug
+  }
+  class lg0 breaks
+  class lg1 bugPath
+  s0: Active: saved 0, target 2 Contribution ready#59; edit ready
+  s1: Active: saved 0, target 2 Contribution read#59; edit ready
+  s2: Active: saved 0, target 2 Contribution ready#59; edit goal read
+  s3: Active: saved 1, target 2 Contribution done#59; edit ready
+  s4: Active: saved 0, target 2 Contribution read#59; edit goal read
+  s5: Active: saved 0, target 2 Contribution ready#59; edit total read
+  s6: Active: saved 1, target 2 Contribution done#59; edit goal read
+  s7: Active: saved 0, target 2 Contribution read#59; edit total read
+  s8: Active: saved 0, target 1 Contribution ready#59; edit done
+  s9: Active: saved 1, target 2 Contribution done#59; edit total read
+  s10: Active: saved 0, target 1 Contribution read#59; edit done
+  s11: Completed: saved 1, target 1 Contribution done#59; edit done
+  s12: Active: saved 1, target 1 Contribution done#59; edit done
+  [*] --> s0
+  s0 --> s1: a member reads the goal target
+  s0 --> s2: the manager reads the goal
+  s1 --> s3: the contribution is saved#59; the earlier target is unmet
+  s1 --> s4: the manager reads the goal
+  s2 --> s4: a member reads the goal target
+  s2 --> s5: the manager reads the amount saved
+  s3 --> s6: the manager reads the goal
+  s4 --> s6: the contribution is saved#59; the earlier target is unmet
+  s4 --> s7: the manager reads the amount saved
+  s5 --> s7: a member reads the goal target
+  s5 --> s8: the target and calculated status are saved
+  s6 --> s9: the manager reads the amount saved
+  s7 --> s9: the contribution is saved#59; the earlier target is unmet
+  s7 --> s10: the target and calculated status are saved
+  s8 --> s10: a member reads the goal target
+  s9 --> s12: the target and calculated status are saved
+  s10 --> s11: the contribution is saved#59; the earlier target is met
+  s10 --> s12: the contribution is saved#59; the earlier target is unmet
+  s9 --> s11: the target and calculated status are saved
+  classDef breaks fill:#ffecee,stroke:#e72e3b,stroke-width:2.5px,color:#cd2834
+  class s0 bugPath
+  class s1 bugPath
+  class s4 bugPath
+  class s7 bugPath
+  class s9 bugPath
+  class s12 breaks
+  class s12 bugPath
