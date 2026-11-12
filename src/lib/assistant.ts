@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -907,7 +907,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // with the same debt instead of saving a second one. That is the debt the answer links to and nothing more: it is never the
     // user's opt-in to add the debt to Transactions (debtTransactionRequested). A question about any other statement carries no debt.
     const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
-    const debtAnswers = debtFlowAnswers({
+    const flowTurn = (call: DebtFlowTurn["call"]): DebtFlowTurn => ({
       pending: lastFollowup,
       carriesDebt: recordedDebtId !== undefined,
       refused: refusedEarlier || refusedNow || debtRefusedEarlier || debtRefusedNow,
@@ -915,9 +915,15 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       stated: currentDebtIntent,
       saved: savedDebt,
       restates: restatesSavedDebt(input.prompt, savedDebt, ownMessages.map((message) => message.content), accounts.map((account) => account.name)),
-      // The answer to the duplicate question is about the saved debt whatever the model made of a bare "another".
-      call: duplicateChoice ? { kind: "ask" } : { kind: turnCallOf(providerCall.name), names: { direction: providerCall.args.direction === "owed_to_you" || providerCall.args.direction === "you_owe" ? providerCall.args.direction : null, counterparty: typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty : null } },
+      call,
     });
+    // The answer to the duplicate question is about the saved debt whatever the model made of a bare "another".
+    const providerNames: DebtRef = { direction: providerCall.args.direction === "owed_to_you" || providerCall.args.direction === "you_owe" ? providerCall.args.direction : null, counterparty: typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty : null };
+    const debtAnswers = debtFlowAnswers(flowTurn(duplicateChoice ? { kind: "ask" } : { kind: turnCallOf(providerCall.name), names: providerNames }));
+    // Whether the user's own message answers the flow when the model's mistake is left out. A write the model made for another
+    // counterparty than the user's message states gets no recorded consent (debtAnswers), but the question it makes the code ask
+    // is still about the saved debt when the user was answering it, so it carries that debt and the corrected answer links to it.
+    const userAnswersDebtFlow = debtFlowAnswers(flowTurn({ kind: turnCallOf(providerCall.name) }));
     // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
     // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
     // the carried debt id, which stays link context only. It applies only to an answer to that flow.
@@ -1080,6 +1086,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         else if (statedDebtIntent && (statedDebtIntent.direction !== direction || normalizeCounterparty(statedDebtIntent.counterparty) !== normalizeCounterparty(counterparty))) {
           answer = "The proposed debt does not match the person or direction in your request. Which debt should I record?";
           followup = "clarification";
+          if (userAnswersDebtFlow && !currentDebtIntent) debtInFlow = recordedDebtId;
         }
         else if (runDuplicate && currentDebtIntent) {
           // A message that states the debt again is asked about once. The question carries the saved debt, so "that one" goes on with it.

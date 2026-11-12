@@ -5393,6 +5393,26 @@ describe("a debt write never duplicates a debt the run already saved (round 25, 
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
 
+  it("a provider counterparty mistake asks, keeps Ana's debt on the question, and the corrected answer links to it", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const mismatch = await say("yes, for lunch using Wallet", "log_debt", { ...args, counterparty: "Ben", account: "Wallet" }, first.conversationId);
+    expect(mismatch.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ debtId: first.debt.id });
+    const done = await say("Ana", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+    expect(ana500()).toHaveLength(1);
+    expect(done.transaction).toMatchObject({ debtId: first.debt.id });
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+
+  it("a provider counterparty mistake under a different statement carries no debt on its question", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    await say("yes, for lunch into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+    const mismatch = await say("Log groceries 500 using Wallet", "log_debt", { ...args, counterparty: "Ben", description: "groceries", account: "Wallet" }, first.conversationId);
+    expect(mismatch.transaction).toBeNull();
+    expect(last(first.conversationId).debtId ?? null).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+  });
+
   it("a settled debt of the run is not a duplicate", async () => {
     const first = await say("Ana owes me 500", "log_debt", args);
     store.updateDebt(user.id, first.debt.id, { status: "settled" });
