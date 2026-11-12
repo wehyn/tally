@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, SHORT_ANSWER_REPLY, answerShaped, debtFlowAnswers, debtFlowContinues, debtFlowStatement, statesNewStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -909,14 +909,17 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // with the same debt instead of saving a second one. That is the debt the answer links to and nothing more: it is never the
     // user's opt-in to add the debt to Transactions (debtTransactionRequested). A question about any other statement carries no debt.
     const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
+    // Whether the current message is answer-shaped for the debt flow's question (answerShaped): the only thing that lets it use the
+    // recorded yes or the saved debt's link. A refusal, a restart or a new expense is not one, however it is worded.
+    const answerContext = { accountNames: accounts.map((account) => account.name), counterparty: savedDebt?.counterparty, amountMinor: savedDebt?.amountMinor, statement: debtFlowStatement(run) };
+    const debtAnswerShaped = debtFlowOpen && answerShaped(input.prompt, lastFollowup === "debt_transaction" ? "offer" : "detail", answerContext);
     const flowTurn = (call: DebtFlowTurn["call"]): DebtFlowTurn => ({
       pending: lastFollowup,
       carriesDebt: recordedDebtId !== undefined,
       refused: refusedEarlier || refusedNow || debtRefusedEarlier || debtRefusedNow,
-      reading: readStatementStart(lastFollowup, input.prompt, ownMessages.map((message) => message.content), accounts.map((account) => account.name)),
+      shaped: debtAnswerShaped,
       stated: currentDebtIntent,
       saved: savedDebt,
-      restates: restatesSavedDebt(input.prompt, savedDebt, ownMessages.map((message) => message.content), accounts.map((account) => account.name)),
       call,
     });
     // The answer to the duplicate question is about the saved debt whatever the model made of a bare "another".
@@ -929,7 +932,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
     // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
     // the carried debt id, which stays link context only. It applies only to an answer to that flow.
-    const debtChainAnswer = debtAnswers && duplicateChoice !== "another" ? debtOfferChainAnswer(run) : null;
+    const debtChainAnswer = debtAnswers && duplicateChoice !== "another" ? debtOfferChainAnswer(run, (content) => answerShaped(content, "offer", answerContext)) : null;
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || (debtAnswers && debtQuestionNo) || debtChainAnswer === "optOut";
     const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || (debtAnswers && debtQuestionYes) || debtChainAnswer === "optIn");
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
@@ -1029,6 +1032,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       // The refusal decision is taken here, on the call as it will run, before any branch below can write.
       const refusal = refusalOutcome({ earlier: refusedEarlier || debtRefusedEarlier, now: refusedNow || debtRefusedNow }, lastFollowup, turnCallOf(call.name));
       const refusalReason = debtRefusalOnly ? "declined" : "refused";
+      const debtShortAnswerOnly = refusal === "proceed" && debtFlowOpen && !debtAnswerShaped && turnCallOf(call.name) === "write" && !statesNewStatement(input.prompt, answerContext.accountNames);
       let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
       // The account an earlier confirmation of this income question chose, when this reply names none and the turn asks again.
       let incomeEchoedAccount: string | undefined;
@@ -1037,6 +1041,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         answer = debtRefusalOnly ? DEBT_REFUSED_AGAIN_REPLY : REFUSED_AGAIN_REPLY; answeredReadOnly = true;
       }
       else if (refusal === "refuse") { answer = endedQuestionReply(refusalReason, "", false); followup = null; }
+      else if (debtShortAnswerOnly) {
+        // The debt flow's question is open, the message is no answer to it and no clear statement of its own, and the call would write.
+        // The question stays as it was, so the user can answer it or say cancel, and nothing is recorded.
+        answer = SHORT_ANSWER_REPLY; answeredReadOnly = true;
+      }
       else if (call.name === "create_bill" || call.name === "update_bill") {
         const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup, requestedAt,
           otherHintMessages ? { hintMessages: otherHintMessages.map((message) => message.content), carriesEarlier: otherCarriesEarlier, unclear: answerChoice === "unclear" } : null);

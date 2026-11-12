@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type StatementReading, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, answerShaped, statesNewStatement, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -803,9 +803,8 @@ describe("debt flow continuation", () => {
 // question. One pure function says whether the current turn does.
 describe("debtFlowAnswers", () => {
   const ana: DebtRef = { direction: "owed_to_you", counterparty: "Ana" };
-  const answer: StatementReading = { starts: false, uncertain: false };
   const turn = (over: Partial<DebtFlowTurn> = {}): DebtFlowTurn => ({
-    pending: "account_or_date", carriesDebt: true, refused: false, reading: answer, stated: undefined, saved: ana, call: { kind: "write" }, ...over,
+    pending: "account_or_date", carriesDebt: true, refused: false, shaped: true, stated: undefined, saved: ana, call: { kind: "write" }, ...over,
   });
   const cases: { name: string; turn: DebtFlowTurn; expected: boolean }[] = [
     { name: "an answer to its own account question", turn: turn(), expected: true },
@@ -821,12 +820,11 @@ describe("debtFlowAnswers", () => {
     { name: "a new debt: a different direction stated", turn: turn({ stated: { direction: "you_owe", counterparty: "Ana" } }), expected: false },
     { name: "a write for a different counterparty", turn: turn({ call: { kind: "write", names: { counterparty: "Ben" } } }), expected: false },
     { name: "a write in a different direction", turn: turn({ call: { kind: "write", names: { direction: "you_owe" } } }), expected: false },
-    { name: "a new expense: the message starts a new statement", turn: turn({ reading: { starts: true, uncertain: false } }), expected: false },
-    { name: "an uncertain restart", turn: turn({ reading: { starts: false, uncertain: true } }), expected: false },
-    { name: "an uncertain restart under a question the model asks", turn: turn({ reading: { starts: true, uncertain: true }, call: { kind: "ask" } }), expected: false },
-    { name: "an uncertain restart under a read-only call", turn: turn({ reading: { starts: true, uncertain: true }, call: { kind: "read" } }), expected: false },
-    { name: "a restart-shaped message whose write names the saved debt: the call is the flow's own, the ambiguity net asks", turn: turn({ reading: { starts: true, uncertain: true }, call: { kind: "write", names: { direction: "owed_to_you", counterparty: "Ana" } } }), expected: true },
-    { name: "a restart-shaped message whose write names no debt", turn: turn({ reading: { starts: true, uncertain: false }, call: { kind: "write", names: { counterparty: null } } }), expected: false },
+    { name: "a message that is not answer-shaped (a new expense, a restart, a refusal, any verb phrase)", turn: turn({ shaped: false }), expected: false },
+    { name: "a message that is not answer-shaped, under the offer", turn: turn({ pending: "debt_transaction", shaped: false }), expected: false },
+    { name: "a message that is not answer-shaped, under a question the model asks", turn: turn({ shaped: false, call: { kind: "ask" } }), expected: false },
+    { name: "a message that is not answer-shaped, under a read-only call", turn: turn({ shaped: false, call: { kind: "read" } }), expected: false },
+    { name: "a message that is not answer-shaped, even when the write names the saved debt", turn: turn({ shaped: false, call: { kind: "write", names: { direction: "owed_to_you", counterparty: "Ana" } } }), expected: false },
     { name: "no debt flow open: nothing pending", turn: turn({ pending: null }), expected: false },
     { name: "no debt flow open: a question that carries no debt", turn: turn({ carriesDebt: false }), expected: false },
     { name: "no debt flow open: another kind of question", turn: turn({ pending: "repayment_amount" }), expected: false },
@@ -842,7 +840,7 @@ describe("debtFlowAnswers", () => {
 
   it("lets a refusal, a new statement or another debt each take the answer away on their own", () => {
     expect(debtFlowAnswers(turn())).toBe(true);
-    for (const over of [{ refused: true }, { reading: { starts: true, uncertain: false } }, { reading: { starts: false, uncertain: true } }, { stated: { counterparty: "Ben" } }, { call: { kind: "write" as const, names: { counterparty: "Ben" } } }]) {
+    for (const over of [{ refused: true }, { shaped: false }, { stated: { counterparty: "Ben" } }, { call: { kind: "write" as const, names: { counterparty: "Ben" } } }]) {
       expect(debtFlowAnswers(turn(over)), JSON.stringify(over)).toBe(false);
     }
   });
@@ -984,31 +982,129 @@ describe("the debts a run saved and the duplicate question", () => {
   });
 });
 
-describe("restatesSavedDebt", () => {
-  const saved = { amountMinor: 50_000, counterparty: "Ana" };
-  const statement = ["Ana owes me 500", "yes, for lunch using Wallet on 2026-13-45"];
-  const cases: { reply: string; restates: boolean }[] = [
-    { reply: "The 500 lunch expense was on 2026-10-08 using Wallet", restates: true },
-    { reply: "It was 500 for lunch on 2026-10-08, into Wallet", restates: true },
-    { reply: "The 1,000 lunch expense was on 2026-10-08 using Wallet", restates: false },
-    { reply: "Log groceries 500 using Wallet", restates: false },
-    { reply: "Actually log groceries 500 using Wallet", restates: false },
-    { reply: "The 700 lunch expense was on 2026-10-08", restates: false },
-    { reply: "500 using Wallet on 2026-10-08", restates: false },
-    { reply: "The lunch was on 2026-10-08 using Wallet", restates: false },
-    { reply: "Ana, 500", restates: false },
-    { reply: "The 500.00 lunch was on 2026-10-08", restates: true },
+// Finding 26: the debt flow's recorded yes and its link to the saved debt are inherited only by an ANSWER-SHAPED message. A whitelist,
+// so no wording of a refusal, a restart or a new statement has to be recognised for safety.
+describe("answerShaped", () => {
+  const context = { accountNames: ["Wallet", "BPI 2", "Savings"], counterparty: "Ana", amountMinor: 50_000, statement: ["Ana owes me 500", "yes, for lunch using Wallet on 2026-13-45"] };
+  const answers: { reply: string; question: "offer" | "detail" }[] = [
+    { reply: "use Wallet", question: "detail" },
+    { reply: "Use Wallet, please", question: "detail" },
+    { reply: "yes, Wallet", question: "detail" },
+    { reply: "yes", question: "offer" },
+    { reply: "no", question: "offer" },
+    { reply: "No thanks", question: "offer" },
+    { reply: "BPI 2", question: "detail" },
+    { reply: "use BPI 2 today", question: "detail" },
+    { reply: "Wallet today", question: "detail" },
+    { reply: "2026-10-08", question: "detail" },
+    { reply: "use Wallet on 2026-10-08", question: "detail" },
+    { reply: "Wallet at 8pm", question: "detail" },
+    { reply: "yesterday, Savings", question: "detail" },
+    { reply: "last Monday into Wallet", question: "detail" },
+    { reply: "the 500 lunch was on 2026-10-08 using Wallet", question: "detail" },
+    { reply: "The 500 lunch was on 2026-10-08 into Nowhere account", question: "detail" },
+    { reply: "add it to Transactions", question: "offer" },
+    { reply: "Yes, add it to Transactions for lunch", question: "offer" },
+    { reply: "Add it to Transactions; it was Jollibee", question: "offer" },
+    { reply: "yes, for lunch into Nowhere account", question: "offer" },
+    { reply: "yes, for food in Wallet on 2026-13-45", question: "offer" },
+    { reply: "yes, for groceries and drinks", question: "offer" },
+    { reply: "27 then", question: "detail" },
+    { reply: "500 then", question: "detail" },
+    { reply: "another", question: "detail" },
+    { reply: "another one", question: "detail" },
+    { reply: "that one", question: "detail" },
+    { reply: "the same one", question: "detail" },
+    { reply: "earlier, Wallet", question: "detail" },
+    { reply: "new one, Wallet, today", question: "detail" },
+    { reply: "Ana", question: "detail" },
   ];
-  for (const { reply, restates } of cases) it(`${restates ? "restates" : "does not restate"}: ${reply}`, () => expect(restatesSavedDebt(reply, saved, statement, ["Wallet"])).toBe(restates));
-  it("restates nothing without a saved debt", () => expect(restatesSavedDebt("The 500 lunch expense", undefined, statement, [])).toBe(false));
+  for (const { reply, question } of answers) it(`is an answer (${question}): ${reply}`, () => expect(answerShaped(reply, question, { ...context, amountMinor: reply === "27 then" ? 2_700 : 50_000 })).toBe(true));
 
-  it("makes a restart-shaped message an answer, and only that, in debtFlowAnswers", () => {
-    const turn: DebtFlowTurn = { pending: "account_or_date", carriesDebt: true, refused: false, reading: { starts: true, uncertain: false }, stated: undefined, saved: { direction: "owed_to_you", counterparty: "Ana" }, call: { kind: "ask" } };
-    expect(debtFlowAnswers(turn)).toBe(false);
-    expect(debtFlowAnswers({ ...turn, restates: true })).toBe(true);
-    expect(debtFlowAnswers({ ...turn, restates: true, refused: true })).toBe(false);
-    expect(debtFlowAnswers({ ...turn, restates: true, stated: { counterparty: "Ben" } })).toBe(false);
-    expect(debtFlowAnswers({ ...turn, restates: true, call: { kind: "write", names: { counterparty: "Ben" } } })).toBe(false);
+  const notAnswers: { reply: string; question: "offer" | "detail" }[] = [
+    { reply: "I don't want to record it. Use Wallet.", question: "detail" },
+    { reply: "Don't record the money. Use Wallet.", question: "detail" },
+    { reply: "Don't record it in Wallet.", question: "detail" },
+    { reply: "I don't want to record the 500 lunch. Use Wallet.", question: "detail" },
+    { reply: "Please do not record it yet.", question: "detail" },
+    { reply: "Leave the money out. Wallet.", question: "detail" },
+    { reply: "Sure, don't forget to put it in Wallet", question: "offer" },
+    { reply: "Don't forget to add it to Wallet", question: "detail" },
+    { reply: "I don't know, add it to Wallet", question: "detail" },
+    { reply: "Instead, record my lunch refund income of 500 using Wallet today.", question: "detail" },
+    { reply: "Spent 500 on lunch with Ben in Wallet", question: "detail" },
+    { reply: "Log groceries 500 using Wallet", question: "detail" },
+    { reply: "The 500 lunch expense was on 2026-10-08 using Wallet", question: "detail" },
+    { reply: "Ben owes me 700 using Wallet.", question: "detail" },
+    { reply: "make it 30", question: "offer" },
+    { reply: "no, but make it 600", question: "offer" },
+    { reply: "okay, just debts then", question: "offer" },
+    { reply: "yes for lunch don't record it", question: "offer" },
+    { reply: "yes, for lunch, skip it", question: "offer" },
+    { reply: "yes, record my groceries for Ben", question: "offer" },
+    { reply: "use Wallet for groceries", question: "detail" },
+    { reply: "500 for groceries", question: "detail" },
+    { reply: "Wallet, 700", question: "detail" },
+    { reply: "Ben, Wallet", question: "detail" },
+    { reply: "how much did I spend using Wallet?", question: "detail" },
+  ];
+  for (const { reply, question } of notAnswers) it(`is not an answer (${question}): ${reply}`, () => expect(answerShaped(reply, question, context)).toBe(false));
+
+  it("treats the debt's own counterparty and amount, and only those, as filler", () => {
+    expect(answerShaped("Ana 500 Wallet", "detail", context)).toBe(true);
+    expect(answerShaped("Ben 500 Wallet", "detail", context)).toBe(false);
+    expect(answerShaped("Ana 600 Wallet", "detail", context)).toBe(false);
+    expect(answerShaped("₱500.00 Wallet", "detail", context)).toBe(true);
+    expect(answerShaped("1,500 Wallet", "detail", context)).toBe(false);
+  });
+  it("treats the words of the flow's statement as filler, except the refusal words, which no statement can make filler", () => {
+    expect(answerShaped("lunch", "detail", context)).toBe(true);
+    expect(answerShaped("groceries", "detail", context)).toBe(false);
+    expect(answerShaped("don't", "detail", { ...context, statement: [...context.statement, "don't record it, lunch"] })).toBe(false);
+  });
+  it("lets only the offer carry a purpose, and never a purpose that holds a refusal word", () => {
+    expect(answerShaped("yes, for groceries", "offer", context)).toBe(true);
+    expect(answerShaped("yes, for groceries", "detail", context)).toBe(false);
+    expect(answerShaped("yes, for no reason", "offer", context)).toBe(false);
+    expect(answerShaped("yes, for don't record", "offer", context)).toBe(false);
+  });
+  it("knows only the accounts the user has, and answers an unknown one only as a named account", () => {
+    expect(answerShaped("use Nowhere", "detail", context)).toBe(false);
+    expect(answerShaped("use Nowhere account", "detail", context)).toBe(true);
+    expect(answerShaped("into my Savings Plus account", "detail", context)).toBe(true);
+    expect(answerShaped("I hate the Nowhere account", "detail", context)).toBe(false);
+  });
+});
+
+describe("statesNewStatement", () => {
+  const accounts = ["Wallet"];
+  for (const reply of ["Spent 500 on lunch with Ben in Wallet", "Instead, record my lunch refund income of 500 using Wallet today.", "Log groceries 500 using Wallet", "Don't forget to log coffee 100 using Wallet", "Spent 200 on lunch in Wallet, and don't forget to log it", "Ben owes me 700"]) {
+    it(`is a statement: ${reply}`, () => expect(statesNewStatement(reply, accounts)).toBe(true));
+  }
+  for (const reply of ["I don't want to record it. Use Wallet.", "I don't want to record the 500 lunch. Use Wallet.", "Don't record the money. Use Wallet.", "make it 30", "use Wallet", "maybe spent 500 on lunch", "no, spent 500 on lunch", "skip the 500 lunch"]) {
+    it(`is not a statement: ${reply}`, () => expect(statesNewStatement(reply, accounts)).toBe(false));
+  }
+});
+
+describe("debtFlowStatement", () => {
+  const msg = (content: string) => ({ role: "user" as const, content });
+  const reply = (followup: FollowupKind | null, debtId: string | null, extra: { readOnly?: boolean } = {}) => ({ role: "assistant" as const, content: "", followup, debtId, ...extra });
+  it("is the user messages whose reply carries the debt, a quiet reply and a reply with no debt left out", () => {
+    expect(debtFlowStatement([
+      msg("Ana owes me 500"), reply("debt_transaction", "d1"), msg("how much did I spend?"), reply("debt_transaction", "d1", { readOnly: true }),
+      msg("Log groceries"), reply("clarification", null), msg("yes, for lunch"), reply("account_or_date", "d1"),
+    ])).toEqual(["Ana owes me 500", "yes, for lunch"]);
+  });
+});
+
+describe("debtOfferChainAnswer with a shape check", () => {
+  const msg = (content: string) => ({ role: "user" as const, content });
+  const reply = (followup: FollowupKind | null, debtId: string | null) => ({ role: "assistant" as const, content: "", followup, debtId });
+  const run = [msg("Ana owes me 500"), reply("debt_transaction", "d1"), msg("yes, record my groceries for Ben"), reply("account_or_date", "d1")];
+  it("records the yes by default and ignores one that was not answer-shaped when it was said", () => {
+    expect(debtOfferChainAnswer(run)).toBe("optIn");
+    expect(debtOfferChainAnswer(run, (content) => !content.includes("Ben"))).toBeNull();
+    expect(debtOfferChainAnswer(run, () => true)).toBe("optIn");
   });
 });
 

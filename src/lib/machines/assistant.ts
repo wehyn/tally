@@ -342,6 +342,118 @@ export function startsNewStatement(pending: FollowupKind | null, reply: string, 
   return readStatementStart(pending, reply, statement, accountNames).starts;
 }
 
+// ANSWER SHAPE. The debt flow records a yes ("add it to Transactions") and links a later turn to the debt it saved. Whether a later
+// message may use either is decided by a WHITELIST, never by the wordings that are not answers: a refusal, a restart or a new
+// expense can be phrased without end, and every list of them was missed by a new phrasing. A message is an answer to the debt
+// flow's question only when, once the filler tokens, the debt's own counterparty and amount and the words the flow's statement
+// already used are taken out, it consists only of
+//  - an account name the user has (or an account the message names with "<name> account", which the code answers by asking for a
+//    listed one),
+//  - a date or a time the code's own recognisers read (DATES_AND_TIMES, today, yesterday, tomorrow, a weekday),
+//  - the word "transactions", and
+//  - the exact choice words: another, that one, the same one, earlier, new one.
+// The offer to add the debt to Transactions also asks what the money was for, so its answer may carry a short purpose after "for"
+// or "it was" (up to three words, none of them a refusal or a verb). Anything else, a verb phrase or a word the flow never used, is not an answer: it carries no
+// consent and no link, and is handled as its own statement or asked again (statesNewStatement, SHORT_ANSWER_REPLY).
+export type AnswerQuestion = "offer" | "detail";
+export type AnswerContext = {
+  accountNames: readonly string[];
+  // The saved debt's own counterparty and amount, which the answer may repeat.
+  counterparty?: string;
+  amountMinor?: number;
+  // The user messages of the debt flow so far (debtFlowStatement). Their words are filler, except the ones in NEVER_FILLER.
+  statement: readonly string[];
+};
+
+const ANSWER_FILLER: ReadonlySet<string> = new Set((
+  "use using in into on to the my it please account accounts card default today tomorrow yesterday "
+  + "yes yeah yep yup sure ok okay no nope nah thanks thank you it's "
+  + "for with from at via by of and a an then also now is was am are "
+  + "put choose select pick switch change add record go ahead transactions transaction "
+  + "another that this one ones earlier new same peso pesos php"
+).split(" "));
+
+// Words that refuse, cancel or reverse. They are never filler, and the flow's own statement cannot make them filler either.
+const NEVER_FILLER: ReadonlySet<string> = new Set((
+  "don't dont do not never won't wont can't cant cannot skip cancel stop without instead rather forget leave remove delete undo "
+  + "ignore scratch actually hindi ayoko wag huwag di maybe perhaps probably guess think might"
+).split(" "));
+
+const WEEKDAY_DATES = /\b(?:(?:last|next|this|on|past)\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day|(?:last|next|this)\s+(?:week|month))\b/gi;
+const UNKNOWN_ACCOUNT = /\b(?:into|in|to|on|using|use|via|from|with)\s+(?:my\s+)?(?:[\p{L}\p{N}'’.-]+\s+){0,2}[\p{L}\p{N}'’.-]+\s+(?:account|card)\b/giu;
+const PURPOSE_INTRO: ReadonlySet<string> = new Set(["for", "was", "it's"]);
+const AMOUNT_TOKEN = /(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?(?![\d,]|\.\d)/g;
+
+function answerTokens(text: string): string[] {
+  return text.split(/[^\p{L}\p{N}'’-]+/u).map((token) => token.replace(/^['’-]+|['’-]+$/g, "").replace(/’/g, "'")).filter(Boolean);
+}
+
+export function answerShaped(message: string, question: AnswerQuestion, context: AnswerContext): boolean {
+  let text = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/₱/g, " ");
+  text = withoutDatesAndTimes(text).replace(WEEKDAY_DATES, " ");
+  text = withoutAccountNames(text, context.accountNames).replace(UNKNOWN_ACCOUNT, " ");
+  if (context.amountMinor !== undefined) {
+    text = text.replace(AMOUNT_TOKEN, (token, whole: string, fraction: string | undefined) =>
+      Math.round(Number(`${whole.replace(/,/g, "")}.${fraction ?? "0"}`) * 100) === context.amountMinor ? " " : token);
+  }
+  const allowed = new Set<string>(ANSWER_FILLER);
+  for (const word of [...answerTokens((context.counterparty ?? "").toLowerCase()), ...answerTokens(context.statement.join(" ").toLowerCase())]) {
+    if (word.length > 1 && !NEVER_FILLER.has(word) && !/\d/.test(word)) allowed.add(word);
+  }
+  const tokens = answerTokens(text);
+  for (let index = 0; index < tokens.length; index++) {
+    if (allowed.has(tokens[index])) {
+      // The offer asks what the money was for: after "for", "it was" or "it's" up to three words, none of them filler or a refusal
+      // word, are the purpose and need not have been said before. The purpose ends at the first filler word.
+      if (question === "offer" && PURPOSE_INTRO.has(tokens[index])) {
+        let next = index + 1;
+        if (tokens[next] === "the" || tokens[next] === "my" || tokens[next] === "a" || tokens[next] === "an") next++;
+        let taken = 0;
+        while (taken < 3 && next < tokens.length && !NEVER_FILLER.has(tokens[next]) && !/\d/.test(tokens[next])) {
+          if (tokens[next] === "and" && taken > 0) { next++; continue; }
+          if (allowed.has(tokens[next])) break;
+          next++; taken++;
+        }
+        index = next - 1;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// A message that is not an answer to the debt flow but is plainly a new statement of its own: it states an amount and a purpose
+// or a counterparty, and carries no refusal, hedge or reversal word. "Spent 500 on lunch with Ben in Wallet" and "Instead, record my
+// lunch refund income of 500 using Wallet today" are statements, "I don't want to record the 500 lunch. Use Wallet." is not.
+// When it is doubtful the caller asks again and writes nothing, so a wrong "not clear" costs a question and never a record.
+const STATEMENT_VETO: ReadonlySet<string> = new Set((
+  "don't dont do not never won't wont can't cant cannot no nope nah skip cancel stop without forget hindi ayoko wag huwag di maybe perhaps probably guess think might"
+).split(" "));
+export function statesNewStatement(message: string, accountNames: readonly string[]): boolean {
+  // "don't forget to log it" and "I don't know" say to record it, so they are no refusal.
+  const lowered = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\b(?:don'?t|do not|never)\s+(?:forget|know|mind|worry)\b/g, " ");
+  if (answerTokens(lowered).some((token) => STATEMENT_VETO.has(token))) return false;
+  const dated = withoutDatesAndTimes(message);
+  return /\d/.test(withoutAccountNames(dated, accountNames)) && purposeWordsIn(dated).length > 0;
+}
+
+// The user messages that belong to a saved debt's flow: the statement that saved it and every answer to a question the flow asked
+// about it. A message belongs when the reply right after it carries a debt and is not a quiet turn, so a read or a re-ask in
+// between adds no word to the filler.
+export function debtFlowStatement<T extends RunMessage & { content: string; debtId?: string | null }>(run: readonly T[]): string[] {
+  const messages: string[] = [];
+  for (let index = 0; index + 1 < run.length; index++) {
+    const reply = run[index + 1];
+    if (run[index].role === "user" && reply.role === "assistant" && reply.debtId && !isQuietReply(reply)) messages.push(run[index].content);
+  }
+  return messages;
+}
+
+// What the code says when a message in an open debt flow is neither an answer to its question nor a clear statement of its own,
+// and the call would write. It stores the same question again and writes nothing.
+export const SHORT_ANSWER_REPLY = "I need a short answer here: reply with the account and date, yes or no, or say cancel.";
+
 // The user messages of the open run whose hints may apply to the write the current message is for, and the other reading
 // of the same run when the text rule was uncertain about it. `primary` is the rule's own verdict at every message, quiet
 // turns left out, and never holds the current message, which the caller adds. It is empty when the current message starts
@@ -540,19 +652,17 @@ export type DebtRef = { direction?: "owed_to_you" | "you_owe" | null; counterpar
 
 // Everything one turn knows when it asks whether it answers the debt flow of a saved debt (debtFlowAnswers).
 // `pending` and `carriesDebt` are the stored kind of the question the run waits on and whether it carries the saved debt's id.
-// `refused` is refusal wording anywhere in the open run, the current message included. `reading` is readStatementStart's verdict on
-// the current message under that question. `stated` is the debt the current message states in its own words, `saved` the debt the
-// question carries, and `call` the provider's call: its kind and the debt it names, if it names one.
+// `refused` is refusal wording in the open run, the current message included. `shaped` is answerShaped's verdict on the current
+// message for that question. `stated` is the debt the current message states in its own words, `saved` the debt the question
+// carries, and `call` the provider's call: its kind and the debt it names, if it names one.
 export type DebtFlowTurn = {
   pending: FollowupKind | null;
   carriesDebt: boolean;
   refused: boolean;
-  reading: StatementReading;
+  shaped: boolean;
   stated: DebtRef | undefined;
   saved: DebtRef | undefined;
   call: { kind: TurnCall; names?: DebtRef };
-  // restatesSavedDebt's verdict: the message says the saved debt's own amount and a purpose its statement already named.
-  restates?: boolean;
 };
 
 function namesOtherDebt(saved: DebtRef | undefined, other: DebtRef | undefined): boolean {
@@ -561,47 +671,22 @@ function namesOtherDebt(saved: DebtRef | undefined, other: DebtRef | undefined):
   return !!other.counterparty && !!saved.counterparty && normalizeCounterparty(other.counterparty) !== normalizeCounterparty(saved.counterparty);
 }
 
-// Whether the provider's call explicitly names the saved debt: the same counterparty, and no conflicting direction.
-function namesSavedDebt(saved: DebtRef | undefined, other: DebtRef | undefined): boolean {
-  return !!saved?.counterparty && !!other?.counterparty && !namesOtherDebt(saved, other);
-}
-
 // Whether the current turn is an ANSWER to the debt flow's own question. Only an answer may use what the flow recorded: the yes or
-// no said to the Transactions offer, and the saved debt's id the question carries. A turn is not an answer when
-//  (a) refusal wording is in the open run (the whole run, as every guard reads it): the refusal wins over any recorded yes and the
-//      caller writes nothing (refusalOutcome),
-//  (b) the current message, or the provider's write, names a different counterparty or direction than the saved debt (a new debt),
-//  (c) the current message starts a new statement or may have (readStatementStart: a new expense, a restart) and the provider's
-//      call is not a write that names the saved debt itself. When the model does name it, the call is the flow's own and the
-//      existing ambiguity net (hintReadingsFor, ambiguityVerdict) asks which reading is meant before anything is written. A message
-//      that only restates the saved debt (its amount and a purpose its own statement named, restatesSavedDebt) is an answer to it
-//      even when its extra words read like a restart: "The 500 lunch expense was on 2026-10-08 using Wallet" answers the date question.
+// no said to the Transactions offer, and the saved debt's id the question carries. The test is a WHITELIST, not a list of the
+// wordings that are not answers: the message must be answer-shaped for the question (answerShaped), which is an account, a date
+// or a time, "transactions" or a choice word and nothing else once the filler and the flow's own words are taken out. A refusal
+// worded any way, a restart, an expense that repeats the debt's amount and a purpose word, and a new debt are all something else,
+// so none of them has to be recognised for safety. It also is not an answer when
+//  (a) refusal wording is in the open run (the anchored set, an extra signal: the caller writes nothing, refusalOutcome), or
+//  (b) the current message, or the provider's write, names a different counterparty or direction than the saved debt.
 // A turn that is not an answer is its own statement: no consent and no link are carried to it. A call that only reads or asks
 // names no debt, so the existing rules for those calls keep holding (debtContinuationRewrites).
 export function debtFlowAnswers(turn: DebtFlowTurn): boolean {
   if (!debtFlowContinues(turn.pending, turn.carriesDebt)) return false;
-  if (turn.refused) return false;
+  if (turn.refused || !turn.shaped) return false;
   if (namesOtherDebt(turn.saved, turn.stated)) return false;
   if (turn.call.kind === "write" && namesOtherDebt(turn.saved, turn.call.names)) return false;
-  if (turn.reading.starts || turn.reading.uncertain) return !!turn.restates || (turn.call.kind === "write" && namesSavedDebt(turn.saved, turn.call.names));
   return true;
-}
-
-// Whether a message restates the debt the flow saved rather than stating another one: it says the saved debt's own amount AND a
-// purpose word its statement (the user messages of the flow so far) already named. Both are compared with what the run recorded,
-// never with a list of words: "The 500 lunch expense was on 2026-10-08 using Wallet" after "yes, for lunch ..." restates a 500
-// debt, while "Log groceries 500 using Wallet" says the same amount for a purpose the statement never named, and "Ben paid for
-// lunch 700" names another amount. The counterparty's own name is no purpose. When this is wrong the duplicate net
-// (duplicateOfRunDebt) still stops a second debt, and the saved debt's consent is only what the statement itself said.
-export function restatesSavedDebt(reply: string, saved: { amountMinor: number; counterparty: string } | undefined, statement: readonly string[], accountNames: readonly string[]): boolean {
-  if (!saved) return false;
-  const text = withoutAccountNames(withoutDatesAndTimes(reply), accountNames);
-  const amounts = [...text.matchAll(/(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?(?![\d,]|\.\d)/g)]
-    .map((match) => Math.round(Number(`${match[1].replace(/,/g, "")}.${match[2] ?? "0"}`) * 100));
-  if (!amounts.includes(saved.amountMinor)) return false;
-  const counterparty = new Set(purposeWordsIn(saved.counterparty));
-  const known = new Set(purposeWordsIn(statement.join(" ")));
-  return purposeWordsIn(text).some((word) => known.has(word) && !counterparty.has(word));
 }
 
 // A debt write never creates a second open debt that duplicates one this same open run already saved: the same counterparty (as
@@ -672,7 +757,7 @@ export const isDebtOfferNo = (text: string): boolean => /^\s*(?:no|nope|nah)\b/i
 // answer comes from the yes, never from the id.
 type DebtChainTurn = RunMessage & { content: string; debtId?: string | null };
 
-export function debtOfferChainAnswer(run: readonly DebtChainTurn[]): DebtTransactionAnswer {
+export function debtOfferChainAnswer(run: readonly DebtChainTurn[], shaped: (content: string) => boolean = () => true): DebtTransactionAnswer {
   let debtId: string | undefined;
   let awaitingAnswer = false;
   let answer: DebtTransactionAnswer = null;
@@ -690,7 +775,8 @@ export function debtOfferChainAnswer(run: readonly DebtChainTurn[]): DebtTransac
     const carries = reply.debtId === debtId && (reply.followup === "account_or_date" || reply.followup === "clarification");
     if (awaitingAnswer) {
       awaitingAnswer = false;
-      answer = carries ? isDebtOfferYes(message.content) ? "optIn" : isDebtOfferNo(message.content) ? "optOut" : null : null;
+      // A yes or a no counts only when it was answer-shaped when it was said: "yes, record my groceries for Ben" never was.
+      answer = carries && shaped(message.content) ? isDebtOfferYes(message.content) ? "optIn" : isDebtOfferNo(message.content) ? "optOut" : null : null;
       if (answer === null) debtId = undefined;
     } else if (!carries) {
       debtId = undefined; answer = null;

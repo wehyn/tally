@@ -4999,9 +4999,10 @@ describe("a carried debt is context, never consent (round 22, finding 22)", () =
     const first = await say("Mom owes me 27", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27", note: "Jollibee", recordTransaction: true });
     expect(first.transaction).toBeNull();
     expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
+    // "make it 30" is no answer to the offer and no statement of its own (round 26): it asks for a short answer and the offer stays.
     const mismatch = await say("make it 30", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "30" }, first.conversationId);
-    expect(mismatch.answer).toContain("doesn't match the open debt");
-    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+    expect(mismatch.answer).toContain("I need a short answer here");
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
 
     const answer = await say("27 then", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27" }, first.conversationId);
 
@@ -5015,10 +5016,10 @@ describe("a carried debt is context, never consent (round 22, finding 22)", () =
 
   it("finding 22a: the same answer after a real opt-in still links the transaction to the one debt", async () => {
     const first = await say("Mom owes me 27", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27" });
-    await say("add it to Transactions for lunch, make it 30", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "30", account: "Wallet", date: "2026-10-09", category: "Food", description: "lunch" }, first.conversationId);
-    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+    await say("make it 30", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "30", account: "Wallet", date: "2026-10-09", category: "Food", description: "lunch" }, first.conversationId);
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
 
-    const answer = await say("27 then", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27", account: "Wallet", date: "2026-10-09", category: "Food", description: "lunch" }, first.conversationId);
+    const answer = await say("27 then, add it to Transactions for lunch using Wallet", "log_debt", { direction: "owed_to_you", counterparty: "Mom", amount: "27", account: "Wallet", date: "2026-10-09", category: "Food", description: "lunch" }, first.conversationId);
 
     expect(store.listDebts(user.id)).toHaveLength(1);
     expect(answer.transaction).toMatchObject({ amountMinor: 2_700, debtId: first.debt.id });
@@ -5167,11 +5168,12 @@ describe("a yes to the Transactions offer outlives the question it led to (round
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
 
-  it("a no to the offer is recorded too: the later answer stays in Debts only", async () => {
+  it("a no with extra words is no answer (round 26): the offer stays pending, and the later answer stays in Debts only", async () => {
     const first = await say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
     const asked = await say("no, but make it 600", "log_debt", { ...args, amount: "600" }, first.conversationId);
     expect(asked.transaction).toBeNull();
-    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+    expect(asked.answer).toContain("I need a short answer here");
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
 
     const answered = await say("500 then, add it to Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
 
@@ -5182,9 +5184,10 @@ describe("a yes to the Transactions offer outlives the question it led to (round
 
   it("a question the model asks inside the debt flow keeps the saved debt, so a later opt-in never saves a second one", async () => {
     const first = await say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
+    // A message that is no answer to the offer keeps no link on the model's question (round 26); the run's own debt is still never duplicated.
     const asked = await say("hmm what now", "ask_clarification", { question: "What would you like to do with it?" }, first.conversationId);
     expect(asked.transaction).toBeNull();
-    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+    expect(last(first.conversationId).followup).toBe("clarification");
 
     const saved = await say("add it to Transactions for lunch using Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
 
@@ -5195,7 +5198,7 @@ describe("a yes to the Transactions offer outlives the question it led to (round
   it("a carried debt with no yes on record still writes nothing", async () => {
     const first = await say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
     await say("make it 600", "log_debt", { ...args, amount: "600" }, first.conversationId);
-    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
 
     const answered = await say("500 then", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
 
@@ -5335,7 +5338,7 @@ describe("a debt write never duplicates a debt the run already saved (round 25, 
 
   it("a date answer that restates the same lunch stays an answer when the provider asks a question: the debt stays on it and use Wallet links to it", async () => {
     const first = await dateQuestion();
-    const answered = await say("The 500 lunch expense was on 2026-10-08 into Nowhere account", "ask_clarification", { question: "Which account should I use for the advance?" }, first.conversationId);
+    const answered = await say("The 500 lunch was on 2026-10-08 into Nowhere account", "ask_clarification", { question: "Which account should I use for the advance?" }, first.conversationId);
     expect(answered.transaction).toBeNull();
     expect(last(first.conversationId)).toMatchObject({ debtId: first.debt.id });
     const done = await say("use Wallet", "log_debt", { ...args, account: "Wallet", date: "2026-10-08" }, first.conversationId);
@@ -5346,21 +5349,21 @@ describe("a debt write never duplicates a debt the run already saved (round 25, 
 
   it("a date answer that restates the same lunch is the recorded yes's own answer when the provider only asks", async () => {
     const first = await dateQuestion();
-    const answered = await say("The 500 lunch expense was on 2026-10-08 using Wallet", "ask_clarification", { question: "Which account should I use for the advance?" }, first.conversationId);
+    const answered = await say("The 500 lunch was on 2026-10-08 using Wallet", "ask_clarification", { question: "Which account should I use for the advance?" }, first.conversationId);
     expect(answered.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
     expect(ana500()).toHaveLength(1);
   });
 
   it("a date answer that restates the same lunch is linked to the saved debt when the provider logs a transaction", async () => {
     const first = await dateQuestion();
-    const result = await say("The 500 lunch expense was on 2026-10-08 using Wallet", "log_transaction", { ...expense, date: "2026-10-08" }, first.conversationId);
+    const result = await say("The 500 lunch was on 2026-10-08 using Wallet", "log_transaction", { ...expense, date: "2026-10-08" }, first.conversationId);
     expect(result.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
     expect(ana500()).toHaveLength(1);
   });
 
   it("the provider's own log_debt for the same debt after the answer never creates a second debt", async () => {
     const first = await dateQuestion();
-    const result = await say("The 500 lunch expense was on 2026-10-08 using Wallet", "log_debt", { ...args, account: "Wallet", date: "2026-10-08" }, first.conversationId);
+    const result = await say("The 500 lunch was on 2026-10-08 using Wallet", "log_debt", { ...args, account: "Wallet", date: "2026-10-08" }, first.conversationId);
     expect(ana500()).toHaveLength(1);
     if (result.transaction) expect(result.transaction.debtId).toBe(first.debt.id);
   });
@@ -5482,18 +5485,28 @@ describe("refusal wording in an open debt flow is a small anchored set (round 25
     expect(result.transaction).toMatchObject({ amountMinor: 20_000 });
   });
 
-  it("a yes to the offer that says 'don't forget' is still a yes", async () => {
+  // Round 26: these wordings are no longer read as answers (they are not answer-shaped), so they ask for a short answer and write
+  // nothing. A plain answer in the same flow still works, and the question stays pending.
+  it("a yes to the offer that says 'don't forget' is no answer: it asks for a short answer, and a plain yes still records", async () => {
     const first = await offer();
     const result = await say("Sure, don't forget to put it in Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
-    expect(result.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+    expect(result.transaction).toBeNull();
+    expect(result.answer).toContain("I need a short answer here");
+    expect(last(first.conversationId)).toMatchObject({ followup: "debt_transaction", debtId: first.debt.id });
+    const done = await say("yes, for lunch into Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+    expect(done.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
 
   for (const reply of ["Don't forget to add it to Wallet", "I don't know, add it to Wallet", "I never save in cash, put it in Wallet"]) {
-    it(`an account answer worded '${reply}' is an answer`, async () => {
+    it(`an account answer worded '${reply}' is no answer: it asks for a short answer, and use Wallet still records`, async () => {
       const first = await accountQuestion();
       const result = await say(reply, "log_debt", { ...args, account: "Wallet" }, first.conversationId);
-      expect(result.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+      expect(result.transaction).toBeNull();
+      expect(result.answer).toContain("I need a short answer here");
+      expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+      const done = await say("use Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+      expect(done.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
       expect(store.listDebts(user.id)).toHaveLength(1);
     });
   }
@@ -5516,5 +5529,91 @@ describe("refusal wording in an open debt flow is a small anchored set (round 25
       store.deleteConversation(user.id, first.conversationId);
       for (const debt of store.listDebts(user.id)) store.deleteDebt(user.id, debt.id);
     }
+  });
+});
+
+// Review round 26. The debt flow's recorded yes and its link to the saved debt are inherited by the current message only when it is
+// ANSWER-SHAPED for the question being answered (answerShaped): after filler words and the flow's own words are removed it is an
+// account, a date or time, "transactions" or a choice word and nothing else. Any other message carries no consent and no link.
+describe("an inherited yes or debt link needs an answer-shaped message (round 26, finding 26)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    const response = await POST(assistantRequest(prompt, conversationId));
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+  const args = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
+  const wallet = () => store.listAccounts(user.id).find((account) => account.name === "Wallet")!;
+  async function accountQuestion() {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const asked = await say("yes, for lunch into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+    expect(asked.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+    return first;
+  }
+
+  describe("finding 26a: a refusal worded any way carries no consent", () => {
+    for (const refusal of ["I don't want to record it. Use Wallet.", "Don't record the money. Use Wallet.", "Don't record it in Wallet.", "I'd rather not log that, Wallet is fine.", "Leave the money out. Wallet."]) {
+      it(`writes nothing for: ${refusal}`, async () => {
+        const first = await accountQuestion();
+        const result = await say(refusal, "ask_clarification", { question: "Should I leave it unrecorded?" }, first.conversationId);
+        expect(result.transaction).toBeNull();
+        expect(store.listTransactions(user.id)).toHaveLength(0);
+        expect(wallet().balanceMinor).toBe(0);
+        expect(store.listDebts(user.id)).toHaveLength(1);
+      });
+    }
+
+    it("a refusal the provider turns into a write asks for a short answer and writes nothing", async () => {
+      const first = await accountQuestion();
+      const result = await say("I don't want to record it. Use Wallet.", "log_transaction", { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" }, first.conversationId);
+      expect(result.transaction).toBeNull();
+      expect(result.answer).toContain("I need a short answer here");
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+      expect(wallet().balanceMinor).toBe(0);
+      expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+    });
+
+    it("a refusal that restates the amount and the purpose still writes nothing", async () => {
+      const first = await accountQuestion();
+      const result = await say("I don't want to record the 500 lunch. Use Wallet.", "log_transaction", { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" }, first.conversationId);
+      expect(result.transaction).toBeNull();
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+      expect(wallet().balanceMinor).toBe(0);
+    });
+
+    it("the same debt flow still records the yes when the message is a plain answer", async () => {
+      const first = await accountQuestion();
+      const done = await say("use Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+      expect(done.transaction).toMatchObject({ amountMinor: 50_000, debtId: first.debt.id });
+      expect(store.listDebts(user.id)).toHaveLength(1);
+    });
+  });
+
+  describe("finding 26b: an explicit restart that shares the amount and a purpose word is its own statement", () => {
+    it("a lunch refund income stays income with Undo, never a debt advance", async () => {
+      const first = await accountQuestion();
+      const done = await say("Instead, record my lunch refund income of 500 using Wallet today.", "log_transaction", { kind: "income", amount: "500", category: "Other income", description: "lunch refund", account: "Wallet" }, first.conversationId);
+      expect(done.transaction).toMatchObject({ kind: "income", amountMinor: 50_000 });
+      expect(done.transaction.debtId ?? null).toBeNull();
+      expect(done.undoUntil).not.toBeNull();
+      expect(wallet().balanceMinor).toBe(50_000);
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
+    });
+  });
+
+  describe("finding 26c: a new expense that repeats the debt's amount and a purpose word is not the debt's advance", () => {
+    it("records a plain Lunch expense with Undo and leaves Ana's debt alone", async () => {
+      const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+      await say("yes, for lunch into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+      const done = await say("Spent 500 on lunch with Ben in Wallet", "log_transaction", { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" }, first.conversationId);
+      expect(done.transaction).toMatchObject({ kind: "expense", amountMinor: 50_000, description: "Lunch" });
+      expect(done.transaction.debtId ?? null).toBeNull();
+      expect(done.undoUntil).not.toBeNull();
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
+    });
   });
 });
