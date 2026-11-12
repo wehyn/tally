@@ -4549,3 +4549,75 @@ describe("a reply the text rule is unsure about never writes a place the reading
     });
   });
 });
+
+// Review round 21. The question that names both choices (ambiguousHints) is asked in the middle of a flow that already saved
+// something, and its answer can come after a turn that only read the ledger. Each case below was a silent wrong write.
+describe("the question that names both choices keeps the flow it interrupts (round 21)", () => {
+  beforeEach(() => {
+    store.createAccount(user.id, { name: "Maya", type: "bank", openingMinor: 0 });
+    store.createAccount(user.id, { name: "BPI", type: "bank", openingMinor: 0 });
+  });
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    return (await POST(assistantRequest(prompt, conversationId))).json();
+  }
+
+  describe("finding 21a: a saved debt stays the debt when the question about its transaction asks both choices", () => {
+    const args = { counterparty: "Ana", direction: "owed_to_you", amount: "500", account: "Wallet", date: "2026-10-09", description: "food", category: "Food" };
+    async function askedAboutTransaction() {
+      const first = await say("Ana owes me 500 into Maya on 2026-10-05", "log_debt", args);
+      expect(first.debt).not.toBeNull();
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      const ask = await say("Actually add it to Transactions for the 500 food", "log_debt", args, first.conversationId);
+      expect(ask.answer).toMatch(/^Do you mean/);
+      expect(ask.transaction).toBeNull();
+      return { first, ask };
+    }
+
+    it("links the transaction to the debt it already saved instead of creating a second debt", async () => {
+      const { first } = await askedAboutTransaction();
+
+      const saved = await say("use Maya on 2026-10-05", "log_debt", args, first.conversationId);
+
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      expect(saved.transaction).toMatchObject({ accountName: "Maya", date: "2026-10-05", amountMinor: 50_000, debtId: first.debt.id });
+      expect(saved.debt).toMatchObject({ id: first.debt.id });
+    });
+
+    it("keeps the saved debt on the question itself, and through a turn that only reads the ledger", async () => {
+      const { first, ask } = await askedAboutTransaction();
+      expect(last(ask.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+
+      await say("how much did I spend this month?", "finance_question", { start: "2026-10-01", end: "2026-10-09" }, first.conversationId);
+      expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+
+      const saved = await say("use Maya on 2026-10-05", "log_debt", args, first.conversationId);
+
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      expect(saved.transaction).toMatchObject({ debtId: first.debt.id, accountName: "Maya" });
+    });
+
+    it("keeps the saved debt when its own account or date question is asked, not only the question naming both choices", async () => {
+      const first = await say("Ana owes me 500 into Maya on 2026-10-05", "log_debt", args);
+      const missing = await say("Add it to Transactions for the 500 food into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+      expect(missing.transaction).toBeNull();
+      expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+
+      const saved = await say("use Maya on 2026-10-05", "log_debt", args, first.conversationId);
+
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      expect(saved.transaction).toMatchObject({ debtId: first.debt.id });
+    });
+
+    it("saying cancel after that question drops it and leaves the one debt in Debts only", async () => {
+      const { first } = await askedAboutTransaction();
+
+      const cancelled = await say("cancel", "ask_clarification", { question: "ok" }, first.conversationId);
+
+      expect(cancelled.answer).toContain("The debt stays in Debts");
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+    });
+  });
+});

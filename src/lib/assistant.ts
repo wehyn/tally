@@ -842,10 +842,13 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const ordinaryIncomeAccepted = incomeTurn === "write";
     const ordinaryIncomeDeclined = incomeTurn === "decline";
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
+    // A question the debt branch asked while adding a saved debt to Transactions (its account, its date, the choice between two
+    // readings of the hints) stores that debt with it, so its answer goes on with the same debt instead of saving a second one.
+    const debtContinues = (lastFollowup === "account_or_date" || lastFollowup === "clarification") && recordedDebtId !== undefined;
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || debtQuestionNo;
-    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes);
+    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || debtQuestionYes || debtContinues);
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
     const currentDebtIntent = explicitNewDebtIntent(input.prompt);
     const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
@@ -885,6 +888,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       let modelWorded = false;
       // True when the turn only read the ledger, which a pending question survives.
       let answeredReadOnly = false;
+      // The saved debt an existing-debt flow is adding to Transactions, kept on any question that flow asks.
+      let debtInFlow: string | undefined;
       if (repaymentReportQuestion) {
         call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
       } else if (ordinaryIncomeFlow) {
@@ -932,7 +937,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         call = uncertainNewDebt
           ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
           : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
-      } else if (debtTransactionQuestion && (debtTransactionRequested || debtTransactionOptOut) && statedDebtIntent) {
+      } else if ((debtTransactionQuestion || debtContinues) && (debtTransactionRequested || debtTransactionOptOut) && statedDebtIntent) {
         const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
           && item.direction === statedDebtIntent.direction
           && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)
@@ -986,7 +991,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const dueDate = typeof call.args.dueDate === "string" ? call.args.dueDate.trim() || null : null;
         const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
         const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
-        const isExistingDebtFollowup = debtTransactionQuestion && !currentDebtIntent;
+        const isExistingDebtFollowup = (debtTransactionQuestion || debtContinues) && !currentDebtIntent;
         if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
         else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
         else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }
@@ -1003,6 +1008,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
             && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)
             && item.id === recordedDebtId) : [];
+          if (existingDebts.length === 1) debtInFlow = existingDebts[0].id;
           const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
           if (!amountMinor) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
           else if (isExistingDebtFollowup && existingDebts.length !== 1) {
@@ -1215,7 +1221,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const hint = confirmHint ?? cancelHint(lastFollowup, followup, modelWorded);
       if (hint) answer = `${answer} ${hint}`;
       const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
-      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined), undefined, bill?.id, answeredReadOnly && stored !== null);
+      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : followup !== null ? debtInFlow : undefined), undefined, bill?.id, answeredReadOnly && stored !== null);
       return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
     });
 }
