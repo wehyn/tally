@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, isQuietReply, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, isOrdinaryIncomeDecline, isQuietReply, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -62,6 +62,23 @@ describe("pending follow-up outcome", () => {
     it(`treats "${reply}" as an answer to every pending question`, () => {
       for (const pending of FOLLOWUP_KINDS) expect(pendingOutcome(pending, reply)).toBe("answer");
     });
+  }
+});
+
+describe("the ordinary income decline", () => {
+  const declines = ["no", "No", "NO.", "nope", "Nope!", "nah", "no thanks", "No thanks!", "no thank you", "No, thank you.", "  no   thanks  ", "hindi", "Hindi.", "ayoko", "Ayoko!"];
+  for (const reply of declines) {
+    it(`reads "${reply}" as a decline`, () => expect(isOrdinaryIncomeDecline(reply)).toBe(true));
+  }
+
+  // A message that only starts with a no word says more than no. "not now" defers instead of refusing, so it is
+  // not a decline either: the question is asked again with the way out.
+  const notDeclines = [
+    "No, use Wallet", "No, use Wallet. I still want to record it as income.", "no problem, yes record it", "not now", "no way", "Nope, but record it in Wallet",
+    "no, 500", "nobody paid", "nowhere", "hindi Food 500", "hindi po", "ayoko na", "yes", "yes, no", "", "   ", "!!!",
+  ];
+  for (const reply of notDeclines) {
+    it(`does not read "${reply}" as a decline`, () => expect(isOrdinaryIncomeDecline(reply)).toBe(false));
   }
 });
 

@@ -2728,6 +2728,44 @@ describe("assistant turn commit", () => {
     expect(store.listTransactions(user.id)).toHaveLength(0);
   });
 
+  it.each(["No", "nope.", "Nah", "No thanks!", "no thank you", "hindi", "Ayoko"])("declines the ordinary income question on the exact phrase %s", async (reply) => {
+    const conversationId = await askZedPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "income", category: "Other income" })));
+
+    const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(result.answer).toBe("Okay, I won't record the money.");
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBeNull();
+  });
+
+  it("records the income a user confirmed when a reply that starts with No corrects the account", async () => {
+    const conversationId = await askZedPaidMe();
+    const held = await (await POST(assistantRequest("yes, into my Nowhere account", conversationId))).json();
+    expect(held.transaction).toBeNull();
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("account_or_date");
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { kind: "income", amount: "500", category: "Other income", account: "Wallet" })));
+
+    const result = await (await POST(assistantRequest("No, use Wallet. I still want to record it as income.", conversationId))).json();
+
+    expect(result.answer).not.toMatch(/won't record the money/i);
+    expect(result.transaction).toMatchObject({ kind: "income", amountMinor: 50_000, accountName: "Wallet" });
+    expect(store.listAccounts(user.id).find((account) => account.name === "Wallet")!.balanceMinor).toBe(50_000);
+  });
+
+  it.each(["No, use Wallet", "no problem, yes record it", "not now", "Nope, but record it in Wallet", "no way"])("does not read %s as a decline: it asks again with the cancel hint and writes nothing", async (reply) => {
+    const conversationId = await askZedPaidMe();
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool("log_transaction", { amount: "500", kind: "income", category: "Other income", account: "Wallet" })));
+
+    const result = await (await POST(assistantRequest(reply, conversationId))).json();
+
+    expect(result.answer).toBe(incomeReask);
+    expect(result.transaction).toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    expect(store.getConversation(user.id, conversationId)!.messages.at(-1)!.followup).toBe("ordinary_income");
+  });
+
   it("treats cancel with no pending question as an ordinary prompt", async () => {
     const provider = vi.fn(async () => providerTool("ask_clarification", { question: "What would you like me to cancel?" }));
     vi.stubGlobal("fetch", provider);

@@ -42,10 +42,28 @@ const CANCEL_PHRASES: ReadonlySet<string> = new Set([
   "cancel", "never mind", "nevermind", "skip", "forget it", "stop", "ayoko na", "wag na", "huwag na", "di na",
 ]);
 
+// A whole message, trimmed, case-folded and stripped of punctuation, so a phrase set matches it exactly.
+function normalizedPhrase(prompt: string): string {
+  return prompt.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
 export function pendingOutcome(pending: FollowupKind | null, prompt: string): PendingOutcome {
   if (pending === null) return "none";
-  const phrase = prompt.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  return CANCEL_PHRASES.has(phrase) ? "cancel" : "answer";
+  return CANCEL_PHRASES.has(normalizedPhrase(prompt)) ? "cancel" : "answer";
+}
+
+// The one way to say no to the ordinary income question: a message that, normalized, is exactly one of these. A
+// message that only starts with "no" is not a decline, for the reason a cancel is an exact phrase. "No, use Wallet.
+// I still want to record it as income." corrects the account of income the user already confirmed, and reading its
+// first word as a refusal drops that confirmation. Anything longer is an ordinary answer, which continues the income
+// flow when it starts with yes or the user confirmed earlier, and otherwise asks again with the way out. "not now" is not here
+// either: it defers instead of refusing, so it asks again and the user can say cancel.
+const INCOME_DECLINE_PHRASES: ReadonlySet<string> = new Set([
+  "no", "nope", "nah", "no thanks", "no thank you", "hindi", "ayoko",
+]);
+
+export function isOrdinaryIncomeDecline(prompt: string): boolean {
+  return INCOME_DECLINE_PHRASES.has(normalizedPhrase(prompt));
 }
 
 // What a turn that asked no question did. "read" only read the ledger (the debt list, a finance answer),
