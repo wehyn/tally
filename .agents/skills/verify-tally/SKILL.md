@@ -22,7 +22,7 @@ Startup succeeds only after the owned supervisor, provider identity, health endp
 
 Run `node .agents/skills/verify-tally/scripts/verify.mjs doctor <RUN>`.
 
-The check validates the supervisor command through Linux `/proc`, checkout HEAD, provider run identity, app health, registration HTML, and SQLite integrity when the database exists. It writes `doctor.json`. It does not mutate the app database. It cannot establish live model availability because this instance uses a local stub.
+The check validates the supervisor command through Linux `/proc`, checkout HEAD, provider run identity, app health, registration HTML, and SQLite integrity when the database exists. Each HTTP request has a five-second timeout. It writes `doctor.json`. It does not mutate the app database. It cannot establish live model availability because this instance uses a local stub.
 
 ## Drive
 
@@ -50,10 +50,10 @@ The provider stub replaces only the production external HTTP boundary. This prov
 
 Always run `node .agents/skills/verify-tally/scripts/verify.mjs down <RUN>`, including after a failed drive. Run it twice to check repeatability.
 
-Cleanup checks process ownership before signalling the recorded process group, verifies both ports stop responding, and removes only `<RUN>/app` and `<RUN>/data`. It preserves proof files and writes `cleanup.json`. Confirm `result.json` and `trace.zip` still exist after cleanup. Startup failures also attempt cleanup. Never kill processes by name.
+Cleanup requires the `ownership.json` marker written by `up` and validates any supervisor manifest against the run and helper paths. It refuses unowned directories. Owned startup failures without a supervisor manifest can still have their scratch files removed. Cleanup checks process ownership before signalling the recorded process group, verifies both ports stop responding, and removes only `<RUN>/app` and `<RUN>/data`. It preserves proof files and writes `cleanup.json`. Confirm `result.json` and `trace.zip` still exist after cleanup. Startup failures also attempt cleanup. Never kill processes by name.
 
 ## Helpers
 
-The executable helper is `scripts/verify.mjs`. Commands are `up`, `doctor`, `drive`, and `down`. `serve` is an internal supervisor command. Run paths must be immediate children of the repository's ignored `.verification/` directory. No package script or production configuration change is required.
+The executable helper is `scripts/verify.mjs`. Commands are `up`, `doctor`, `drive`, and `down`. `serve` is an internal supervisor command. Run paths must be immediate children of the repository's ignored `.verification/` directory. The ESLint and TypeScript configurations exclude `.verification/` so checks do not scan the copied app or generated build files. No package script or runtime configuration change is required.
 
 Use `/maintain-verification-skill` when routes, selectors, setup, or behavior change. Update the feature map and statechart together, then execute the lifecycle again.

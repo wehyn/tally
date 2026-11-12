@@ -47,11 +47,11 @@ async function doctor() {
   const instance = load();
   assert(owned(instance), 'Owned verification supervisor is not alive');
   assert.equal(instance.head, execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), 'Checkout HEAD changed; start a fresh run');
-  const health = await fetch(`${instance.url}/api/health`).then(r => r.json());
+  const health = await fetch(`${instance.url}/api/health`, { signal: AbortSignal.timeout(5000) }).then(r => r.json());
   assert.equal(health.service, 'tally');
-  const register = await fetch(`${instance.url}/register`);
+  const register = await fetch(`${instance.url}/register`, { signal: AbortSignal.timeout(5000) });
   assert(register.ok && (await register.text()).includes('Create your account'), 'Registration page is not usable');
-  const provider = await fetch(`${instance.providerUrl}/health`).then(r => r.json());
+  const provider = await fetch(`${instance.providerUrl}/health`, { signal: AbortSignal.timeout(5000) }).then(r => r.json());
   assert.equal(provider.run, run, 'Provider belongs to another run');
   if (existsSync(path.join(run, 'data/tally.sqlite'))) {
     const db = new Database(path.join(run, 'data/tally.sqlite'), { readonly: true });
@@ -65,19 +65,21 @@ async function doctor() {
 async function up() {
   assert(!existsSync(run), 'Use a fresh run directory');
   mkdirSync(run, { recursive: true });
-  const app = path.join(run, 'app');
-  mkdirSync(app);
-  for (const item of ['src', 'public', 'package.json', 'package-lock.json', 'next.config.ts', 'tsconfig.json', 'next-env.d.ts', 'postcss.config.mjs']) {
-    if (existsSync(path.join(root, item))) cpSync(path.join(root, item), path.join(app, item), { recursive: true });
-  }
-  symlinkSync(path.join(root, 'node_modules'), path.join(app, 'node_modules'), 'dir');
-  const port = await freePort();
-  let providerPort = await freePort();
-  while (providerPort === port) providerPort = await freePort();
-  const log = openSync(path.join(run, 'server.log'), 'a');
-  const child = spawn(process.execPath, [script, 'serve', run, String(port), String(providerPort)], { cwd: root, detached: true, stdio: ['ignore', log, log] });
-  child.unref();
+  json('ownership.json', { root, run, script });
+  let child;
   try {
+    const app = path.join(run, 'app');
+    mkdirSync(app);
+    for (const item of ['src', 'public', 'package.json', 'package-lock.json', 'next.config.ts', 'tsconfig.json', 'next-env.d.ts', 'postcss.config.mjs']) {
+      if (existsSync(path.join(root, item))) cpSync(path.join(root, item), path.join(app, item), { recursive: true });
+    }
+    symlinkSync(path.join(root, 'node_modules'), path.join(app, 'node_modules'), 'dir');
+    const port = await freePort();
+    let providerPort = await freePort();
+    while (providerPort === port) providerPort = await freePort();
+    const log = openSync(path.join(run, 'server.log'), 'a');
+    child = spawn(process.execPath, [script, 'serve', run, String(port), String(providerPort)], { cwd: root, detached: true, stdio: ['ignore', log, log] });
+    child.unref();
     for (let attempt = 0; attempt < 120; attempt++) {
       if (existsSync(manifestPath)) {
         const instance = load();
@@ -88,8 +90,8 @@ async function up() {
     }
     throw new Error(`Startup timed out; inspect ${run}/server.log`);
   } catch (error) {
-    if (existsSync(manifestPath)) await down();
-    else { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
+    if (child && !existsSync(manifestPath)) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
+    await down();
     throw error;
   }
 }
@@ -113,7 +115,7 @@ async function serve() {
     } catch (error) { response.statusCode = 500; response.end(JSON.stringify({ error: error.message })); }
   });
   await new Promise(resolve => provider.listen(providerPort, '127.0.0.1', resolve));
-  const instance = { pid: process.pid, url: `http://127.0.0.1:${port}`, providerUrl: `http://127.0.0.1:${providerPort}`, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), startedAt: new Date().toISOString() };
+  const instance = { run, script, pid: process.pid, url: `http://127.0.0.1:${port}`, providerUrl: `http://127.0.0.1:${providerPort}`, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), startedAt: new Date().toISOString() };
   json('instance.json', instance);
   const env = { ...process.env, TALLY_DATA_DIR: path.join(run, 'data'), TALLY_DB_PATH: path.join(run, 'data/tally.sqlite'), TALLY_COOKIE_SECURE: 'false', SESSION_SECRET: 'isolated-verification-only-session-secret', CODEX_LB_BASE_URL: `${instance.providerUrl}/v1`, CODEX_LB_MODEL: 'verification-fixtures', CODEX_LB_API_KEY: 'local-stub-only', CODEX_LB_PRIVACY_DISCLOSURE: 'Local verification stub. Synthetic prompts and debt context are saved in this run directory. No external provider is contacted.' };
   let next;
@@ -176,6 +178,8 @@ async function drive() {
     actions.push('Created Wallet and three debts through the UI, including two Mom debts');
     await shot('01-debts-before');
     await page.goto(`${instance.url}/settings`);
+    await expect(page.locator('.disclosure')).toBeVisible();
+    await expect(page.locator('.disclosure')).toContainText('Local verification stub. Synthetic prompts and debt context are saved in this run directory. No external provider is contacted.');
     await page.getByRole('checkbox', { name: /I have read this disclosure/ }).check();
     await page.getByRole('switch', { name: 'Enable hosted assistant' }).click();
     await expect(page.getByRole('switch', { name: 'Enable hosted assistant' })).toHaveAttribute('aria-checked', 'true');
@@ -284,8 +288,12 @@ async function drive() {
   }
 }
 async function down() {
+  const ownership = JSON.parse(readFileSync(path.join(run, 'ownership.json'), 'utf8'));
+  assert.deepEqual(ownership, { root, run, script }, 'Refusing cleanup of an unowned run');
   if (existsSync(manifestPath)) {
     const instance = load();
+    assert.equal(instance.run, run, 'Manifest belongs to another run');
+    assert.equal(instance.script, script, 'Manifest belongs to another helper');
     if (owned(instance)) {
       process.kill(-instance.pid, 'SIGTERM');
       for (let i = 0; i < 40 && owned(instance); i++) await pause(100);
