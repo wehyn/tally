@@ -797,11 +797,15 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const answeringAmbiguity = isAmbiguousHintsQuestion(history.at(-1)?.content ?? "")
       ? { namesAccount: accountHintFromMessages([input.prompt], accounts).mentioned || incomeConfirmationAccount(input.prompt, accounts) !== undefined, namesDate: dateHintFromMessage(input.prompt, new Date(receivedAt)).mentioned }
       : null;
+    // "yes, Wallet" names its account with no cue word, so no hint reads it. The answer's account is the one every write uses,
+    // as the verdict above already counts it.
+    const answeredAccount = answeringAmbiguity ? incomeConfirmationAccount(input.prompt, accounts) : undefined;
     // The write's place under each reading. When they differ the write is not made: ask once, naming the earlier statement's
     // place, and store nothing (ambiguityVerdict).
     const placesOf = (args: Record<string, unknown>, providerTime: boolean, accountChoice?: Account) => {
-      const primary = writePlaceOf(hintMessages, args, accounts, { accountChoice, providerTime, now: nowTime });
-      const other = otherHintMessages ? writePlaceOf(otherHintMessages, args, accounts, { accountChoice, providerTime, now: nowTime }) : null;
+      const choice = accountChoice ?? answeredAccount;
+      const primary = writePlaceOf(hintMessages, args, accounts, { accountChoice: choice, providerTime, now: nowTime });
+      const other = otherHintMessages ? writePlaceOf(otherHintMessages, args, accounts, { accountChoice: choice, providerTime, now: nowTime }) : null;
       const earlier = other && otherCarriesEarlier ? other : primary;
       const question = (what: string) => other && ambiguityVerdict(placeKey(primary), placeKey(other), answeringAmbiguity) === "ask" ? ambiguousHintsQuestion(what, describePlace(earlier)) : null;
       return { place: primary, question };

@@ -4562,6 +4562,7 @@ describe("the question that names both choices keeps the flow it interrupts (rou
     vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
     return (await POST(assistantRequest(prompt, conversationId))).json();
   }
+  const expectAsked = (reply: { transaction: unknown; answer: string }, conversationId: string) => expectBothChoicesAsked(reply, last(conversationId).followup, last(conversationId).followup === "bill_account" ? "bill_account" : "account_or_date");
 
   describe("finding 21a: a saved debt stays the debt when the question about its transaction asks both choices", () => {
     const args = { counterparty: "Ana", direction: "owed_to_you", amount: "500", account: "Wallet", date: "2026-10-09", description: "food", category: "Food" };
@@ -4618,6 +4619,87 @@ describe("the question that names both choices keeps the flow it interrupts (rou
       expect(cancelled.answer).toContain("The debt stays in Debts");
       expect(store.listDebts(user.id)).toHaveLength(1);
       expect(store.listTransactions(user.id)).toHaveLength(0);
+    });
+  });
+  // The answer "yes, Wallet, today" names its account with no cue word. The write must use it in every path that can ask, as the
+  // verdict already counts it (ambiguityVerdict), or a write is made into the earlier statement's account the answer refused.
+  describe("finding 21b: the account an answer chooses is the account every write uses", () => {
+    const amountQuestion = { question: "What amount should I use for the coffee?" };
+    const wallet = (name: string) => store.listAccounts(user.id).find((account) => account.name === name)!.balanceMinor;
+    const rows = () => store.listTransactions(user.id).map(({ accountName, date, amountMinor }) => ({ accountName, date, amountMinor }));
+    const debtAmount = (id: string) => store.listDebts(user.id).find((debt) => debt.id === id)!.amountMinor;
+    const askedFirst = () => say("Log coffee into BPI on 2026-10-05 at 8pm", "ask_clarification", amountQuestion);
+
+    it("received repayment: Wallet, not the BPI of the coffee", async () => {
+      const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+      const first = await askedFirst();
+      const payment = { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" };
+      expectAsked(await say("Maya paid me 200", "record_debt_payment", payment, first.conversationId), first.conversationId);
+
+      const saved = await say("yes, Wallet, today", "record_debt_payment", payment, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Wallet", date: "2026-10-09", amountMinor: 20_000 });
+      expect(debtAmount(debt.id)).toBe(80_000);
+      expect({ wallet: wallet("Wallet"), bpi: wallet("BPI") }).toEqual({ wallet: 20_000, bpi: 0 });
+    });
+
+    it("paid repayment: Wallet, not the BPI of the coffee", async () => {
+      const debt = store.createDebt(user.id, { direction: "you_owe", counterparty: "Maya", amountMinor: 100_000 });
+      const first = await askedFirst();
+      const repayment = { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00", category: "Other" };
+      expectAsked(await say("I paid Maya 200", "record_debt_repayment", repayment, first.conversationId), first.conversationId);
+
+      const saved = await say("yes, Wallet, today", "record_debt_repayment", repayment, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09", amountMinor: 20_000 });
+      expect(debtAmount(debt.id)).toBe(80_000);
+    });
+
+    it("debt with its transaction: Wallet, not the BPI of the coffee", async () => {
+      const first = await askedFirst();
+      const debtArgs = { counterparty: "Ana", direction: "owed_to_you", amount: "500", account: "Wallet", date: "2026-10-09", description: "lunch", category: "Food" };
+      expectAsked(await say("Ana owes me 500, add it to Transactions for lunch", "log_debt", debtArgs, first.conversationId), first.conversationId);
+      expect(store.listDebts(user.id)).toHaveLength(0);
+
+      const saved = await say("yes, Wallet, today", "log_debt", debtArgs, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09", amountMinor: 50_000 });
+      expect(store.listDebts(user.id)).toHaveLength(1);
+    });
+
+    it("plain transaction: Wallet, not the BPI of the coffee", async () => {
+      const first = await askedFirst();
+      const salary = { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" };
+      expectAsked(await say("Make it salary 5000 instead", "log_transaction", salary, first.conversationId), first.conversationId);
+
+      const saved = await say("yes, Wallet, today", "log_transaction", salary, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09", amountMinor: 500_000 });
+      expect(rows()).toHaveLength(1);
+    });
+
+    it("income: Wallet, not the BPI of the coffee", async () => {
+      const first = await askedFirst();
+      const income = { kind: "income", amount: "500", category: "Other income", account: "Wallet", date: "2026-10-09" };
+      await say("Zed paid me 500", "record_debt_payment", { counterparty: "Zed", amount: "500" }, first.conversationId);
+      expectAsked(await say("yes", "log_transaction", income, first.conversationId), first.conversationId);
+
+      const saved = await say("yes, Wallet, today", "log_transaction", income, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", date: "2026-10-09", amountMinor: 50_000 });
+      expect(rows()).toHaveLength(1);
+    });
+
+    it("bill with its posted expense: Wallet, not the BPI of the bill", async () => {
+      store.createCategory(user.id, { name: "Bills", type: "expense" });
+      const bill = { name: "Internet", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-12-31", category: "Bills" };
+      const first = await say("I have a monthly Internet bill via BPI starting Oct 20 until Dec 31.", "create_bill", bill);
+      await say("Actually 549 pesos every month", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+      expect(last(first.conversationId)).toMatchObject({ followup: "bill_account" });
+
+      const saved = await say("yes, Wallet, the bill is 549", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+
+      expect(saved.bill).toMatchObject({ name: "Internet", accountName: "Wallet", amountMinor: 54_900 });
     });
   });
 });
