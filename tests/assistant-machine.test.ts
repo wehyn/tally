@@ -1192,3 +1192,31 @@ describe("askedOf", () => {
     expect(parseReplyData(JSON.stringify({ another: true, asks: "account" }))).toEqual({ another: true, asks: "account" });
   });
 });
+
+// Finding 27b: each question that names what it asks for is judged by its own vocabulary.
+describe("answerShaped, question by question", () => {
+  const context = { accountNames: ["Wallet", "Savings"], counterparty: "Ana", amountMinor: 50_000, statement: ["Ana owes me 500", "yes, for lunch"], categoryNames: ["Food", "Eating Out", "Salary"] };
+  const table: { asks: AnswerQuestion; yes: string[]; no: string[] }[] = [
+    { asks: "category", yes: ["Food", "food", "yes, Food", "Eating out", "yes, eating out", "Food, please", "Salary"],
+      no: ["Wallet", "lunch", "Sushi", "Food 500", "Record an expense under Food", "don't use Food", "Food and Wallet", "Use Food category", "Ben"] },
+    { asks: "description", yes: ["lunch", "Lunch with Ana", "yes, lunch", "team lunch at the mall", "lunch!", "one two three four five six", "Jollibee."],
+      no: ["one two three four five six seven", "lunch 500", "I don't want to record it", "don't record it", "never mind lunch", "cancel", "lunch. Use Wallet", "instead lunch", "", "500"] },
+    { asks: "account", yes: ["Wallet", "use Wallet", "yes, Wallet", "Wallet today", "use Nowhere account", "2026-10-08"], no: ["lunch groceries", "Food", "500 for groceries", "another", "that one"] },
+    { asks: "date", yes: ["2026-10-08", "yesterday", "Wallet on 2026-10-08", "today"], no: ["Food", "tomorrow groceries", "another"] },
+    { asks: "amount", yes: ["600", "₱600.00", "it's 30", "30 pesos", "1,200.50", "500"], no: ["thirty", "600 for groceries", "make it 30", "Food 600", "don't, 600"] },
+    { asks: "duplicate", yes: ["another", "that one", "the same one", "another one, Wallet"], no: ["Food", "Instead, record 500"] },
+    { asks: "ambiguity", yes: ["earlier, Wallet", "new one, Wallet, today", "the earlier one 2026-10-08"], no: ["Food", "lunch groceries"] },
+  ];
+  for (const { asks, yes, no } of table) {
+    for (const reply of yes) it(`${asks}: "${reply}" is an answer`, () => expect(answerShaped(reply, asks, context)).toBe(true));
+    for (const reply of no) it(`${asks}: "${reply}" is not an answer`, () => expect(answerShaped(reply, asks, context)).toBe(false));
+  }
+  it("a category question with no category names accepts nothing but filler", () => {
+    expect(answerShaped("Food", "category", { ...context, categoryNames: undefined })).toBe(false);
+    expect(answerShaped("yes", "category", { ...context, categoryNames: undefined })).toBe(true);
+  });
+  it("a question that stored nothing keeps the account, date and filler vocabulary", () => {
+    expect(answerShaped("use Wallet today", "detail", context)).toBe(true);
+    expect(answerShaped("Food", "detail", context)).toBe(false);
+  });
+});

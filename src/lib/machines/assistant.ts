@@ -366,7 +366,21 @@ export type AnswerContext = {
   amountMinor?: number;
   // The user messages of the debt flow so far (debtFlowStatement). Their words are filler, except the ones in NEVER_FILLER.
   statement: readonly string[];
+  // The names of the user's categories, which a category question's answer may be.
+  categoryNames?: readonly string[];
 };
+
+// The longest description a question that asks for one accepts, in words. The question says so.
+export const DESCRIPTION_WORD_CAP = 6;
+
+// The answer to a question that asks for a short description: a few plain words. No digit (an amount), no sentence break, no refusal or
+// reversal word and no more than DESCRIPTION_WORD_CAP words, so a refusal or a new statement is never a description.
+function isShortDescription(message: string): boolean {
+  const text = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").trim().replace(/[.!]+$/, "");
+  if (!text || /[\d.!?;:]/.test(text)) return false;
+  const tokens = answerTokens(text);
+  return tokens.length > 0 && tokens.length <= DESCRIPTION_WORD_CAP && !tokens.some((token) => NEVER_FILLER.has(token));
+}
 
 const ANSWER_FILLER: ReadonlySet<string> = new Set((
   "use using in into on to the my it please account accounts card default today tomorrow yesterday "
@@ -400,9 +414,14 @@ function answerTokens(text: string): string[] {
 
 export function answerShaped(message: string, question: AnswerQuestion, context: AnswerContext): boolean {
   let text = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/₱/g, " ");
+  // Each question has its own vocabulary. A description is free text, so it is a few plain words and nothing else.
+  if (question === "description") return isShortDescription(text.replace(/^(?:yes|yeah|yep|sure|ok|okay)\b[\s,]*/, ""));
+  // A category is one the user has. "yes, Food" is the same answer.
+  if (question === "category") return answerTokens(withoutAccountNames(text, context.categoryNames ?? [])).every((token) => ANSWER_FILLER.has(token));
   text = withoutDatesAndTimes(text).replace(WEEKDAY_DATES, " ");
   text = withoutAccountNames(text, context.accountNames).replace(UNKNOWN_ACCOUNT, " ");
-  if (context.amountMinor !== undefined) {
+  if (question === "amount") text = text.replace(AMOUNT_TOKEN, " ");
+  else if (context.amountMinor !== undefined) {
     text = text.replace(AMOUNT_TOKEN, (token, whole: string, fraction: string | undefined) =>
       Math.round(Number(`${whole.replace(/,/g, "")}.${fraction ?? "0"}`) * 100) === context.amountMinor ? " " : token);
   }

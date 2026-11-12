@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { duplicateCallData, isBillFollowup, type Asks, type FollowupKind, type ReplyData } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, SHORT_ANSWER_REPLY, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, statesNewStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, SHORT_ANSWER_REPLY, DESCRIPTION_WORD_CAP, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, statesNewStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -916,7 +916,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
     // Whether the current message is answer-shaped for the debt flow's question (answerShaped): the only thing that lets it use the
     // recorded yes or the saved debt's link. A refusal, a restart or a new expense is not one, however it is worded.
-    const answerContext = { accountNames: accounts.map((account) => account.name), counterparty: savedDebt?.counterparty, amountMinor: savedDebt?.amountMinor, statement: debtFlowStatement(run) };
+    const answerContext = { accountNames: accounts.map((account) => account.name), counterparty: savedDebt?.counterparty, amountMinor: savedDebt?.amountMinor, statement: debtFlowStatement(run), categoryNames: categories.map((category) => category.name) };
     // The question's own vocabulary: what it asks for (askedOf) decides which words count, the choice words included.
     const pendingAsks = askedOf(run);
     const debtAnswerShaped = debtFlowOpen && answerShaped(input.prompt, lastFollowup === "debt_transaction" ? "offer" : pendingAsks ?? "detail", answerContext);
@@ -1104,7 +1104,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
         else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }
         else if (!direction) { answer = "Is this money owed to you, or do you owe the other person?"; followup = "clarification"; }
-        else if (!amount && !isExistingDebtFollowup) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
+        else if (!amount && !isExistingDebtFollowup) { answer = "What amount should I use for this debt?"; followup = "clarification"; asks = "amount"; }
         else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; followup = "clarification"; }
         else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; followup = "clarification"; }
         else if (uncertainNewDebt) { answer = "I'm not sure whether this is a confirmed debt. Do you want me to record it?"; followup = "clarification"; }
@@ -1126,13 +1126,13 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             && item.id === (runDuplicate?.id ?? recordedDebtId)) : [];
           if (existingDebts.length === 1) debtInFlow = existingDebts[0].id;
           const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
-          if (!amountMinor) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
+          if (!amountMinor) { answer = "What amount should I use for this debt?"; followup = "clarification"; asks = "amount"; }
           else if (continuing && existingDebts.length !== 1) {
             answer = existingDebts.length ? "Which open debt should I add the transaction to?" : "I couldn't find that open debt. Which debt do you mean?";
             followup = "clarification";
           } else if (continuing && amount && amountMinor !== existingDebts[0].amountMinor) {
             answer = "That amount doesn't match the open debt in this conversation. Which debt should I use?";
-            followup = "clarification";
+            followup = "clarification"; asks = "amount";
           } else if (continuing && debtTransactionOptOut) {
             debt = existingDebts[0];
             answer = `Okay, ${debt.counterparty}'s debt stays in Debts only.`;
@@ -1163,16 +1163,23 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             const details = transactionDescription || note;
             const description = `${direction === "owed_to_you" ? "Owed by" : "Borrowed from"} ${counterparty}${details ? ` for ${details}` : ""}`;
 
-            if (!accounts.length) { answer = "Create a financial account first; then I can record this money movement."; followup = "account_or_date"; }
+            if (!accounts.length) { answer = "Create a financial account first; then I can record this money movement."; followup = "account_or_date"; asks = "account"; }
             else if (!account) {
               const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
               answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this money movement.";
-              followup = "account_or_date";
+              followup = "account_or_date"; asks = "account";
             }
-            else if (!date) { answer = "What date should I use? Please give it as YYYY-MM-DD."; followup = "account_or_date"; }
-            else if (!category && categoryHint.mentioned) { answer = `Which ${kind} category should I use? Choose one from your categories.`; followup = "clarification"; }
+            else if (!date) { answer = "What date should I use? Please give it as YYYY-MM-DD."; followup = "account_or_date"; asks = "date"; }
+            else if (!category && categoryHint.mentioned) {
+              // The question says what to reply with, so the answer is judged as a category and a rejected reply asks the same again.
+              answer = `Which ${kind} category should I use? Reply with just the category, for example ${(categories.find((item) => item.type === kind) ?? categories[0])?.name ?? "Food"}, or say cancel.`;
+              followup = "clarification"; asks = "category";
+            }
             else if (!category) { answer = `Create a ${kind} category before recording this money movement.`; followup = "clarification"; }
-            else if (description.length > 180) { answer = "Please shorten the transaction description to 180 characters or fewer."; followup = "clarification"; }
+            else if (description.length > 180) {
+              answer = `Please shorten the transaction description to 180 characters or fewer. Reply with just a short description (up to ${DESCRIPTION_WORD_CAP} words), or say cancel.`;
+              followup = "clarification"; asks = "description";
+            }
             else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; asks = "ambiguity"; }
             else {
               const transactionInput = { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant" as const };
@@ -1335,7 +1342,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const confirmHint = ordinaryIncomeAccepted && !wrote && (followup === "account_or_date" || followup === "clarification")
         ? incomeConfirmHint(followup, incomeEchoedAccount ?? (accounts.find((candidate) => candidate.isDefault) ?? accounts[0])?.name) : null;
       const hint = confirmHint ?? cancelHint(lastFollowup, followup, modelWorded);
-      if (hint) answer = `${answer} ${hint}`;
+      // A question that already says how to answer it and how to cancel needs no second hint.
+      if (hint && !answer.endsWith("or say cancel.")) answer = `${answer} ${hint}`;
       // A second debt the user chose on purpose and that still waits on an account or a date stays distinct from the first.
       if (keepsAnotherChoice({ chosen: anotherOpen, call: call.name, debtCreated: debt !== null, asks: followup !== null, debtOnQuestion: debtInFlow !== undefined })) replyData = { another: true };
       const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");

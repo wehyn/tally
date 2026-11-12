@@ -5763,4 +5763,52 @@ describe("an open debt flow is closed to messages that are not its answers (roun
       expect(second.debt.id).not.toBe(first.debt.id);
     });
   });
+  describe("finding 27b: the question names what it asks for, and its answer is judged by that", () => {
+    const customCategory = { ...args, category: "Custom" };
+    async function categoryQuestion() {
+      const first = await say("Ana owes me 500", "log_debt", args);
+      const asked = await say("yes, for a custom category", "log_debt", customCategory, first.conversationId);
+      expect(asked.answer).toContain("Which expense category");
+      expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+      expect(last(first.conversationId).data).toMatchObject({ asks: "category" });
+      return first;
+    }
+
+    it("the category question says what to reply with", async () => {
+      const first = await categoryQuestion();
+      expect(last(first.conversationId).content).toContain("Reply with just the category, for example Food, or say cancel.");
+    });
+    for (const reply of ["Food", "yes, Food", "food"]) {
+      it(`the category answer "${reply}" completes the debt's transaction`, async () => {
+        const first = await categoryQuestion();
+        const done = await say(reply, "log_debt", args, first.conversationId);
+        expect(done.transaction).toMatchObject({ categoryName: "Food", debtId: first.debt.id, amountMinor: 50_000 });
+        expect(store.listDebts(user.id)).toHaveLength(1);
+        expect(store.listTransactions(user.id)).toHaveLength(1);
+      });
+    }
+    it("a category answer that is no category of that kind asks again with the same vocabulary, and the next answer recovers", async () => {
+      const first = await categoryQuestion();
+      const again = await say("Salary", "log_debt", { ...args, category: "Salary" }, first.conversationId);
+      expect(again.transaction).toBeNull();
+      expect(again.answer).toContain("Which expense category");
+      expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+      expect(last(first.conversationId).data).toMatchObject({ asks: "category" });
+      const done = await say("yes, Food", "log_debt", args, first.conversationId);
+      expect(done.transaction).toMatchObject({ categoryName: "Food", debtId: first.debt.id });
+      expect(store.listDebts(user.id)).toHaveLength(1);
+    });
+
+    it("a request to shorten the description is answered by a short description", async () => {
+      const description = "a".repeat(180);
+      const first = await say(`Ana owes me 500 for ${description}`, "log_debt", { ...args, note: description, description });
+      const asked = await say("yes", "log_debt", { ...args, note: description, description }, first.conversationId);
+      expect(asked.answer).toContain("shorten");
+      expect(last(first.conversationId).data).toMatchObject({ asks: "description" });
+      expect(last(first.conversationId).content).toContain("Reply with just a short description");
+      const done = await say("lunch", "log_debt", { ...args, description: "lunch" }, first.conversationId);
+      expect(done.transaction).toMatchObject({ debtId: first.debt.id, description: "Owed by Ana for lunch" });
+      expect(store.listTransactions(user.id)).toHaveLength(1);
+    });
+  });
 });
