@@ -240,7 +240,7 @@ const DATES_AND_TIMES: RegExp[] = [
   new RegExp(`\\b(?:the\\s+)?\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:${MONTHS})\\b\\.?(?:,?\\s+\\d{4})?`, "gi"),
   /\b\d{1,3}\s+(?:day|days|week|weeks|month|months)\s+(?:ago|from\s+now)\b/gi,
   /\b(?:last|next|this|past)\s+\d{1,3}\s+(?:days?|weeks?|months?)\b/gi,
-  /\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?(?!\w)/gi,
+  /\b\d{1,2}(?::?\d{2})?\s*[ap]\.?m\.?(?!\w)/gi,
   /\b\d{1,2}:\d{2}\b/g,
   /\b(?:at|around|about|by|past|before|after|until|till)\s+\d{1,2}(?:\s*o'?clock)?\b/gi,
   /\b\d{1,2}\s*o'?clock\b/gi,
@@ -266,6 +266,25 @@ export function hasRestartWording(reply: string): boolean {
   return RESTART_LEAD.test(reply) || RESTART_TRAIL.test(reply);
 }
 
+// What a reply says once its dates and times are taken out, and, for the amount test, its account names too: an account
+// name may hold the digit ("BPI 2"), so a digit left after it is removed is a stated amount, while a word left before it is
+// removed is a purpose or a counterparty that happens to be named like an account ("Maya paid me 200").
+function withoutDatesAndTimes(reply: string): string {
+  let text = reply;
+  for (const pattern of DATES_AND_TIMES) text = text.replace(pattern, " ");
+  return text;
+}
+function withoutAccountNames(text: string, accountNames: readonly string[]): string {
+  for (const name of [...accountNames].sort((a, b) => b.length - a.length)) {
+    const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    if (escaped) text = text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu"), " ");
+  }
+  return text;
+}
+function purposeWordsIn(text: string): string[] {
+  return text.toLowerCase().replace(/[^\p{L}\s'’-]+/gu, " ").split(/\s+/).filter((word) => word.length > 1 && !FILLER_WORDS.has(word));
+}
+
 // The words of a reply that name a purpose or a counterparty, when the reply also holds an amount that is no date, no time
 // and no part of an account's name. Empty when it holds no amount or no such word, which is every answer to an account, a
 // date, a time, a payer, a yes or a bare amount. A reply that starts with an account or date command ("use", "choose",
@@ -273,14 +292,16 @@ export function hasRestartWording(reply: string): boolean {
 const ANSWER_COMMAND = /^\s*(?:use|using|choose|select|switch|change|set|make\s+it|put\s+it)\b/i;
 function statedPurposeWords(reply: string, accountNames: readonly string[]): string[] {
   if (ANSWER_COMMAND.test(reply)) return [];
-  let text = reply;
-  for (const name of [...accountNames].sort((a, b) => b.length - a.length)) {
-    const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-    if (escaped) text = text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu"), " ");
-  }
-  for (const pattern of DATES_AND_TIMES) text = text.replace(pattern, " ");
-  if (!/\d/.test(text)) return [];
-  return text.toLowerCase().replace(/[^\p{L}\s'’-]+/gu, " ").split(/\s+/).filter((word) => word.length > 1 && !FILLER_WORDS.has(word));
+  const text = withoutAccountNames(withoutDatesAndTimes(reply), accountNames);
+  return /\d/.test(text) ? purposeWordsIn(text) : [];
+}
+
+// The words that could make a reply a different transaction stated in full, read without the two exemptions above: an
+// account's name left in place (a payer or a purpose may be named like an account) and no command lead. Empty when the
+// reply states no amount of its own.
+function possiblePurposeWords(reply: string, accountNames: readonly string[]): string[] {
+  const dated = withoutDatesAndTimes(reply);
+  return /\d/.test(withoutAccountNames(dated, accountNames)) ? purposeWordsIn(dated) : [];
 }
 
 // Kinds whose reply may be a different transaction stated in full ("Log salary 5000" after "What amount?"): the question
@@ -288,31 +309,105 @@ function statedPurposeWords(reply: string, accountNames: readonly string[]): str
 // purpose or counterparty is not one. The other kinds always take the reply as their answer unless it carries restart wording.
 const MAY_RESTART_WITHOUT_WORDING: ReadonlySet<FollowupKind> = new Set(["clarification", "account_or_date", "ordinary_income", "repayment_amount"]);
 
+// What reading a reply under a pending question concluded. `starts` is the verdict, from the narrow text rule below.
+// `uncertain` says the reply is shaped like a restart even though the text rule cannot be trusted to read it: it states an
+// amount and a purpose or counterparty word and either carries restart wording, or comes under a kind that allows a
+// restart without wording with a word the statement did not name, and the rule's own exemptions (an account name that is
+// also a payer, a command lead) did not clear it. A reply that is pure answer by its kind ("use BPI 2", "Coffee 120" under
+// the coffee's clarification, "Actually 200", every reply under a bill or opt-in question without restart wording) is
+// never uncertain. The caller never trusts an uncertain verdict when it would change what the write says (ambiguousHints).
+export type StatementReading = { starts: boolean; uncertain: boolean };
+
 // Whether `reply`, sent while `pending` was asked about `statement` (the user messages of the statement so far), starts a
 // new statement. A restart states a complete transaction, an amount with a purpose or a counterparty, and either carries
 // the restart wording or comes under one of the kinds in MAY_RESTART_WITHOUT_WORDING with a purpose or a counterparty the
 // statement did not already name ("Coffee 120" under the coffee's amount question answers it, "Ben paid me 200" under
 // Zed's income question does not).
-export function startsNewStatement(pending: FollowupKind | null, reply: string, statement: readonly string[], accountNames: readonly string[]): boolean {
-  if (pending === null) return true;
-  const words = statedPurposeWords(reply, accountNames);
-  if (!words.length) return false;
-  if (hasRestartWording(reply)) return true;
-  if (!MAY_RESTART_WITHOUT_WORDING.has(pending)) return false;
+export function readStatementStart(pending: FollowupKind | null, reply: string, statement: readonly string[], accountNames: readonly string[]): StatementReading {
+  if (pending === null) return { starts: true, uncertain: false };
+  const restartWording = hasRestartWording(reply);
   const known = new Set(statement.join(" ").toLowerCase().replace(/[^\p{L}\s'’-]+/gu, " ").split(/\s+/));
-  return words.some((word) => !known.has(word));
+  const possible = possiblePurposeWords(reply, accountNames);
+  const mayRestart = !ANSWER_COMMAND.test(reply) || restartWording;
+  const uncertain = possible.length > 0 && mayRestart && (restartWording || MAY_RESTART_WITHOUT_WORDING.has(pending) && possible.some((word) => !known.has(word)));
+  const words = statedPurposeWords(reply, accountNames);
+  if (!words.length) return { starts: false, uncertain };
+  if (restartWording) return { starts: true, uncertain };
+  if (!MAY_RESTART_WITHOUT_WORDING.has(pending)) return { starts: false, uncertain };
+  return { starts: words.some((word) => !known.has(word)), uncertain };
 }
 
-// The user messages of the open run whose hints may apply to the write the current message is for. The result never
-// holds the current message, which the caller adds, and is empty when the current message starts its own statement.
-export function hintMessagesFor<T extends RunMessage & { content: string }>(run: readonly T[], current: string, accountNames: readonly string[] = []): T[] {
+export function startsNewStatement(pending: FollowupKind | null, reply: string, statement: readonly string[], accountNames: readonly string[]): boolean {
+  return readStatementStart(pending, reply, statement, accountNames).starts;
+}
+
+// The user messages of the open run whose hints may apply to the write the current message is for, and the other reading
+// of the same run when the text rule was uncertain about it. `primary` is the rule's own verdict at every message, quiet
+// turns left out, and never holds the current message, which the caller adds. It is empty when the current message starts
+// its own statement. `other` is the same walk with every uncertain verdict turned over, and is null when that gives the
+// same messages, so the write can have only one reading. Of the two, the longer one still carries the earlier statement.
+export type HintReadings<T> = { primary: T[]; other: T[] | null };
+
+export function hintReadingsFor<T extends RunMessage & { content: string }>(run: readonly T[], current: string, accountNames: readonly string[] = []): HintReadings<T> {
   const own = run.flatMap((message, index) => message.role === "user" && !(index + 1 < run.length && isQuietReply(run[index + 1]))
     ? [{ message, pending: index > 0 ? run[index - 1].followup ?? null : null }] : []);
   const statementEnd = (start: number, end: number) => own.slice(start, end).map(({ message }) => message.content);
-  let start = 0;
-  own.forEach(({ message, pending }, index) => { if (index > 0 && startsNewStatement(pending, message.content, statementEnd(start, index), accountNames)) start = index; });
-  if (startsNewStatement(run.at(-1)?.followup ?? null, current, statementEnd(start, own.length), accountNames)) return [];
-  return own.slice(start).map(({ message }) => message);
+  const walk = (turnOver: boolean): T[] => {
+    const starts = (pending: FollowupKind | null, reply: string, statement: readonly string[]) => {
+      const reading = readStatementStart(pending, reply, statement, accountNames);
+      return turnOver && reading.uncertain ? !reading.starts : reading.starts;
+    };
+    let start = 0;
+    own.forEach(({ message, pending }, index) => { if (index > 0 && starts(pending, message.content, statementEnd(start, index))) start = index; });
+    if (starts(run.at(-1)?.followup ?? null, current, statementEnd(start, own.length))) return [];
+    return own.slice(start).map(({ message }) => message);
+  };
+  const primary = walk(false);
+  const other = walk(true);
+  return { primary, other: other.length === primary.length ? null : other };
+}
+
+export function hintMessagesFor<T extends RunMessage & { content: string }>(run: readonly T[], current: string, accountNames: readonly string[] = []): T[] {
+  return hintReadingsFor(run, current, accountNames).primary;
+}
+
+// Where a write would put its money: the account, the date and the time, each as the write would store it. The reading of
+// the earlier statement's hints and the reading without them are compared before any write. When they put the money in
+// different places the text rule's verdict about the reply is not trusted: nothing is written and the user is asked, because
+// a wrong guess either way writes the wrong account, date or time silently. A write with a single reading, or two that
+// agree, is written as it is.
+export type WritePlace = { account: string; date: string; time: string };
+
+export function ambiguousHints(a: WritePlace, b: WritePlace): boolean {
+  return a.account !== b.account || a.date !== b.date || a.time !== b.time;
+}
+
+// What the turn does with two readings. "write": they agree, or the message answering the question that named both choices
+// states the account and the date on which they differ, so the user chose. "ask": anything else, including an answer that
+// says neither ("yes", "the first one"), which asks the same question again. After an answer the code's own reading (the
+// first) is written, the one the answer's account and date were read against. A time is never asked for, so a difference
+// in time alone is settled by any answer.
+export type AmbiguityAnswer = { namesAccount: boolean; namesDate: boolean };
+
+export function ambiguityVerdict(a: WritePlace, b: WritePlace, answer: AmbiguityAnswer | null): "write" | "ask" {
+  if (!ambiguousHints(a, b)) return "write";
+  if (!answer) return "ask";
+  return (a.account === b.account || answer.namesAccount) && (a.date === b.date || answer.namesDate) ? "write" : "ask";
+}
+
+// The one question that names both choices. `what` is the earlier statement's own wording ("coffee", "the payment from
+// Maya"), `earlier` is where its hints would put the money. It stores nothing and asks for the account and date, so the
+// answer is the next message, and says how to drop it.
+const AMBIGUOUS_OPENING = "Do you mean the earlier ";
+const AMBIGUOUS_CLOSING = ", or a new one? Reply with the account and date, or say cancel.";
+export function ambiguousHintsQuestion(what: string, earlier: string): string {
+  return `${AMBIGUOUS_OPENING}${what} in ${earlier}${AMBIGUOUS_CLOSING}`;
+}
+
+// Whether a stored assistant message is that question (its confirmation hint, if any, comes after it). The code wrote the
+// message, so its fixed wording says it.
+export function isAmbiguousHintsQuestion(content: string): boolean {
+  return content.startsWith(AMBIGUOUS_OPENING) && content.includes(AMBIGUOUS_CLOSING);
 }
 
 // Refusal wording ("Ana did not pay me", "maybe he paid") blocks a write nobody confirmed. The block is one decision

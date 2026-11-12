@@ -3993,6 +3993,14 @@ describe("assistant account named by a yes reply", () => {
   });
 });
 
+// A write whose hints would put the money in a different place under the other reading of the open run is not made: the turn
+// asks one question that names the earlier statement's place and stores nothing (ambiguousHints).
+function expectBothChoicesAsked(reply: { transaction: unknown; answer: string }, followup: string | null | undefined, kind = "account_or_date") {
+  expect(reply.transaction).toBeNull();
+  expect(reply.answer).toMatch(/^Do you mean the earlier .+, or a new one\? Reply with the account and date, or say cancel\./);
+  expect(followup).toBe(kind);
+}
+
 // A cue word, a date or a time said about one payment, debt, bill or transaction must not apply to a different one asked
 // later in the same open run (hintMessagesFor). The later write uses its own words, then the provider's field, the
 // default account and today. An answer to the pending question still belongs to the statement it answers.
@@ -4005,6 +4013,7 @@ describe("a hint applies to the statement it was said for", () => {
     return (await POST(assistantRequest(prompt, conversationId))).json();
   }
   const debtAmount = (id: string) => store.listDebts(user.id).find((debt) => debt.id === id)!.amountMinor;
+  const expectAsked = (reply: { transaction: unknown; answer: string }, conversationId: string) => expectBothChoicesAsked(reply, lastFollowup(conversationId));
 
   it("writes a later income into the default account when only an earlier payment named Maya", async () => {
     const first = await say("Zed paid me 500 into Maya", "record_debt_payment", { counterparty: "Zed", amount: "500", account: "Maya" });
@@ -4014,7 +4023,12 @@ describe("a hint applies to the statement it was said for", () => {
     expect(second.transaction).toBeNull();
     expect(lastFollowup(id)).toBe("ordinary_income");
 
-    const saved = await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
+    const asked = await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
+    expectAsked(asked, id);
+    expect(asked.answer).toContain("Maya");
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    const saved = await say("yes, Wallet", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
 
     expect(saved.transaction).toMatchObject({ kind: "income", amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
     expect({ wallet: balance("Wallet"), maya: balance("Maya") }).toEqual({ wallet: 20_000, maya: 0 });
@@ -4025,7 +4039,12 @@ describe("a hint applies to the statement it was said for", () => {
     const id = first.conversationId as string;
     await say("Actually Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
 
-    const saved = await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
+    expectAsked(await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id), id);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+    // An answer that names neither the account nor the date it means asks the same question again.
+    expectAsked(await say("yes, Wallet", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id), id);
+
+    const saved = await say("yes, Wallet, today", "log_transaction", { kind: "income", amount: "200", category: "Other income", account: "Wallet", date: "2026-10-09" }, id);
 
     expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
     expect(store.listTransactions(user.id)).toHaveLength(1);
@@ -4036,7 +4055,9 @@ describe("a hint applies to the statement it was said for", () => {
     const id = first.conversationId as string;
     await say("Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200", date: "2026-10-05" }, id);
 
-    const saved = await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", date: "2026-10-05" }, id);
+    expectAsked(await say("yes", "log_transaction", { kind: "income", amount: "200", category: "Other income", date: "2026-10-05" }, id), id);
+
+    const saved = await say("yes, Wallet, today", "log_transaction", { kind: "income", amount: "200", category: "Other income", date: "2026-10-05" }, id);
 
     expect(saved.transaction).toMatchObject({ amountMinor: 20_000, date: "2026-10-09" });
     expect(lastFollowup(id)).toBeNull();
@@ -4048,7 +4069,12 @@ describe("a hint applies to the statement it was said for", () => {
     const id = first.conversationId as string;
     expect(lastFollowup(id)).toBe("ordinary_income");
 
-    const saved = await say("Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
+    const asked = await say("Ben paid me 200", "record_debt_payment", { counterparty: "Ben", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
+    expectAsked(asked, id);
+    expect(debtAmount(ben.id)).toBe(100_000);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    const saved = await say("use Wallet on 2026-10-09", "record_debt_payment", { counterparty: "Ben", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
 
     expect(saved.transaction).toMatchObject({ kind: "debt_repayment", amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
     expect(debtAmount(ben.id)).toBe(80_000);
@@ -4061,7 +4087,10 @@ describe("a hint applies to the statement it was said for", () => {
     const id = first.conversationId as string;
     expect(lastFollowup(id)).toBe("repayment_amount");
 
-    const saved = await say("Ana paid me 200", "record_debt_payment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
+    expectAsked(await say("Ana paid me 200", "record_debt_payment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09" }, id), id);
+    expect(debtAmount(ana.id)).toBe(100_000);
+
+    const saved = await say("use Wallet on 2026-10-09", "record_debt_payment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09" }, id);
 
     expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09", time: "16:00" });
     expect(debtAmount(ana.id)).toBe(80_000);
@@ -4073,7 +4102,10 @@ describe("a hint applies to the statement it was said for", () => {
     const id = first.conversationId as string;
     expect(lastFollowup(id)).toBe("repayment_amount");
 
-    const saved = await say("I paid Ana 200", "record_debt_repayment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09", category: "Other" }, id);
+    expectAsked(await say("I paid Ana 200", "record_debt_repayment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09", category: "Other" }, id), id);
+    expect(debtAmount(ana.id)).toBe(100_000);
+
+    const saved = await say("use Wallet on 2026-10-09", "record_debt_repayment", { counterparty: "Ana", amount: "200", account: "Wallet", date: "2026-10-09", category: "Other" }, id);
 
     expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09", categoryName: "Other" });
     expect(debtAmount(ana.id)).toBe(80_000);
@@ -4085,7 +4117,10 @@ describe("a hint applies to the statement it was said for", () => {
     expect(first.debt).toBeNull();
     expect(lastFollowup(id)).toBe("clarification");
 
-    const saved = await say("Ben owes me 200 and add it to Transactions for food", "log_debt", { counterparty: "Ben", direction: "owed_to_you", amount: "200", account: "Wallet", date: "2026-10-09", description: "food" }, id);
+    expectAsked(await say("Ben owes me 200 and add it to Transactions for food", "log_debt", { counterparty: "Ben", direction: "owed_to_you", amount: "200", account: "Wallet", date: "2026-10-09", description: "food" }, id), id);
+    expect(store.listTransactions(user.id)).toHaveLength(0);
+
+    const saved = await say("use Wallet on 2026-10-09", "log_debt", { counterparty: "Ben", direction: "owed_to_you", amount: "200", account: "Wallet", date: "2026-10-09", description: "food" }, id);
 
     expect(saved.transaction).toMatchObject({ amountMinor: 20_000, accountName: "Wallet", date: "2026-10-09" });
     expect(balance("Maya")).toBe(0);
@@ -4108,7 +4143,13 @@ describe("a hint applies to the statement it was said for", () => {
     const id = first.conversationId as string;
     expect(lastFollowup(id)).toBe("repayment_amount");
 
-    const saved = await say("I have a Netflix bill for ₱549 under Entertainment. It is monthly, starts today, and ends December 15.", "create_bill", { name: "Netflix", amount: "549", frequency: "monthly", category: "Entertainment", firstDueDate: "2026-10-09", endDate: "2026-12-15" }, id);
+    const asked = await say("I have a Netflix bill for ₱549 under Entertainment. It is monthly, starts today, and ends December 15.", "create_bill", { name: "Netflix", amount: "549", frequency: "monthly", category: "Entertainment", firstDueDate: "2026-10-09", endDate: "2026-12-15" }, id);
+    expect(asked.bill).toBeNull();
+    expect(asked.answer).toMatch(/^Do you mean the earlier bill Netflix in Maya, or a new one\? Reply with the account and date, or say cancel\.$/);
+    expect(lastFollowup(id)).toBe("bill_account");
+    expect(store.listBills(user.id)).toHaveLength(0);
+
+    const saved = await say("use Wallet", "create_bill", { name: "Netflix", amount: "549", frequency: "monthly", category: "Entertainment", firstDueDate: "2026-10-09", endDate: "2026-12-15" }, id);
 
     expect(saved.bill).toMatchObject({ name: "Netflix", accountName: "Wallet" });
     expect(store.listTransactions(user.id).map((row) => row.accountName)).toEqual(["Wallet"]);
@@ -4177,6 +4218,7 @@ describe("a reply to a pending question keeps its statement's hints", () => {
     vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
     return (await POST(assistantRequest(prompt, conversationId))).json();
   }
+  const expectAsked = (reply: { transaction: unknown; answer: string }, conversationId: string) => expectBothChoicesAsked(reply, lastFollowup(conversationId));
   const rows = () => store.listTransactions(user.id).map(({ accountName, date, amountMinor }) => ({ accountName, date, amountMinor }));
   const debtAmount = (id: string) => store.listDebts(user.id).find((debt) => debt.id === id)!.amountMinor;
   const invalidAccountRepayment = async () => {
@@ -4278,7 +4320,10 @@ describe("a reply to a pending question keeps its statement's hints", () => {
     const id = first.conversationId as string;
     expect(lastFollowup(id)).toBe("clarification");
 
-    const saved = await say("Instead, log salary 5000", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id);
+    expectAsked(await say("Instead, log salary 5000", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id), id);
+    expect(rows()).toHaveLength(0);
+
+    const saved = await say("use Wallet on 2026-10-09", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id);
 
     expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", date: "2026-10-09", amountMinor: 500_000 });
     expect(rows()).toHaveLength(1);
@@ -4288,7 +4333,10 @@ describe("a reply to a pending question keeps its statement's hints", () => {
     const first = await say("Log coffee into Maya on 2026-10-05", "ask_clarification", { question: "What amount should I use for the coffee?" });
     const id = first.conversationId as string;
 
-    const saved = await say("Log salary 5000", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id);
+    expectAsked(await say("Log salary 5000", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id), id);
+    expect(rows()).toHaveLength(0);
+
+    const saved = await say("use Wallet on 2026-10-09", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, id);
 
     expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09" });
   });
@@ -4299,5 +4347,205 @@ describe("a reply to a pending question keeps its statement's hints", () => {
     const saved = await say("Coffee 120", "log_transaction", { kind: "expense", amount: "120", description: "coffee", account: "Wallet", date: "2026-10-09" }, first.conversationId);
 
     expect(saved.transaction).toMatchObject({ accountName: "Maya", date: "2026-10-05", amountMinor: 12_000 });
+  });
+});
+
+// The text rule that says whether a reply starts a new statement (startsNewStatement) is a guess, so a write is never made on
+// it when the guess would change where the money goes. When the reading that keeps the earlier statement's hints and the one
+// that drops them put the write in different accounts, dates or times, the turn asks one question and writes nothing
+// (ambiguousHints). Each case below says whether the right outcome is the write or the question, and why.
+describe("a reply the text rule is unsure about never writes a place the reading would change", () => {
+  beforeEach(() => {
+    store.createAccount(user.id, { name: "Maya", type: "bank", openingMinor: 0 });
+    store.createAccount(user.id, { name: "BPI", type: "bank", openingMinor: 0 });
+    store.createAccount(user.id, { name: "BPI 2", type: "bank", openingMinor: 0 });
+  });
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    return (await POST(assistantRequest(prompt, conversationId))).json();
+  }
+  const rows = () => store.listTransactions(user.id).map(({ accountName, date, time, amountMinor }) => ({ accountName, date, time, amountMinor }));
+  const amountQuestion = { question: "What amount should I use for the coffee?" };
+  const coffee = { kind: "expense", amount: "120", category: "Food", description: "coffee", account: "Wallet", date: "2026-10-09" };
+
+  // The two ways a restart can be read put the money in different places, so the turn asks and writes nothing.
+  it("finding 1: a payer named like an account does not inherit an unrelated transaction's account, date and time", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+    const first = await say("Log coffee into BPI on 2026-10-05 at 8pm", "ask_clarification", amountQuestion);
+    expect(last(first.conversationId).followup).toBe("clarification");
+
+    const asked = await say("Maya paid me 200", "record_debt_payment", { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" }, first.conversationId);
+
+    expectBothChoicesAsked(asked, last(first.conversationId).followup);
+    expect(asked.answer).toContain("BPI on Oct 5");
+    expect(rows()).toEqual([]);
+    expect(store.listDebts(user.id).find((row) => row.id === debt.id)?.amountMinor).toBe(100_000);
+  });
+
+  it("finding 1: the answer to that question decides, and a repayment is recorded once", async () => {
+    const debt = store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Maya", amountMinor: 100_000 });
+    const first = await say("Log coffee into BPI on 2026-10-05 at 8pm", "ask_clarification", amountQuestion);
+    await say("Maya paid me 200", "record_debt_payment", { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" }, first.conversationId);
+
+    // A reply that names neither account nor date leaves the question open.
+    const again = await say("a new one", "record_debt_payment", { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" }, first.conversationId);
+    expectBothChoicesAsked(again, last(first.conversationId).followup);
+    expect(rows()).toEqual([]);
+
+    const saved = await say("use Wallet on 2026-10-09", "record_debt_payment", { counterparty: "Maya", amount: "200", account: "Wallet", date: "2026-10-09", time: "16:00" }, first.conversationId);
+
+    expect(saved.transaction).toMatchObject({ kind: "debt_repayment", accountName: "Wallet", date: "2026-10-09" });
+    expect(store.listDebts(user.id).find((row) => row.id === debt.id)?.amountMinor).toBe(80_000);
+  });
+
+  it("finding 2: a command lead with restart wording does not save a new income into the earlier expense's account", async () => {
+    const first = await say("Log coffee 120 into Maya on 2026-02-31 at 8pm", "log_transaction", { ...coffee, account: "Maya", date: "2026-02-31" });
+    expect(first.transaction).toBeNull();
+    expect(last(first.conversationId).followup).toBe("account_or_date");
+
+    const asked = await say("Make it salary 5000 instead", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-09" }, first.conversationId);
+
+    expectBothChoicesAsked(asked, last(first.conversationId).followup);
+    expect(rows()).toEqual([]);
+  });
+
+  it("finding 3: the same transaction corrected with restart wording asks instead of losing its account, date and time", async () => {
+    const first = await say("Log coffee into Maya on 2026-10-05 at 8pm", "ask_clarification", amountQuestion);
+
+    const asked = await say("Actually coffee 120", "log_transaction", { ...coffee, date: "2026-10-05" }, first.conversationId);
+
+    expectBothChoicesAsked(asked, last(first.conversationId).followup);
+    expect(asked.answer).toContain("Coffee in Maya on Oct 5 at 20:00");
+    expect(rows()).toEqual([]);
+
+    // Saying the earlier place keeps that place.
+    const saved = await say("use Maya on 2026-10-05", "log_transaction", { ...coffee, date: "2026-10-05" }, first.conversationId);
+    expect(saved.transaction).toMatchObject({ accountName: "Maya", date: "2026-10-05", amountMinor: 12_000 });
+  });
+
+  it("finding 4: a compact pm time answers the amount question and is read as the time, so the write is exact", async () => {
+    const first = await say("Log coffee into Maya on 2026-10-05", "ask_clarification", amountQuestion);
+
+    await say("120 at 1130pm", "log_transaction", { ...coffee, date: "2026-10-05", time: "23:30" }, first.conversationId);
+
+    expect(rows()).toEqual([{ accountName: "Maya", date: "2026-10-05", time: "23:30", amountMinor: 12_000 }]);
+  });
+
+  describe("finding 5: a bill's detail answer with restart wording and an extra word", () => {
+    const bill = { name: "Internet", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-12-31", category: "Bills" };
+    for (const reply of ["Actually it is 549 monthly", "Actually 549 pesos every month", "Actually 549 for Netflix", "Actually 12 payments"]) {
+      it(`asks before saving the bill and its expense (${reply})`, async () => {
+        store.createCategory?.(user.id, { name: "Bills", type: "expense" });
+        const first = await say("I have a monthly Internet bill via BPI starting Oct 20 until Dec 31.", "create_bill", bill);
+        expect(first.bill).toBeNull();
+        expect(last(first.conversationId).followup).toBe("bill_amount");
+
+        const asked = await say(reply, "create_bill", { ...bill, amount: "549" }, first.conversationId);
+
+        expect(asked.bill).toBeNull();
+        expect(asked.answer).toMatch(/^Do you mean the earlier bill Internet in BPI, or a new one\? Reply with the account and date, or say cancel\./);
+        expect(last(first.conversationId).followup).toBe("bill_account");
+        expect(store.listBills(user.id)).toHaveLength(0);
+        expect(rows()).toEqual([]);
+
+        // The amount said in the unsure reply is not carried over, so the answer says it again with the account.
+        const saved = await say("use BPI, the bill is 549", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+        expect(saved.bill).toMatchObject({ name: "Internet", accountName: "BPI", amountMinor: 54_900 });
+      });
+    }
+  });
+
+  it("finding 5: a reply that restates the start date past the end date saves nothing and asks for the date, not the account", async () => {
+    const bill = { name: "Internet", frequency: "monthly", nextDueDate: "2026-10-20", endDate: "2026-12-31", category: "Bills" };
+    store.createCategory(user.id, { name: "Bills", type: "expense" });
+    const first = await say("I have a monthly Internet bill via BPI starting Oct 20 until Dec 31.", "create_bill", bill);
+
+    const reply = await say("Actually, 549, starts Jan 5", "create_bill", { ...bill, amount: "549" }, first.conversationId);
+
+    expect(reply.bill).toBeNull();
+    expect(store.listBills(user.id)).toHaveLength(0);
+    expect(rows()).toEqual([]);
+  });
+
+  describe("finding 6: a date, time or amount answer with a leftover digit and a word the rule does not know", () => {
+    // Each is shaped like a new statement to the text rule. The reading that drops BPI would write to the default Wallet, so
+    // the turn asks and writes nothing. "5.30pm" is the one the rule already takes for an answer (its "30pm" is removed as a
+    // time, and no word is left), so it keeps BPI and writes there.
+    const wallet = { ...coffee, account: "Wallet" };
+    const largeWallet = { ...coffee, amount: "500", account: "Wallet" };
+    for (const [reply, under, args, outcome] of [
+      ["12 noon", "account_or_date", wallet, "asks"],
+      ["Actually 12 noon", "account_or_date", wallet, "asks"],
+      ["3 hours ago", "account_or_date", wallet, "asks"],
+      ["10 days back", "account_or_date", wallet, "asks"],
+      ["3 in the afternoon", "account_or_date", wallet, "asks"],
+      ["5.30pm", "account_or_date", wallet, "writes into BPI"],
+      ["500 po", "clarification", largeWallet, "asks"],
+      ["500 lang", "clarification", largeWallet, "asks"],
+      ["500 bucks", "clarification", largeWallet, "asks"],
+    ] as const) {
+      it(`${reply} under ${under}: ${outcome}, never the default account`, async () => {
+        const first = under === "clarification"
+          ? await say("Log coffee into BPI", "ask_clarification", amountQuestion)
+          : await say("Log coffee 120 into BPI on 2026-02-31", "log_transaction", { ...coffee, account: "BPI", date: "2026-02-31" });
+        expect(last(first.conversationId).followup).toBe(under);
+
+        const answered = await say(reply, "log_transaction", args, first.conversationId);
+
+        expect(rows().filter((row) => row.accountName === "Wallet")).toEqual([]);
+        if (outcome === "asks") {
+          expectBothChoicesAsked(answered, last(first.conversationId).followup);
+          expect(rows()).toEqual([]);
+        } else {
+          expect(answered.transaction).toMatchObject({ accountName: "BPI" });
+        }
+      });
+    }
+    it("a word-and-digit amount answer asks nothing when the statement had no account, date or time to lose", async () => {
+      const first = await say("Log coffee", "ask_clarification", amountQuestion);
+
+      const saved = await say("500 bucks", "log_transaction", { ...coffee, amount: "500" }, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "Wallet", date: "2026-10-09", amountMinor: 50_000 });
+    });
+  });
+
+  describe("controls: nothing is asked when the reading cannot change the write", () => {
+    it("a restart that says the same account, date and time as the statement writes", async () => {
+      const first = await say("Log coffee into Maya on 2026-10-05", "ask_clarification", amountQuestion);
+
+      const saved = await say("Instead, log salary 5000 into Maya on 2026-10-05", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary", account: "Wallet", date: "2026-10-05" }, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Maya", date: "2026-10-05", amountMinor: 500_000 });
+    });
+
+    it("a restart when the statement said no account, date or time writes", async () => {
+      const first = await say("Log coffee", "ask_clarification", amountQuestion);
+
+      const saved = await say("Instead, log salary 5000", "log_transaction", { kind: "income", amount: "5000", category: "Salary", description: "Salary" }, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ kind: "income", accountName: "Wallet", date: "2026-10-09" });
+    });
+
+    it("an account answer with a digit keeps the statement's date and writes", async () => {
+      const first = await say("Log coffee 120 into Nowhere account on 2026-10-01", "log_transaction", { ...coffee, account: "Nowhere", date: "2026-10-01" });
+      expect(last(first.conversationId).followup).toBe("account_or_date");
+
+      const saved = await say("use BPI 2", "log_transaction", { ...coffee, account: "BPI 2", date: "2026-10-09" }, first.conversationId);
+
+      expect(saved.transaction).toMatchObject({ accountName: "BPI 2", date: "2026-10-01" });
+    });
+
+    it("saying cancel after the question drops it and writes nothing", async () => {
+      const first = await say("Log coffee into Maya on 2026-10-05 at 8pm", "ask_clarification", amountQuestion);
+      await say("Actually coffee 120", "log_transaction", { ...coffee, date: "2026-10-05" }, first.conversationId);
+
+      const cancelled = await say("cancel", "ask_clarification", { question: "ok" }, first.conversationId);
+
+      expect(cancelled.transaction).toBeNull();
+      expect(last(first.conversationId).followup).toBeNull();
+      expect(rows()).toEqual([]);
+    });
   });
 });

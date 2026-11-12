@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguousHintsQuestion, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -261,7 +261,7 @@ function isBillChoice(text: string, choice: "add" | "update"): boolean {
   return choice === "add" ? /\badd another\b/i.test(text) : /\bupdate (?:the )?(?:existing|current|existing one|one|bill)\b|\bupdate it\b/i.test(text);
 }
 function billScheduleDate(bill: Bill): string { return bill.nextDueDate; }
-type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?: string; followup: FollowupKind | null };
+type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?: string; followup: FollowupKind | null; ambiguous?: true };
 // When several details are missing at once, the reply is read for the most specific one that is still needed.
 function missingBillFollowup(missing: string[]): FollowupKind {
   const bothDatesMissing = missing.includes("the first due date") && missing.includes("an exact end date");
@@ -277,6 +277,7 @@ function missingBillFollowup(missing: string[]): FollowupKind {
 function handleAssistantBillAction(
   store: ReturnType<typeof getStore>, userId: string, action: "create_bill" | "update_bill", args: Record<string, unknown>,
   userMessages: string[], hintMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null,
+  otherReading: { hintMessages: string[]; carriesEarlier: boolean } | null = null,
 ): AssistantBillResult {
   const today = todayInManila();
   const duplicateFollowup = followup === "bill_duplicate" || followup === "bill_schedule";
@@ -352,6 +353,14 @@ function handleAssistantBillAction(
   const account = accountHint.mentioned ? accountHint.account
     : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
       : accounts.find((candidate) => candidate.isDefault);
+  // The account the bill (and the expense it posts when it is due today) would use under the other reading of the hints.
+  const accountUnder = (messages: string[]) => {
+    const hint = accountCorrection ? { account: accountCorrection, mentioned: true } : accountHintFromMessages(messages, accounts);
+    return hint.mentioned ? hint.account
+      : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
+        : accounts.find((candidate) => candidate.isDefault);
+  };
+  const otherAccount = otherReading && !ownDetailsOnly ? accountUnder(otherReading.hintMessages) : undefined;
   const categoryHint = latestCategoryHintFromMessages(hintDetailMessages, categories, "expense");
   const requestedCategory = typeof args.category === "string" ? findCategory(args.category, categories, "expense") : undefined;
   const inferredCategory = findCategoryInText(hintDetailMessages.join(" "), categories, "expense")
@@ -379,6 +388,11 @@ function handleAssistantBillAction(
   if (effectiveAction === "create_bill" && (amountMinor === undefined || !frequency || !firstDueDate || !endDate)) {
     const missingDetails = [amountMinor === undefined ? "amount" : "", !frequency ? "cadence" : "", !firstDueDate ? "first due date" : "", !endDate ? "exact end date" : ""].filter(Boolean);
     return { answer: `Please provide the ${missingDetails.join(", ")}.`, bill: null, followup: amountMinor === undefined ? "bill_amount" : !firstDueDate ? "bill_start_date" : !endDate ? "bill_end_date" : "bill_details" };
+  }
+
+  if (otherReading && !ownDetailsOnly && otherAccount?.id !== account?.id) {
+    const earlier = otherReading.carriesEarlier ? otherAccount : account;
+    return { answer: ambiguousHintsQuestion(`bill ${name}`, earlier?.name ?? "an account I could not find"), bill: null, followup: "bill_account", ambiguous: true };
   }
 
   const createInput: BillInput = {
@@ -688,6 +702,36 @@ function directDebtCapture(prompt: string): { name: string; args: Record<string,
 // readLastMessageId is the last message the turn saw when it read the pending question. A turn whose
 // conversation has moved on since (another request answered or cancelled that question) stores nothing.
 // receivedAt is stored as the user message's time, because a later follow-up reads relative dates ("today") from it.
+// Where one write would put its money under one reading of the hints: the account, the date and the time, as the write
+// stores them. Every path that stores a transaction (income, received and paid repayments, a debt with its transaction)
+// reads them here, once for the reading the code chose and once for the other reading, and compares them (ambiguityVerdict).
+type HintMessage = { content: string; createdAt?: string };
+type WritePlace = {
+  requestedAccount: string; accountHint: { account?: Account; mentioned: boolean; invalidName?: string };
+  account: Account | undefined; date: string; time: string; timed: boolean;
+};
+function writePlaceOf(hints: readonly HintMessage[], args: Record<string, unknown>, accounts: Account[], options: { accountChoice?: Account; providerTime: boolean; now: string }): WritePlace {
+  const hintText = hints.map((message) => message.content);
+  const requestedAccount = typeof args.account === "string" ? args.account.trim() : "";
+  const accountHint = options.accountChoice ? { account: options.accountChoice, mentioned: true } : accountHintFromMessages(hintText, accounts);
+  const defaultAccount = accounts.find((candidate) => candidate.isDefault);
+  const account = accountHint.mentioned
+    ? accountHint.account
+    : requestedAccount
+      ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
+      : defaultAccount;
+  const dateHint = priorDateHint([...hints]);
+  const requestedDate = typeof args.date === "string" ? args.date.trim() : "";
+  const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
+  const timeHint = timeHintFromMessages(hintText);
+  const requestedTime = options.providerTime && typeof args.time === "string" ? args.time.trim() : "";
+  const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : options.now;
+  return { requestedAccount, accountHint, account, date, time, timed: !!timeHint && isTime(timeHint) };
+}
+const placeKey = (place: WritePlace) => ({ account: place.account?.id ?? `?${place.accountHint.invalidName ?? place.requestedAccount}`, date: place.date, time: place.time });
+function describePlace(place: WritePlace): string {
+  return `${place.account?.name ?? "an account I could not find"} on ${place.date ? formatAssistantDate(place.date) : "a date I could not read"}${place.timed ? ` at ${place.time}` : ""}`;
+}
 function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, readLastMessageId: string | null, prompt: string, receivedAt: string, work: (conversationId: string) => T): T {
   return store.transaction(() => {
     assertAssistantAccess(store, userId);
@@ -735,11 +779,33 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // A hint that chooses a value reads only the statement this write is for, so a cue word or a date said about an earlier,
     // different payment, debt, bill or transaction of the same run never applies (hintMessagesFor). The payer, the amount,
     // the bill details and the guards keep reading the whole run.
-    const hintMessages = [
-      ...hintMessagesFor(run, input.prompt, accounts.map((account) => account.name)).map((message) => ({ content: message.content, createdAt: message.createdAt })),
+    // The text rule that decides which messages those are can be unsure about a reply (hintReadingsFor). `otherHintMessages` is
+    // the reading it did not choose, null when it would not change which messages apply, and every write compares where the
+    // two readings put the money before it writes (writePlaceOf, ambiguityVerdict).
+    const readings = hintReadingsFor(run, input.prompt, accounts.map((account) => account.name));
+    const withCurrent = (messages: readonly { content: string; createdAt?: string }[]) => [
+      ...messages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
       { content: input.prompt, createdAt: receivedAt },
     ];
+    const hintMessages = withCurrent(readings.primary);
+    const otherHintMessages = readings.other ? withCurrent(readings.other) : null;
     const hintText = hintMessages.map((message) => message.content);
+    // Which reading carries the earlier statement's hints: the longer list of messages.
+    const otherCarriesEarlier = !!readings.other && readings.other.length > readings.primary.length;
+    const nowTime = timeInManila();
+    // The message answering the question that named both choices states the account and the date it means.
+    const answeringAmbiguity = isAmbiguousHintsQuestion(history.at(-1)?.content ?? "")
+      ? { namesAccount: accountHintFromMessages([input.prompt], accounts).mentioned || incomeConfirmationAccount(input.prompt, accounts) !== undefined, namesDate: dateHintFromMessage(input.prompt, new Date(receivedAt)).mentioned }
+      : null;
+    // The write's place under each reading. When they differ the write is not made: ask once, naming the earlier statement's
+    // place, and store nothing (ambiguityVerdict).
+    const placesOf = (args: Record<string, unknown>, providerTime: boolean, accountChoice?: Account) => {
+      const primary = writePlaceOf(hintMessages, args, accounts, { accountChoice, providerTime, now: nowTime });
+      const other = otherHintMessages ? writePlaceOf(otherHintMessages, args, accounts, { accountChoice, providerTime, now: nowTime }) : null;
+      const earlier = other && otherCarriesEarlier ? other : primary;
+      const question = (what: string) => other && ambiguityVerdict(placeKey(primary), placeKey(other), answeringAmbiguity) === "ask" ? ambiguousHintsQuestion(what, describePlace(earlier)) : null;
+      return { place: primary, question };
+    };
     const guardMessageText = [...userMessagesFor("guard", run).map((message) => message.content), input.prompt];
     const requestedMetrics = requestedFinanceMetrics(input.prompt);
     const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
@@ -891,8 +957,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       }
       else if (refusal === "refuse") { answer = endedQuestionReply("refused", "", false); followup = null; }
       else if (call.name === "create_bill" || call.name === "update_bill") {
-        const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup);
-        answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup;
+        const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup,
+          otherHintMessages ? { hintMessages: otherHintMessages.map((message) => message.content), carriesEarlier: otherCarriesEarlier } : null);
+        answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup; modelWorded = !!result.ambiguous;
       }
       else if (call.name === "ask_clarification") {
         // A repayment with no amount yet expects the amount next, whatever wording the model used.
@@ -958,20 +1025,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             }
           } else {
             const userContext = hintText.join(" ");
-            const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-            const accountHint = accountHintFromMessages(hintText, accounts);
-            const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-            const account = accountHint.mentioned
-              ? accountHint.account
-              : requestedAccount
-                ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-                : defaultAccount;
-            const dateHint = priorDateHint(hintMessages);
-            const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-            const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-            const timeHint = timeHintFromMessages(hintText);
-            const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
-            const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
+            const { place, question: ambiguousQuestion } = placesOf(call.args, true);
+            const { requestedAccount, accountHint, account, date, time } = place;
+            const ambiguity = ambiguousQuestion(`debt with ${counterparty}`);
             const kind: "expense" | "income" = direction === "owed_to_you" ? "expense" : "income";
             const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, kind) : undefined;
             const categoryHint = latestCategoryHintFromMessages(hintText, categories, kind);
@@ -995,6 +1051,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             else if (!category && categoryHint.mentioned) { answer = `Which ${kind} category should I use? Choose one from your categories.`; followup = "clarification"; }
             else if (!category) { answer = `Create a ${kind} category before recording this money movement.`; followup = "clarification"; }
             else if (description.length > 180) { answer = "Please shorten the transaction description to 180 characters or fewer."; followup = "clarification"; }
+            else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; }
             else {
               const transactionInput = { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant" as const };
               const saved = isExistingDebtFollowup
@@ -1024,26 +1081,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             followup = "clarification";
           } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
           else {
-            const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-            const accountHint = accountHintFromMessages(hintText, accounts);
-            const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-            const account = accountHint.mentioned
-              ? accountHint.account
-              : requestedAccount
-                ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-                : defaultAccount;
-            const dateHint = priorDateHint(hintMessages);
-            const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-            const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-            const timeHint = timeHintFromMessages(hintText);
-            const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
-            const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
+            const { place, question: ambiguousQuestion } = placesOf(call.args, true);
+            const { requestedAccount, accountHint, account, date, time } = place;
+            const ambiguity = ambiguousQuestion(`payment from ${matchingDebt.counterparty}`);
             if (!account) {
               const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
               answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment.";
               followup = "account_or_date";
             }
             else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
+            else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; }
             else {
               const description = typeof call.args.description === "string" && call.args.description.trim()
                 ? call.args.description.trim().slice(0, 180)
@@ -1068,20 +1115,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           followup = "clarification";
         } else {
           const amountMinor = parsePHPToMinor(amount);
-          const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-          const accountHint = accountHintFromMessages(hintText, accounts);
-          const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-          const account = accountHint.mentioned
-            ? accountHint.account
-            : requestedAccount
-              ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-              : defaultAccount;
-          const dateHint = priorDateHint(hintMessages);
-          const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-          const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-          const timeHint = timeHintFromMessages(hintText);
-          const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
-          const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
+          const { place, question: ambiguousQuestion } = placesOf(call.args, true);
+          const { requestedAccount, accountHint, account, date, time } = place;
+          const ambiguity = ambiguousQuestion(`payment to ${repaymentDebt.counterparty}`);
           const categoryHint = latestCategoryHintFromMessages(hintText, categories, "expense");
           const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, "expense") : undefined;
           const category = categoryHint.mentioned ? categoryHint.category : requestedCategory ?? fallbackCategory("expense", categories);
@@ -1095,6 +1131,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
           else if (!category && (categoryHint.mentioned || typeof call.args.category === "string")) { answer = "Which expense category should I use? Choose one from your categories."; followup = "clarification"; }
           else if (!category) { answer = "Create an expense category before recording this repayment."; followup = "clarification"; }
+          else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; }
           else {
             const description = typeof call.args.description === "string" && call.args.description.trim()
               ? call.args.description.trim().slice(0, 180)
@@ -1115,7 +1152,6 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; followup = "account_or_date"; }
         else {
           const userContext = hintText.join(" ");
-          const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
           // An income write takes an account from the current reply only. When the reply names none and an earlier confirmation
           // of this income question chose one, it asks again instead of guessing that the choice still stands (incomeAccountChoice).
           const incomeChoice = ordinaryIncomeAccepted
@@ -1124,18 +1160,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
               incomeChainAccount(incomeChainAnswers(run, hasPaymentWording), (confirmation) => incomeConfirmationAccount(confirmation, accounts)))
             : { use: "none" as const };
           if (incomeChoice.use === "ask") incomeEchoedAccount = incomeChoice.earlier.name;
-          const accountHint = incomeChoice.use === "account" ? { account: incomeChoice.account, mentioned: true } : accountHintFromMessages(hintText, accounts);
-          const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-          const account = accountHint.mentioned
-            ? accountHint.account
-            : requestedAccount
-              ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-              : defaultAccount;
-          const dateHint = priorDateHint(hintMessages);
-          const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-          const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-          const timeHint = timeHintFromMessages(hintText);
-          const time = timeHint && isTime(timeHint) ? timeHint : timeInManila();
+          const { place, question: ambiguousQuestion } = placesOf(call.args, false, incomeChoice.use === "account" ? incomeChoice.account : undefined);
+          const { requestedAccount, accountHint, account, date, time } = place;
+          const ambiguity = ambiguousQuestion(description || "transaction");
           const explicitKind = ordinaryIncomeAccepted ? "income" : outgoingRepaymentIntent ? "expense" : explicitTransactionKind(userContext);
           const promptCategory = findCategoryInText(userContext, categories, explicitKind ?? kindHint ?? undefined);
           const promptCategoryAmbiguous = promptCategory === null;
@@ -1166,6 +1193,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             answer = categoryAmbiguous ? `${ambiguousCategory} appears under both income and expense. Which category type did you mean?` : "Which category should I use?";
             followup = "clarification";
           }
+          else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; }
           else {
             const amountMinor = parsePHPToMinor(amount);
             const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: resolvedCategory.id, date, time, source: "assistant" });

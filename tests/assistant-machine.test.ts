@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, ambiguityVerdict, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -557,4 +557,123 @@ describe("the user messages a hint may read", () => {
   for (const [name, turns, current, expected] of table) {
     it(`${name} -> ${expected.length ? expected.join(" | ") : "none"}`, () => expect(read(turns, current)).toEqual(expected));
   }
+});
+
+// The text rule is a guess, so the machine says when it is not sure (`uncertain`) and gives the other reading of the run
+// (hintReadingsFor). A write compares the two before it stores anything (ambiguousHints, ambiguityVerdict).
+describe("when the text rule is unsure whether a reply starts a new statement", () => {
+  const accounts = ["Wallet", "Maya", "BPI", "BPI 2"];
+  const read = (pending: FollowupKind | null, reply: string, statement: string[] = ["Log coffee into BPI on 2026-10-05 at 8pm"]) => readStatementStart(pending, reply, statement, accounts);
+
+  // [pending, reply, starts, uncertain]
+  const table: [FollowupKind | null, string, boolean, boolean][] = [
+    ["clarification", "Maya paid me 200", false, true], // a payer named like an account: the rule strips it and sees no purpose
+    ["account_or_date", "Make it salary 5000 instead", false, true], // a command lead with restart wording
+    ["clarification", "Actually coffee 120", true, true], // the same transaction, with restart wording
+    ["clarification", "Actually Ben paid me 200", true, true],
+    ["bill_amount", "Actually it is 549 monthly", true, true], // restart wording and an extra word under a bill question
+    ["bill_amount", "Actually 12 payments", true, true],
+    ["account_or_date", "12 noon", true, true], // a date or time answer with a word the rule does not know
+    ["account_or_date", "3 in the afternoon", true, true],
+    ["clarification", "500 bucks", true, true],
+    ["repayment_amount", "500 lang", true, true],
+    ["ordinary_income", "Ben paid me 200", true, true],
+    ["clarification", "Log salary 5000", true, true],
+    // Pure answers by their shape or by their kind are never unsure.
+    ["clarification", "Coffee 120", false, false],
+    ["clarification", "Actually 200", false, false],
+    ["clarification", "500", false, false],
+    ["account_or_date", "use BPI 2", false, false],
+    ["account_or_date", "use BPI", false, false],
+    ["account_or_date", "5 October", false, false],
+    ["account_or_date", "120 at 1130pm", false, false],
+    ["account_or_date", "5pm", false, false],
+    ["ordinary_income", "yes, Maya", false, false],
+    ["debt_transaction", "Add it to Transactions for the 500 lunch", false, false],
+    ["bill_amount", "I paid 549", false, false],
+    ["bill_amount", "I have a Netflix bill for 549", false, false],
+    ["repayment_payer", "Ben paid me 200", false, false],
+    [null, "Log salary 5000", true, false],
+  ];
+  for (const [pending, reply, starts, uncertain] of table) {
+    it(`${pending ?? "no question"}: "${reply}" -> starts ${starts}, ${uncertain ? "unsure" : "sure"}`, () => expect(read(pending, reply)).toEqual({ starts, uncertain }));
+  }
+
+  it("reads a compact time as a time, so no word is left over", () => {
+    expect(readStatementStart("account_or_date", "120 at 1130pm", ["Log coffee into Maya"], accounts)).toEqual({ starts: false, uncertain: false });
+    expect(startsNewStatement("account_or_date", "1130pm", ["Log coffee into Maya"], accounts)).toBe(false);
+  });
+
+  describe("the two readings of the run", () => {
+    const run = [
+      { role: "user" as const, content: "Log coffee into BPI on 2026-10-05 at 8pm", followup: null },
+      { role: "assistant" as const, content: "What amount?", followup: "clarification" as FollowupKind },
+    ];
+    it("an unsure reply has the reading that keeps the statement and the one that drops it", () => {
+      const readings = hintReadingsFor(run, "Maya paid me 200", accounts);
+      expect(readings.primary.map((message) => message.content)).toEqual(["Log coffee into BPI on 2026-10-05 at 8pm"]);
+      expect(readings.other).toEqual([]);
+    });
+    it("a restart the rule is unsure about has the other reading keep the statement", () => {
+      const readings = hintReadingsFor(run, "Actually coffee 120", accounts);
+      expect(readings.primary).toEqual([]);
+      expect(readings.other?.map((message) => message.content)).toEqual(["Log coffee into BPI on 2026-10-05 at 8pm"]);
+    });
+    it("a sure answer or a sure restart has a single reading", () => {
+      expect(hintReadingsFor(run, "Coffee 120", accounts).other).toBeNull();
+      expect(hintReadingsFor(run, "use BPI 2", accounts).other).toBeNull();
+      expect(hintReadingsFor([], "Maya paid me 200", accounts).other).toBeNull();
+    });
+    it("hintMessagesFor is the primary reading", () => {
+      expect(hintMessagesFor(run, "Actually coffee 120", accounts)).toEqual([]);
+    });
+    it("an unsure message earlier in the run is turned over as well", () => {
+      const longer = [
+        ...run,
+        { role: "user" as const, content: "Actually coffee 120", followup: "clarification" as FollowupKind },
+        { role: "assistant" as const, content: "Which account?", followup: "account_or_date" as FollowupKind },
+      ];
+      const readings = hintReadingsFor(longer, "use Maya", accounts);
+      expect(readings.primary.map((message) => message.content)).toEqual(["Actually coffee 120"]);
+      expect(readings.other?.map((message) => message.content)).toEqual(["Log coffee into BPI on 2026-10-05 at 8pm", "Actually coffee 120"]);
+    });
+  });
+});
+
+describe("where a write would put the money under two readings", () => {
+  const place = { account: "bpi", date: "2026-10-05", time: "20:00" };
+  const table: [string, Partial<typeof place>, boolean][] = [
+    ["the same place", {}, false],
+    ["another account", { account: "wallet" }, true],
+    ["another date", { date: "2026-10-09" }, true],
+    ["another time", { time: "16:00" }, true],
+    ["a missing date against a date", { date: "" }, true],
+  ];
+  for (const [name, change, expected] of table) it(`${name} -> ${expected ? "ambiguous" : "not ambiguous"}`, () => expect(ambiguousHints(place, { ...place, ...change })).toBe(expected));
+
+  const other = { account: "wallet", date: "2026-10-09", time: "16:00" };
+  const verdicts: [string, { namesAccount: boolean; namesDate: boolean } | null, "write" | "ask"][] = [
+    ["no question was answered", null, "ask"],
+    ["the answer names neither", { namesAccount: false, namesDate: false }, "ask"],
+    ["the answer names only the account", { namesAccount: true, namesDate: false }, "ask"],
+    ["the answer names only the date", { namesAccount: false, namesDate: true }, "ask"],
+    ["the answer names both", { namesAccount: true, namesDate: true }, "write"],
+  ];
+  for (const [name, answer, expected] of verdicts) it(`readings differ in account and date, ${name} -> ${expected}`, () => expect(ambiguityVerdict(place, other, answer)).toBe(expected));
+  it("readings that agree are written, answered or not", () => {
+    expect(ambiguityVerdict(place, place, null)).toBe("write");
+    expect(ambiguityVerdict(place, place, { namesAccount: false, namesDate: false })).toBe("write");
+  });
+  it("a difference in time alone is settled by any answer, and a difference in account needs only the account", () => {
+    expect(ambiguityVerdict(place, { ...place, time: "16:00" }, { namesAccount: false, namesDate: false })).toBe("write");
+    expect(ambiguityVerdict(place, { ...place, account: "wallet" }, { namesAccount: true, namesDate: false })).toBe("write");
+  });
+
+  it("names the earlier statement and the way out, and is recognized when it comes back stored", () => {
+    const question = ambiguousHintsQuestion("coffee", "BPI on Oct 5 at 20:00");
+    expect(question).toBe("Do you mean the earlier coffee in BPI on Oct 5 at 20:00, or a new one? Reply with the account and date, or say cancel.");
+    expect(isAmbiguousHintsQuestion(question)).toBe(true);
+    expect(isAmbiguousHintsQuestion(`${question} Reply with yes and the account, like "yes, BPI", or say cancel.`)).toBe(true);
+    expect(isAmbiguousHintsQuestion("What amount should I use?")).toBe(false);
+  });
 });
