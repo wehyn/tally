@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, isOrdinaryIncomeDecline, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
+import { REFUSED_AGAIN_REPLY, cancelHint, cancelReply, endedQuestionReply, expiredReply, followupAfterTurn, incomeConfirmed, isOrdinaryIncomeDecline, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -746,8 +746,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content));
     const ordinaryIncomeFlow = !hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt)
       && (ordinaryIncomeConfirmedInHistory || ordinaryIncomeQuestionPending);
-    const ordinaryIncomeAccepted = ordinaryIncomeConfirmedInHistory || (ordinaryIncomeQuestionPending
-      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt));
+    const ordinaryIncomeAccepted = incomeConfirmed({
+      startsWithYes: /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt),
+      questionPending: ordinaryIncomeQuestionPending, heldYes: ordinaryIncomeConfirmedInHistory, prompt: input.prompt,
+    });
+    // An earlier yes that a leading negative word in this message vetoed: nothing is written and the question is asked again.
+    const ordinaryIncomeHeldYesVetoed = ordinaryIncomeFlow && ordinaryIncomeConfirmedInHistory && !ordinaryIncomeAccepted;
     const ordinaryIncomeDeclined = ordinaryIncomeFlow && isOrdinaryIncomeDecline(input.prompt);
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
     const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
@@ -1143,7 +1147,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const refusedTurn = refusal === "refuse" || refusal === "endQuestion";
       if (refusal === "endQuestion") { answer = endedQuestionReply("refused", answer, wrote); followup = null; }
       else if (ordinaryIncomeDeclined && refusal === "proceed") { answer = endedQuestionReply("declined", answer, wrote); followup = null; }
-      const hint = cancelHint(lastFollowup, followup, modelWorded);
+      const hint = cancelHint(lastFollowup, followup, modelWorded, ordinaryIncomeHeldYesVetoed);
       if (hint) answer = `${answer} ${hint}`;
       const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
       store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : undefined), undefined, bill?.id, answeredReadOnly && stored !== null);

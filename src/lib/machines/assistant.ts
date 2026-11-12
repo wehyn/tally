@@ -53,17 +53,40 @@ export function pendingOutcome(pending: FollowupKind | null, prompt: string): Pe
 }
 
 // The one way to say no to the ordinary income question: a message that, normalized, is exactly one of these. A
-// message that only starts with "no" is not a decline, for the reason a cancel is an exact phrase. "No, use Wallet.
-// I still want to record it as income." corrects the account of income the user already confirmed, and reading its
-// first word as a refusal drops that confirmation. Anything longer is an ordinary answer, which continues the income
-// flow when it starts with yes or the user confirmed earlier, and otherwise asks again with the way out. "not now" is not here
-// either: it defers instead of refusing, so it asks again and the user can say cancel.
+// message that only starts with "no" is not a decline, for the reason a cancel is an exact phrase: guessing a refusal
+// from free text drops what the user said. Anything longer is an ordinary answer: it continues the income flow when it
+// starts with yes, or when an earlier turn held a yes and the message does not lead with a negative word
+// (vetoesHeldIncomeYes), and otherwise asks again with the way out. "not now" is not here either: it defers instead of
+// refusing, so it asks again and the user can say cancel.
 const INCOME_DECLINE_PHRASES: ReadonlySet<string> = new Set([
   "no", "nope", "nah", "no thanks", "no thank you", "hindi", "ayoko",
 ]);
 
 export function isOrdinaryIncomeDecline(prompt: string): boolean {
   return INCOME_DECLINE_PHRASES.has(normalizedPhrase(prompt));
+}
+
+// The words that lead a refusal. The recognizer is deliberately the first word of the normalized message, so "No,
+// don't record it", "no, I changed my mind" and "No, never mind" lead with one, while "not now", "nothing wrong,
+// yes record it", "nowhere" and a plain "Wallet" do not.
+const LEADING_NEGATIVE_WORDS: ReadonlySet<string> = new Set(["no", "nope", "nah", "hindi", "ayoko"]);
+
+// A yes held from an earlier turn (the user said yes and the reply asked for an account or a date) may authorize the
+// income write only while the message answering that question does not lead with a negative word. This is a veto and
+// never a decline: it never drops the question or says nothing was recorded, it only stops the earlier yes from
+// being reused, so the turn writes nothing and asks again. A message that is exactly a decline is handled before this.
+// The cost is that "No, use Wallet. I still want to record it as income." asks once more, which is the safe direction.
+export function vetoesHeldIncomeYes(prompt: string): boolean {
+  const first = normalizedPhrase(prompt).split(" ")[0];
+  return LEADING_NEGATIVE_WORDS.has(first);
+}
+
+// May the ordinary income question be answered yes this turn? A message that itself starts with yes, while the
+// question is the pending one, says yes. Otherwise only a yes held from an earlier turn counts, and a leading
+// negative word vetoes it.
+export function incomeConfirmed(input: { startsWithYes: boolean; questionPending: boolean; heldYes: boolean; prompt: string }): boolean {
+  if (input.questionPending && input.startsWithYes) return true;
+  return input.heldYes && !vetoesHeldIncomeYes(input.prompt);
 }
 
 // What a turn that asked no question did. "read" only read the ledger (the debt list, a finance answer),
@@ -218,10 +241,13 @@ export function runSaved(messages: readonly { role: "user" | "assistant"; follow
 // neither does a question the model worded itself, whatever kind it is stored under (during a repayment with
 // no amount yet the model's own question is stored as the amount question), or the offer to add a debt to
 // Transactions. The hint names what to reply to the code's own question, so it would be wrong under another.
+// The income question asked again because a leading negative word vetoed an earlier yes is a plain re-ask whatever
+// question was pending (heldYesVetoed), so it carries the hint too.
 const LINKED_QUESTIONS: ReadonlySet<FollowupKind> = new Set<FollowupKind>(["repayment_amount", "repayment_payer", "ordinary_income"]);
 
-export function cancelHint(pending: FollowupKind | null, asked: FollowupKind | null, modelWorded = false): string | null {
+export function cancelHint(pending: FollowupKind | null, asked: FollowupKind | null, modelWorded = false, heldYesVetoed = false): string | null {
   if (modelWorded || pending === null || asked === null || asked === "clarification" || asked === "debt_transaction") return null;
+  if (heldYesVetoed && asked === "ordinary_income") return "Or say cancel to drop this.";
   if (pending !== asked && !(LINKED_QUESTIONS.has(pending) && LINKED_QUESTIONS.has(asked))) return null;
   if (asked === "repayment_amount") return "Reply with the amount, or say cancel to drop this.";
   if (asked === "repayment_payer") return "Reply with the person's name, or say cancel to drop this.";

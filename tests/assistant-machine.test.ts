@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, isOrdinaryIncomeDecline, isQuietReply, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, incomeConfirmed, isOrdinaryIncomeDecline, isQuietReply, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, vetoesHeldIncomeYes, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -80,6 +80,42 @@ describe("the ordinary income decline", () => {
   for (const reply of notDeclines) {
     it(`does not read "${reply}" as a decline`, () => expect(isOrdinaryIncomeDecline(reply)).toBe(false));
   }
+});
+
+// A yes held from an earlier turn may authorize the income write only while the current message does not lead with a
+// negative word. The veto is not a decline: an exact decline is read first, and this only stops the held yes.
+describe("the veto on an earlier held yes for ordinary income", () => {
+  const vetoes = [
+    "No, don't record this in Wallet or anywhere else.", "No, don't record it", "no, I changed my mind", "No, never mind", "No, use Wallet. I still want to record it as income.",
+    "no", "No.", "Nope, Wallet", "nah", "Hindi, Wallet", "hindi po", "Ayoko, Wallet", "  NO   thanks", "no-one paid me",
+  ];
+  for (const reply of vetoes) {
+    it(`vetoes the held yes for "${reply}"`, () => expect(vetoesHeldIncomeYes(reply)).toBe(true));
+  }
+  const keeps = ["not now", "nothing wrong, yes record it", "nowhere", "Wallet", "yes, use Wallet", "yes, no", "Notebook account", "never mind the date, Wallet", "Honestly no", "", "   ", "!!!"];
+  for (const reply of keeps) {
+    it(`does not veto the held yes for "${reply}"`, () => expect(vetoesHeldIncomeYes(reply)).toBe(false));
+  }
+
+  it("lets a held yes stand for any message that does not lead with a negative word", () => {
+    expect(incomeConfirmed({ startsWithYes: false, questionPending: false, heldYes: true, prompt: "Wallet" })).toBe(true);
+    expect(incomeConfirmed({ startsWithYes: true, questionPending: false, heldYes: true, prompt: "yes, use Wallet" })).toBe(true);
+    expect(incomeConfirmed({ startsWithYes: false, questionPending: false, heldYes: true, prompt: "No, don't record it" })).toBe(false);
+  });
+  it("never confirms without a yes: the veto only removes confirmations", () => {
+    expect(incomeConfirmed({ startsWithYes: false, questionPending: true, heldYes: false, prompt: "Wallet" })).toBe(false);
+    expect(incomeConfirmed({ startsWithYes: false, questionPending: false, heldYes: false, prompt: "Wallet" })).toBe(false);
+    expect(incomeConfirmed({ startsWithYes: true, questionPending: false, heldYes: false, prompt: "yes" })).toBe(false);
+  });
+  it("lets a message that starts with yes answer the pending income question", () => {
+    expect(incomeConfirmed({ startsWithYes: true, questionPending: true, heldYes: false, prompt: "yes" })).toBe(true);
+  });
+  it("adds the cancel hint to the income question asked again after a veto, whatever question was pending", () => {
+    for (const pending of FOLLOWUP_KINDS) expect(cancelHint(pending, "ordinary_income", false, true)).toBe("Or say cancel to drop this.");
+    expect(cancelHint(null, "ordinary_income", false, true)).toBeNull();
+    expect(cancelHint("account_or_date", "ordinary_income")).toBeNull();
+    expect(cancelHint("account_or_date", "ordinary_income", true, true)).toBeNull();
+  });
 });
 
 // Replaces the capOpenRun tests, which pinned a trim of the middle of a long run. No run is trimmed any more.
