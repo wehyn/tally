@@ -27,7 +27,16 @@ export type FollowupKind = (typeof FOLLOWUP_KINDS)[number];
 // this reply asks is still about that second debt, so a duplicate of the first is not a duplicate any more. `duplicateCall`: the
 // debt write the duplicate question asked about (its note, due date, purpose, account and the rest), so "another" adds that debt and
 // not a bare one rebuilt from the saved debt.
-export type ReplyData = { another?: true; duplicateCall?: Record<string, string | number | boolean> };
+// `asks`: WHAT the question this reply asks is waiting for, so the answer is judged by that question's vocabulary and not by one
+// list for every question (a category name, a short description, an account, a date, an amount, or the choice a duplicate, an
+// ambiguity or a separate entry offers). A row without it is read as before.
+export const ASKS = ["category", "description", "account", "date", "amount", "duplicate", "ambiguity", "separate"] as const;
+export type Asks = (typeof ASKS)[number];
+export type ReplyData = { another?: true; duplicateCall?: Record<string, string | number | boolean>; asks?: Asks };
+
+export function isAsks(value: unknown): value is Asks {
+  return typeof value === "string" && (ASKS as readonly string[]).includes(value);
+}
 
 const DUPLICATE_CALL_KEYS = ["direction", "counterparty", "amount", "note", "dueDate", "description", "category", "account", "date", "time", "recordTransaction"] as const;
 
@@ -53,7 +62,9 @@ export function parseReplyData(raw: unknown): ReplyData | null {
     if ((parsed as { another?: unknown }).another === true) data.another = true;
     const call = (parsed as { duplicateCall?: unknown }).duplicateCall;
     if (call && typeof call === "object" && !Array.isArray(call)) data.duplicateCall = duplicateCallData(call as Record<string, unknown>);
-    return data.another || data.duplicateCall ? data : null;
+    const asks = (parsed as { asks?: unknown }).asks;
+    if (isAsks(asks)) data.asks = asks;
+    return data.another || data.duplicateCall || data.asks ? data : null;
   } catch {
     return null;
   }

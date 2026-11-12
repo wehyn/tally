@@ -1,7 +1,7 @@
 // Pure rules for one Ask Tally conversation turn. assistant.ts and store.ts ask this module for
 // each decision and persist the answer; they never re-derive these rules inline.
 
-import { isBillFollowup, type FollowupKind, type ReplyData } from "../assistant-followup";
+import { isBillFollowup, type Asks, type FollowupKind, type ReplyData } from "../assistant-followup";
 import { normalizeCounterparty } from "../counterparty";
 
 // An assistant-saved transaction can be undone for this long after it is saved.
@@ -355,7 +355,10 @@ export function startsNewStatement(pending: FollowupKind | null, reply: string, 
 // The offer to add the debt to Transactions also asks what the money was for, so its answer may carry a short purpose after "for"
 // or "it was" (up to three words, none of them a refusal or a verb). Anything else, a verb phrase or a word the flow never used, is not an answer: it carries no
 // consent and no link, and is handled as its own statement or asked again (statesNewStatement, SHORT_ANSWER_REPLY).
-export type AnswerQuestion = "offer" | "detail";
+// `question` is what the pending question asks for: "offer" (the Transactions offer), an `Asks` the question stored, or "detail" for
+// a question that stored none (an old row, the model's own question), which keeps the account, date and filler vocabulary.
+// The choice words (another, that one, earlier, new one, the same one) are answers only to a question that offers the choice.
+export type AnswerQuestion = "offer" | "detail" | Asks;
 export type AnswerContext = {
   accountNames: readonly string[];
   // The saved debt's own counterparty and amount, which the answer may repeat.
@@ -370,8 +373,15 @@ const ANSWER_FILLER: ReadonlySet<string> = new Set((
   + "yes yeah yep yup sure ok okay no nope nah thanks thank you it's "
   + "for with from at via by of and a an then also now is was am are "
   + "put choose select pick switch change add record go ahead transactions transaction "
-  + "another that this one ones earlier new same peso pesos php"
+  + "peso pesos php"
 ).split(" "));
+
+// The choice words. They answer only the duplicate and ambiguity questions (and the separate-entry question, which has its own exact
+// list), so "Record another 500 using Wallet today" under an account question is not an answer to it.
+const CHOICE_WORDS: ReadonlySet<string> = new Set("another that this one ones earlier new same separate".split(" "));
+function offersChoice(question: AnswerQuestion): boolean {
+  return question === "duplicate" || question === "ambiguity";
+}
 
 // Words that refuse, cancel or reverse. They are never filler, and the flow's own statement cannot make them filler either.
 const NEVER_FILLER: ReadonlySet<string> = new Set((
@@ -396,9 +406,11 @@ export function answerShaped(message: string, question: AnswerQuestion, context:
     text = text.replace(AMOUNT_TOKEN, (token, whole: string, fraction: string | undefined) =>
       Math.round(Number(`${whole.replace(/,/g, "")}.${fraction ?? "0"}`) * 100) === context.amountMinor ? " " : token);
   }
+  const choice = offersChoice(question);
   const allowed = new Set<string>(ANSWER_FILLER);
+  if (choice) for (const word of CHOICE_WORDS) allowed.add(word);
   for (const word of [...answerTokens((context.counterparty ?? "").toLowerCase()), ...answerTokens(context.statement.join(" ").toLowerCase())]) {
-    if (word.length > 1 && !NEVER_FILLER.has(word) && !/\d/.test(word)) allowed.add(word);
+    if (word.length > 1 && !NEVER_FILLER.has(word) && !/\d/.test(word) && (choice || !CHOICE_WORDS.has(word))) allowed.add(word);
   }
   const tokens = answerTokens(text);
   for (let index = 0; index < tokens.length; index++) {
@@ -574,6 +586,17 @@ export function openQuestionOf<T extends RunMessage>(run: readonly T[]): T | und
 export function isAmbiguityQuestionOf(run: readonly (RunMessage & { content: string })[]): boolean {
   const open = openQuestionOf(run);
   return !!open && (open.followup === "account_or_date" || open.followup === "bill_account") && isAmbiguousHintsQuestion(open.content);
+}
+
+// What the question the run is waiting on asks for: the `asks` it stored, or for a row written before `asks` existed, the two
+// questions the code words itself and can tell by their fixed text (the duplicate and the ambiguity question). null: unknown.
+export function askedOf(run: readonly (RunMessage & { content: string })[]): Asks | null {
+  const open = openQuestionOf(run);
+  if (!open) return null;
+  if (open.data?.asks) return open.data.asks;
+  if (isDuplicateDebtQuestionOf(run)) return "duplicate";
+  if (isAmbiguityQuestionOf(run)) return "ambiguity";
+  return null;
 }
 
 // Refusal wording ("Ana did not pay me", "maybe he paid") blocks a write nobody confirmed. The block is one decision

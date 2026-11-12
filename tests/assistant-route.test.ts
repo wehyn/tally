@@ -5723,3 +5723,44 @@ describe("the choice of another debt is recorded and keeps its details (round 26
     expect(store.listDebts(user.id)).toHaveLength(1);
   });
 });
+
+// Review round 27. Inside an open debt flow a message that is not answer-shaped never writes on its own authority, the choice words
+// ("another", "new one", "earlier", "that one", "separate") are answers only to the question that offers the choice, and each
+// question names what it asks for, so its answer is judged by that vocabulary and not by one list.
+describe("an open debt flow is closed to messages that are not its answers (round 27, finding 27)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    const response = await POST(assistantRequest(prompt, conversationId));
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+  const args = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
+  const expense = { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" };
+  async function accountQuestion() {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const asked = await say("yes, for lunch into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+    expect(asked.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+    return first;
+  }
+
+  describe("finding 27a: a choice word answers only the question that offers the choice", () => {
+    it("\"Record another 500 using Wallet today\" at the account question is not Ana's debt advance", async () => {
+      const first = await accountQuestion();
+      const result = await say("Record another 500 using Wallet today", "log_transaction", expense, first.conversationId);
+      expect(result.transaction?.debtId ?? null).toBeNull();
+      expect(store.listTransactions(user.id).filter((transaction) => transaction.debtId)).toHaveLength(0);
+      expect(store.listDebts(user.id)).toHaveLength(1);
+      expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
+    });
+
+    it("\"another\" still answers the duplicate question, which is the question that offers it", async () => {
+      const first = await say("Ana owes me 500 for lunch", "log_debt", { ...args, note: "lunch" });
+      await say("Ana owes me 500 for groceries", "log_debt", { ...args, note: "groceries" }, first.conversationId);
+      expect(last(first.conversationId).data).toMatchObject({ asks: "duplicate" });
+      const second = await say("another", "log_debt", { ...args, note: "groceries" }, first.conversationId);
+      expect(second.debt.id).not.toBe(first.debt.id);
+    });
+  });
+});

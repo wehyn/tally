@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { duplicateCallData, parseReplyData } from "../src/lib/assistant-followup";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, statesNewStatement, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, statesNewStatement, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -987,7 +987,7 @@ describe("the debts a run saved and the duplicate question", () => {
 // so no wording of a refusal, a restart or a new statement has to be recognised for safety.
 describe("answerShaped", () => {
   const context = { accountNames: ["Wallet", "BPI 2", "Savings"], counterparty: "Ana", amountMinor: 50_000, statement: ["Ana owes me 500", "yes, for lunch using Wallet on 2026-13-45"] };
-  const answers: { reply: string; question: "offer" | "detail" }[] = [
+  const answers: { reply: string; question: AnswerQuestion }[] = [
     { reply: "use Wallet", question: "detail" },
     { reply: "Use Wallet, please", question: "detail" },
     { reply: "yes, Wallet", question: "detail" },
@@ -1012,17 +1012,17 @@ describe("answerShaped", () => {
     { reply: "yes, for groceries and drinks", question: "offer" },
     { reply: "27 then", question: "detail" },
     { reply: "500 then", question: "detail" },
-    { reply: "another", question: "detail" },
-    { reply: "another one", question: "detail" },
-    { reply: "that one", question: "detail" },
-    { reply: "the same one", question: "detail" },
-    { reply: "earlier, Wallet", question: "detail" },
-    { reply: "new one, Wallet, today", question: "detail" },
+    { reply: "another", question: "duplicate" },
+    { reply: "another one", question: "duplicate" },
+    { reply: "that one", question: "duplicate" },
+    { reply: "the same one", question: "duplicate" },
+    { reply: "earlier, Wallet", question: "ambiguity" },
+    { reply: "new one, Wallet, today", question: "ambiguity" },
     { reply: "Ana", question: "detail" },
   ];
   for (const { reply, question } of answers) it(`is an answer (${question}): ${reply}`, () => expect(answerShaped(reply, question, { ...context, amountMinor: reply === "27 then" ? 2_700 : 50_000 })).toBe(true));
 
-  const notAnswers: { reply: string; question: "offer" | "detail" }[] = [
+  const notAnswers: { reply: string; question: AnswerQuestion }[] = [
     { reply: "I don't want to record it. Use Wallet.", question: "detail" },
     { reply: "Don't record the money. Use Wallet.", question: "detail" },
     { reply: "Don't record it in Wallet.", question: "detail" },
@@ -1048,6 +1048,17 @@ describe("answerShaped", () => {
     { reply: "Wallet, 700", question: "detail" },
     { reply: "Ben, Wallet", question: "detail" },
     { reply: "how much did I spend using Wallet?", question: "detail" },
+    // Finding 27a: the choice words answer only the question that offers the choice.
+    { reply: "Record another 500 using Wallet today", question: "detail" },
+    { reply: "Record another 500 using Wallet today", question: "offer" },
+    { reply: "Record another 500 using Wallet today", question: "account" },
+    { reply: "Record another 500 using Wallet today", question: "date" },
+    { reply: "another", question: "detail" },
+    { reply: "that one", question: "offer" },
+    { reply: "new one, Wallet, today", question: "account" },
+    { reply: "earlier, Wallet", question: "detail" },
+    { reply: "the same one", question: "date" },
+    { reply: "use that one", question: "detail" },
   ];
   for (const { reply, question } of notAnswers) it(`is not an answer (${question}): ${reply}`, () => expect(answerShaped(reply, question, context)).toBe(false));
 
@@ -1156,5 +1167,28 @@ describe("debtFlowUserMessages", () => {
   });
   it("reads nothing from a run with no debt flow", () => {
     expect(contents([msg("Coffee"), reply("clarification", null), msg("don't record it")])).toEqual([]);
+  });
+});
+
+// Finding 27: the question stores what it asks for, and the answer is judged by that vocabulary.
+describe("askedOf", () => {
+  const user = { role: "user" as const, content: "x" };
+  it("reads the stored asks of the question the run waits on", () => {
+    expect(askedOf([{ role: "assistant", followup: "clarification", content: "Which category?", data: { asks: "category" } }])).toBe("category");
+    expect(askedOf([{ role: "assistant", followup: "clarification", content: "q", data: { asks: "category" } }, user, { role: "assistant", followup: "clarification", readOnly: true, content: "a read" }])).toBe("category");
+  });
+  it("knows the duplicate and the ambiguity question of an older row by the text the code wrote", () => {
+    const duplicate = duplicateDebtQuestion({ direction: "owed_to_you", counterparty: "Ana" }, "₱500.00");
+    expect(askedOf([{ role: "assistant", followup: "clarification", content: duplicate }])).toBe("duplicate");
+    expect(askedOf([{ role: "assistant", followup: "account_or_date", content: ambiguousHintsQuestion("coffee", "Wallet on 2026-10-09") }])).toBe("ambiguity");
+  });
+  it("says null for a question that stored none, and for no question at all", () => {
+    expect(askedOf([{ role: "assistant", followup: "account_or_date", content: "What date should I use?" }])).toBeNull();
+    expect(askedOf([])).toBeNull();
+  });
+  it("round trips through the stored data and ignores an unknown value", () => {
+    expect(parseReplyData(JSON.stringify({ asks: "description" }))).toEqual({ asks: "description" });
+    expect(parseReplyData(JSON.stringify({ asks: "whatever" }))).toBeNull();
+    expect(parseReplyData(JSON.stringify({ another: true, asks: "account" }))).toEqual({ another: true, asks: "account" });
   });
 });
