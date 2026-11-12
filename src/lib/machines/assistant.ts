@@ -487,13 +487,52 @@ export function debtFlowContinues(pending: FollowupKind | null, carriesDebt: boo
   return pending === "debt_transaction" || ((pending === "account_or_date" || pending === "clarification") && carriesDebt);
 }
 
-// A message that refuses to record: "don't record it", "do not add that", "won't log it", "no need to save it". It is wording only and
-// it never authorizes anything. Refusal wording anywhere in the open debt flow is read as every guard reads it, over the whole run
-// and the current message, and it wins over a yes recorded earlier in the flow: the turn writes nothing (refusalOutcome).
-const RECORD_REFUSAL = /\b(?:don'?t|do not|won'?t|will not|never|no need to|not going to)\b[^.!?]{0,30}\b(?:record|recording|add|adding|log|logging|save|saving|put|putting|write|writing|enter|entering)\b/i;
+// A message that refuses to record the money. It is a small ANCHORED set of exact forms, never a negation somewhere near a verb:
+// "don't forget to log it", "I don't know, add it to Wallet", "I never save in cash, put it in Wallet" and "Spent 200 on lunch
+// and don't forget to log it" all say "record it" and match nothing. The text is cut into clauses at . ! ? , ; : and a leading "no",
+// "nope", "nah", "okay", "ok", "oh", "actually" or "sorry" is dropped, and the forms below must be a clause WHOLE:
+//  - the bare answers "no", "nope", "nah", "no thanks", "no thank you", "hindi", "ayoko" (isOrdinaryIncomeDecline), "skip it",
+//    "debts only" and "leave it in debts only", only as the message itself or its leading clause, because a "no" or a "skip it"
+//    later in a message answers something else ("Wallet, no, GCash"),
+//  - "don't / do not / won't / will not / never / no need to" + record, add, log or save + it, this or that (an optional "to
+//    transactions" and an optional "yet" or "please" may follow), as any clause: "No, don't record it. The date was 2026-10-08.",
+//    "Wallet, but don't record it".
+// "forget", "know", "mind", "worry" and "need" without "to record" are no form. It is wording only and it never authorizes
+// anything. It is read from the messages that answered the debt flow (debtFlowUserMessages), and it wins over a yes recorded
+// earlier in the flow: the turn writes nothing (refusalOutcome).
+const REFUSAL_VERBS = "(?:record|add|log|save)";
+const REFUSAL_OBJECT = "(?:it|this|that)(?:\\s+(?:to|in|into)\\s+(?:my\\s+)?transactions?)?(?:\\s+(?:yet|now|please|anymore|for now))?";
+const EXPLICIT_REFUSAL = new RegExp(`^(?:(?:please|i)\\s+)?(?:(?:don'?t|do not|won'?t|will not|never)\\s+(?:go ahead and\\s+)?|no need to\\s+)${REFUSAL_VERBS}\\s+${REFUSAL_OBJECT}$`);
+const INTERJECTIONS: ReadonlySet<string> = new Set(["no", "nope", "nah", "okay", "ok", "oh", "actually", "sorry"]);
+const LEAD_INTERJECTION = /^(?:(?:no(?!\s+need\b)|nope|nah|okay|ok|oh|actually|sorry)\s+)+/;
+const LEADING_REFUSAL_FORMS: ReadonlySet<string> = new Set(["skip it", "leave it in debts only", "debts only"]);
 
 export function isDebtRecordRefusal(text: string): boolean {
-  return RECORD_REFUSAL.test(text.replace(/[\u2018\u2019]/g, "'"));
+  if (isOrdinaryIncomeDecline(text)) return true;
+  const clauses = text.replace(/[\u2018\u2019]/g, "'").toLowerCase().split(/[.!?,;:]+/).map((clause) => clause.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const afterInterjections = clauses.findIndex((clause) => !INTERJECTIONS.has(clause));
+  if (afterInterjections < 0) return false;
+  if (LEADING_REFUSAL_FORMS.has(clauses[afterInterjections].replace(LEAD_INTERJECTION, ""))) return true;
+  return clauses.some((clause) => EXPLICIT_REFUSAL.test(clause.replace(LEAD_INTERJECTION, "").replace(/^(?:but|and)\s+/, "")));
+}
+
+// The user messages of the open run that answered the debt flow's own questions, which are the only ones refusal wording may be
+// read from. A message answers when the reply before it is a question of the debt flow about a saved debt: the offer to add it to
+// Transactions (debt_transaction) or an account, date or generic question that carries a debt id, and that includes a reply left
+// pending by a quiet read, which carries the same question forward. The first message of the run, the statement itself, and a
+// message that followed any other reply (a bill, another statement's question) are never read, so a negation said about something
+// else cannot block a later answer. `answersOffer` marks the answer to the offer itself, where a plain no keeps its own meaning
+// (the debt stays in Debts only) and is not a refusal.
+export function debtFlowUserMessages<T extends RunMessage & { content: string; debtId?: string | null }>(run: readonly T[]): { message: T; answersOffer: boolean }[] {
+  const answers: { message: T; answersOffer: boolean }[] = [];
+  for (let index = 1; index < run.length; index++) {
+    const message = run[index];
+    const before = run[index - 1];
+    if (message.role !== "user" || before.role !== "assistant" || !before.debtId) continue;
+    if (before.followup === "debt_transaction") answers.push({ message, answersOffer: true });
+    else if (before.followup === "account_or_date" || before.followup === "clarification") answers.push({ message, answersOffer: false });
+  }
+  return answers;
 }
 
 // The debt a message or a call names: its direction and its counterparty, each only when it names one.

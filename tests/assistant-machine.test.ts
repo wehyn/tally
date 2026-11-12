@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type StatementReading, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type StatementReading, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -901,12 +901,28 @@ describe("debt offer chain", () => {
 
 // Wording that refuses to record, read over the whole open debt flow, wins over a yes recorded earlier in it (finding 24).
 describe("debt record refusal wording", () => {
-  it("reads a refusal to record, add, log or save, curly apostrophes included", () => {
-    for (const text of ["No, don't record it. The date was 2026-10-08.", "do not add it", "I won\u2019t log that", "Don\u2019t save it yet", "no need to record this", "never put it in", "Please don't go ahead and record it"]) expect(isDebtRecordRefusal(text), text).toBe(true);
+  it("reads the small anchored set of refusals: the whole message or its leading clause for the bare forms", () => {
+    for (const text of ["no", "No.", "no thanks", "No thank you!", "nope", "nah", "hindi", "Ayoko", "skip it", "Skip it.", "debts only", "Debts only", "leave it in debts only", "no, skip it", "Okay, debts only"]) expect(isDebtRecordRefusal(text), text).toBe(true);
   });
 
-  it("reads nothing else as a refusal: a plain answer, a yes or a no is not", () => {
-    for (const text of ["yes, for lunch", "no", "no, but make it 600", "use Wallet", "record it", "I don't know the date", "Ben owes me 700 using Wallet", "2026-10-08", ""]) expect(isDebtRecordRefusal(text), text).toBe(false);
+  it("reads an explicit refusal clause to record, add, log or save as a refusal anywhere in the message, curly apostrophes included", () => {
+    for (const text of [
+      "No, don't record it. The date was 2026-10-08.", "don't record it", "don't record this", "Don't record that", "do not record it", "do not record this", "do not record that",
+      "don't add it", "don't add this to transactions", "Don\u2019t add that to my transactions", "do not add it", "no need to record it", "No need to record this", "no need to record that",
+      "I won\u2019t log that", "Don\u2019t save it yet", "please don't go ahead and record it", "Wallet, but don't record it", "Use Wallet. Do not add it.", "okay don't record it", "never record it",
+    ]) expect(isDebtRecordRefusal(text), text).toBe(true);
+  });
+
+  it("reads no incidental negation as a refusal: 'forget', 'know', 'mind', 'worry', 'need' and a negation far from a verb", () => {
+    for (const text of [
+      "Don't forget to log coffee 100 using Wallet", "Don't forget to add it to Wallet", "I don't know, add it to Wallet", "I never save in cash, put it in Wallet",
+      "Sure, don't forget to put it in Wallet", "Spent 200 on lunch in Wallet, and don't forget to log it", "Don't worry, record it", "Don't mind me, add it to Wallet",
+      "I don't need to know the date, log it", "no need to hurry, record it", "never mind the date, add it", "Don't forget",
+    ]) expect(isDebtRecordRefusal(text), text).toBe(false);
+  });
+
+  it("reads nothing else as a refusal: a plain answer, a yes or a no that goes on is not", () => {
+    for (const text of ["yes, for lunch", "no, but make it 600", "no, use Wallet", "Wallet, no, GCash", "use Wallet", "record it", "I don't know the date", "Ben owes me 700 using Wallet", "2026-10-08", "", "skip it for now please, 2026-10-08"]) expect(isDebtRecordRefusal(text), text).toBe(false);
   });
 
   it("has a re-ask that names the refusal and the way out, not the payment", () => {
@@ -993,5 +1009,32 @@ describe("restatesSavedDebt", () => {
     expect(debtFlowAnswers({ ...turn, restates: true, refused: true })).toBe(false);
     expect(debtFlowAnswers({ ...turn, restates: true, stated: { counterparty: "Ben" } })).toBe(false);
     expect(debtFlowAnswers({ ...turn, restates: true, call: { kind: "write", names: { counterparty: "Ben" } } })).toBe(false);
+  });
+});
+
+// Refusal wording is read only from the messages that answered the debt flow's own questions.
+describe("debtFlowUserMessages", () => {
+  const msg = (content: string) => ({ role: "user" as const, content });
+  const reply = (followup: FollowupKind | null, debtId: string | null, extra: { readOnly?: boolean; billId?: string } = {}) => ({ role: "assistant" as const, content: "", followup, debtId, ...extra });
+  const contents = (run: Parameters<typeof debtFlowUserMessages>[0]) => debtFlowUserMessages(run).map(({ message, answersOffer }) => `${message.content}${answersOffer ? " (offer)" : ""}`);
+
+  it("reads the answer to the offer, marked, and the answers to the account, date and generic questions that carry the debt", () => {
+    expect(contents([msg("Ana owes me 500"), reply("debt_transaction", "d1"), msg("no"), reply("account_or_date", "d1"), msg("Wallet"), reply("clarification", "d1")])).toEqual(["no (offer)", "Wallet"]);
+  });
+  it("never reads the statement itself, the first message of the run", () => {
+    expect(contents([msg("Don't record it, Ana owes me 500"), reply("debt_transaction", "d1")])).toEqual([]);
+  });
+  it("skips a message that followed a reply carrying no debt, another kind, or a bill", () => {
+    expect(contents([
+      msg("Ana owes me 500"), reply("debt_transaction", "d1"), msg("Log coffee"), reply("clarification", null), msg("I don't record that"),
+      reply("repayment_amount", "d1"), msg("don't record it"), reply("bill_amount", "d1"), msg("no"),
+    ])).toEqual(["Log coffee (offer)"]);
+  });
+  it("reads a message answered by a quiet read, which carries the same question forward", () => {
+    expect(contents([msg("Ana owes me 500"), reply("account_or_date", "d1"), msg("Don't record it yet, how much did I spend?"), reply("account_or_date", "d1", { readOnly: true }), msg("use Wallet")]))
+      .toEqual(["Don't record it yet, how much did I spend?", "use Wallet"]);
+  });
+  it("reads nothing from a run with no debt flow", () => {
+    expect(contents([msg("Coffee"), reply("clarification", null), msg("don't record it")])).toEqual([]);
   });
 });

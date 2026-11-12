@@ -5448,3 +5448,73 @@ describe("a debt write never duplicates a debt the run already saved (round 25, 
     expect(ana500()).toHaveLength(2);
   });
 });
+
+// Round 25, finding 25 (the narrow refusal): a refusal is an anchored set of small forms, never any negation near a verb, and it is
+// read only from messages that answered the debt flow's own questions.
+describe("refusal wording in an open debt flow is a small anchored set (round 25, finding 25)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    const response = await POST(assistantRequest(prompt, conversationId));
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+  const args = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
+  const offer = () => say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
+  async function accountQuestion() {
+    const first = await offer();
+    await say("yes, for lunch into Nowhere account", "log_debt", { ...args, account: "Nowhere" }, first.conversationId);
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+    return first;
+  }
+
+  it("'Don't forget to log coffee 100 using Wallet' with the offer pending records the coffee", async () => {
+    const first = await offer();
+    const result = await say("Don't forget to log coffee 100 using Wallet", "log_transaction", { kind: "expense", amount: "100", category: "Food", description: "coffee", account: "Wallet" }, first.conversationId);
+    expect(result.answer).not.toBe(DECLINED_REPLY);
+    expect(result.transaction).toMatchObject({ amountMinor: 10_000 });
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+
+  it("'Spent 200 on lunch in Wallet, and don't forget to log it' records the expense", async () => {
+    const first = await offer();
+    const result = await say("Spent 200 on lunch in Wallet, and don't forget to log it", "log_transaction", { kind: "expense", amount: "200", category: "Food", description: "lunch", account: "Wallet" }, first.conversationId);
+    expect(result.transaction).toMatchObject({ amountMinor: 20_000 });
+  });
+
+  it("a yes to the offer that says 'don't forget' is still a yes", async () => {
+    const first = await offer();
+    const result = await say("Sure, don't forget to put it in Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+    expect(result.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+
+  for (const reply of ["Don't forget to add it to Wallet", "I don't know, add it to Wallet", "I never save in cash, put it in Wallet"]) {
+    it(`an account answer worded '${reply}' is an answer`, async () => {
+      const first = await accountQuestion();
+      const result = await say(reply, "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+      expect(result.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+      expect(store.listDebts(user.id)).toHaveLength(1);
+    });
+  }
+
+  it("an incidental 'don't forget' said in a quiet turn does not block the later answer", async () => {
+    const first = await accountQuestion();
+    const read = await say("Don't forget, how much did I spend this month?", "finance_question", { start: "2026-10-01", end: "2026-10-09" }, first.conversationId);
+    expect(read.transaction).toBeNull();
+    const result = await say("use Wallet", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+    expect(result.transaction).toMatchObject({ debtId: first.debt.id });
+  });
+
+  it("an explicit refusal clause still refuses, wherever it stands in the message", async () => {
+    for (const reply of ["No, don't record it. The date was 2026-10-08.", "Wallet, but don't record it", "Use Wallet. Do not add it.", "no", "No thanks", "Skip it", "debts only"]) {
+      const first = await accountQuestion();
+      const result = await say(reply, "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+      expect(result.transaction, reply).toBeNull();
+      expect(result.answer, reply).toBe(DECLINED_REPLY);
+      expect(store.listTransactions(user.id), reply).toHaveLength(0);
+      store.deleteConversation(user.id, first.conversationId);
+      for (const debt of store.listDebts(user.id)) store.deleteDebt(user.id, debt.id);
+    }
+  });
+});

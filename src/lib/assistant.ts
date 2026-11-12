@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -886,12 +886,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const refusedEarlier = !repaymentReportQuestion && userMessagesFor("guard", run).some((message) => unconfirmedPayment(message.content));
     const refusedNow = !repaymentReportQuestion && (unconfirmedPayment(input.prompt) || repaymentFollowup && isUncertainStatement(input.prompt));
     const uncertainRepayment = refusedEarlier || refusedNow;
-    // Refusal wording inside an open debt flow ("No, don't record it") is read over the whole run and the current message as the
-    // payment refusals are, and refusalOutcome decides the turn from it: a yes recorded earlier in the flow never overrides it. The
+    // Refusal wording inside an open debt flow ("No, don't record it", isDebtRecordRefusal's small anchored set) is read from the messages
+    // that answered the flow and the current message, and refusalOutcome decides the turn from it: a yes recorded earlier in the flow never overrides it. The
     // clear "no transaction" opt-out keeps its own meaning (the debt stays in Debts only), and so does a plain no to the offer.
     const refusesToRecord = (text: string) => isDebtRecordRefusal(text) && !hasClearDebtTransactionOptOut([text]);
     const debtFlowOpen = debtFlowContinues(lastFollowup, recordedDebtId !== undefined);
-    const debtRefusedEarlier = debtFlowOpen && userMessagesFor("guard", run).some((message) => refusesToRecord(message.content));
+    // Only a message that answered the debt flow's own question is read (debtFlowUserMessages): an earlier message about something else
+    // never refuses for a later answer, and a plain no to the offer is the opt-out and no refusal.
+    const debtRefusedEarlier = debtFlowOpen && debtFlowUserMessages(run).some(({ message, answersOffer }) => refusesToRecord(message.content) && !(answersOffer && isDebtOfferNo(message.content)));
     const debtRefusedNow = debtFlowOpen && !debtQuestionNo && refusesToRecord(input.prompt);
     const debtRefusalOnly = (debtRefusedEarlier || debtRefusedNow) && !uncertainRepayment;
     // A debt write never duplicates a debt this open run already saved (duplicateOfRunDebt). The debts the run's replies carry are the
