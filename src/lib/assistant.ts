@@ -871,10 +871,6 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const ordinaryIncomeAccepted = incomeTurn === "write";
     const ordinaryIncomeDeclined = incomeTurn === "decline";
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
-    // A question the debt flow asked about a saved debt (its account, its date, its amount, the choice between two readings of the
-    // hints) stores that debt with it, so its answer goes on with the same debt instead of saving a second one. That is the debt
-    // the answer links to and nothing more: it is never the user's opt-in to add the debt to Transactions (debtTransactionRequested).
-    const debtContinues = debtFlowContinues(lastFollowup, recordedDebtId !== undefined);
     const debtQuestionYes = debtTransactionQuestion && isDebtOfferYes(input.prompt);
     const debtQuestionNo = debtTransactionQuestion && isDebtOfferNo(input.prompt);
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
@@ -900,7 +896,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const debtRefusalOnly = (debtRefusedEarlier || debtRefusedNow) && !uncertainRepayment;
     // The debt flow's recorded consent and its link to the saved debt belong to an answer to that debt's own question and to nothing
     // else (debtFlowAnswers). A turn that is a refusal, a new statement (a different debt, an expense, a restart) or a write for
-    // another debt carries neither: it is handled as its own statement.
+    // another debt carries neither: it is handled as its own statement. A question the debt flow asked about its saved debt (its
+    // account, its date, its amount, the choice between two readings of the hints) stores that debt with it, so its answer goes on
+    // with the same debt instead of saving a second one. That is the debt the answer links to and nothing more: it is never the
+    // user's opt-in to add the debt to Transactions (debtTransactionRequested). A question about any other statement carries no debt.
     const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
     const debtAnswers = debtFlowAnswers({
       pending: lastFollowup,
@@ -1028,8 +1027,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         answer = safeClarification(call.args.question);
         followup = clarificationKind ?? expectedRepaymentAmount ?? "clarification";
         modelWorded = call === providerCall;
-        // A question asked inside a saved debt's flow keeps that debt, so its answer links to it and a later opt-in never saves a second one.
-        if (debtContinues && !currentDebtIntent) debtInFlow = recordedDebtId;
+        // A question the debt flow asks about its saved debt keeps that debt, so its answer links to it and a later opt-in never saves a
+        // second one. A clarification of any other statement (debtFlowAnswers is false) never carries it.
+        if (debtAnswers && !currentDebtIntent) debtInFlow = recordedDebtId;
       }
       else if (call.name === "finance_question") {
         const defaultRange = monthToDateRange(requestedAt);
@@ -1049,7 +1049,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const dueDate = typeof call.args.dueDate === "string" ? call.args.dueDate.trim() || null : null;
         const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
         const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
-        const isExistingDebtFollowup = debtContinues && !currentDebtIntent;
+        const isExistingDebtFollowup = debtAnswers && !currentDebtIntent;
         if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
         else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
         else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }

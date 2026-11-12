@@ -5295,4 +5295,19 @@ describe("the debt flow's yes and link apply only to answers to its own question
     expect(groceries.undoUntil).not.toBeNull();
     expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
   });
+
+  it("an unrelated question about a new expense does not carry the saved debt, so its answer is an ordinary expense with Undo", async () => {
+    const first = await say("Ana owes me 500", "log_debt", { direction: "owed_to_you", counterparty: "Ana", amount: "500" });
+    const asked = await say("Actually log groceries 500 using Wallet", "ask_clarification", { question: "Which category should I use for groceries?" }, first.conversationId);
+    expect(asked.transaction).toBeNull();
+    expect(last(first.conversationId).debtId ?? null).toBeNull();
+
+    const saved = await say("Record an expense under Food", "log_transaction", { kind: "expense", amount: "500", description: "groceries", category: "Food", account: "Wallet" }, first.conversationId);
+
+    expect(saved.debt).toBeNull();
+    expect(saved.undoUntil).not.toBeNull();
+    expect(store.listTransactions(user.id)).toHaveLength(1);
+    expect(store.listTransactions(user.id)[0].debtId).toBeUndefined();
+    expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
+  });
 });

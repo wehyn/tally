@@ -520,21 +520,28 @@ function namesOtherDebt(saved: DebtRef | undefined, other: DebtRef | undefined):
   return !!other.counterparty && !!saved.counterparty && normalizeCounterparty(other.counterparty) !== normalizeCounterparty(saved.counterparty);
 }
 
+// Whether the provider's call explicitly names the saved debt: the same counterparty, and no conflicting direction.
+function namesSavedDebt(saved: DebtRef | undefined, other: DebtRef | undefined): boolean {
+  return !!saved?.counterparty && !!other?.counterparty && !namesOtherDebt(saved, other);
+}
+
 // Whether the current turn is an ANSWER to the debt flow's own question. Only an answer may use what the flow recorded: the yes or
 // no said to the Transactions offer, and the saved debt's id the question carries. A turn is not an answer when
 //  (a) refusal wording is in the open run (the whole run, as every guard reads it): the refusal wins over any recorded yes and the
 //      caller writes nothing (refusalOutcome),
-//  (b) the current message starts a new statement or may have (readStatementStart), or it names a different counterparty or
-//      direction than the saved debt, or
-//  (c) the provider's call is a write that names a different counterparty or direction than the saved debt.
+//  (b) the current message, or the provider's write, names a different counterparty or direction than the saved debt (a new debt),
+//  (c) the current message starts a new statement or may have (readStatementStart: a new expense, a restart) and the provider's
+//      call is not a write that names the saved debt itself. When the model does name it, the call is the flow's own and the
+//      existing ambiguity net (hintReadingsFor, ambiguityVerdict) asks which reading is meant before anything is written.
 // A turn that is not an answer is its own statement: no consent and no link are carried to it. A call that only reads or asks
 // names no debt, so the existing rules for those calls keep holding (debtContinuationRewrites).
 export function debtFlowAnswers(turn: DebtFlowTurn): boolean {
   if (!debtFlowContinues(turn.pending, turn.carriesDebt)) return false;
   if (turn.refused) return false;
-  if (turn.reading.starts || turn.reading.uncertain) return false;
   if (namesOtherDebt(turn.saved, turn.stated)) return false;
-  return !(turn.call.kind === "write" && namesOtherDebt(turn.saved, turn.call.names));
+  if (turn.call.kind === "write" && namesOtherDebt(turn.saved, turn.call.names)) return false;
+  if (turn.reading.starts || turn.reading.uncertain) return turn.call.kind === "write" && namesSavedDebt(turn.saved, turn.call.names);
+  return true;
 }
 
 // What the user said about adding the debt to Transactions in the statement being answered: "optIn" only from an opt-in the
