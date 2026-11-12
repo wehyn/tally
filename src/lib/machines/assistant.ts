@@ -512,6 +512,8 @@ export type DebtFlowTurn = {
   stated: DebtRef | undefined;
   saved: DebtRef | undefined;
   call: { kind: TurnCall; names?: DebtRef };
+  // restatesSavedDebt's verdict: the message says the saved debt's own amount and a purpose its statement already named.
+  restates?: boolean;
 };
 
 function namesOtherDebt(saved: DebtRef | undefined, other: DebtRef | undefined): boolean {
@@ -532,7 +534,9 @@ function namesSavedDebt(saved: DebtRef | undefined, other: DebtRef | undefined):
 //  (b) the current message, or the provider's write, names a different counterparty or direction than the saved debt (a new debt),
 //  (c) the current message starts a new statement or may have (readStatementStart: a new expense, a restart) and the provider's
 //      call is not a write that names the saved debt itself. When the model does name it, the call is the flow's own and the
-//      existing ambiguity net (hintReadingsFor, ambiguityVerdict) asks which reading is meant before anything is written.
+//      existing ambiguity net (hintReadingsFor, ambiguityVerdict) asks which reading is meant before anything is written. A message
+//      that only restates the saved debt (its amount and a purpose its own statement named, restatesSavedDebt) is an answer to it
+//      even when its extra words read like a restart: "The 500 lunch expense was on 2026-10-08 using Wallet" answers the date question.
 // A turn that is not an answer is its own statement: no consent and no link are carried to it. A call that only reads or asks
 // names no debt, so the existing rules for those calls keep holding (debtContinuationRewrites).
 export function debtFlowAnswers(turn: DebtFlowTurn): boolean {
@@ -540,8 +544,71 @@ export function debtFlowAnswers(turn: DebtFlowTurn): boolean {
   if (turn.refused) return false;
   if (namesOtherDebt(turn.saved, turn.stated)) return false;
   if (turn.call.kind === "write" && namesOtherDebt(turn.saved, turn.call.names)) return false;
-  if (turn.reading.starts || turn.reading.uncertain) return turn.call.kind === "write" && namesSavedDebt(turn.saved, turn.call.names);
+  if (turn.reading.starts || turn.reading.uncertain) return !!turn.restates || (turn.call.kind === "write" && namesSavedDebt(turn.saved, turn.call.names));
   return true;
+}
+
+// Whether a message restates the debt the flow saved rather than stating another one: it says the saved debt's own amount AND a
+// purpose word its statement (the user messages of the flow so far) already named. Both are compared with what the run recorded,
+// never with a list of words: "The 500 lunch expense was on 2026-10-08 using Wallet" after "yes, for lunch ..." restates a 500
+// debt, while "Log groceries 500 using Wallet" says the same amount for a purpose the statement never named, and "Ben paid for
+// lunch 700" names another amount. The counterparty's own name is no purpose. When this is wrong the duplicate net
+// (duplicateOfRunDebt) still stops a second debt, and the saved debt's consent is only what the statement itself said.
+export function restatesSavedDebt(reply: string, saved: { amountMinor: number; counterparty: string } | undefined, statement: readonly string[], accountNames: readonly string[]): boolean {
+  if (!saved) return false;
+  const text = withoutAccountNames(withoutDatesAndTimes(reply), accountNames);
+  const amounts = [...text.matchAll(/(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?(?![\d,]|\.\d)/g)]
+    .map((match) => Math.round(Number(`${match[1].replace(/,/g, "")}.${match[2] ?? "0"}`) * 100));
+  if (!amounts.includes(saved.amountMinor)) return false;
+  const counterparty = new Set(purposeWordsIn(saved.counterparty));
+  const known = new Set(purposeWordsIn(statement.join(" ")));
+  return purposeWordsIn(text).some((word) => known.has(word) && !counterparty.has(word));
+}
+
+// A debt write never creates a second open debt that duplicates one this same open run already saved: the same counterparty (as
+// the register compares it), the same direction and the same amount, read from the debt rows themselves. The saved debts of a
+// run are the ones its replies carry (the stored debt_id), found by the caller. A settled debt, a debt that is not in the run and
+// a debt that differs in any of the three are not duplicates, so a genuinely different debt is added as before. The wording
+// of the turn cannot hide a duplicate: every path that would create a debt asks this first.
+export type RunDebt = { id: string; direction: "owed_to_you" | "you_owe"; counterparty: string; amountMinor: number; status: "open" | "settled" };
+
+export function duplicateOfRunDebt<T extends RunDebt>(savedInRun: readonly T[], next: { direction: RunDebt["direction"]; counterparty: string; amountMinor: number }): T | undefined {
+  return savedInRun.find((debt) => debt.status === "open" && debt.direction === next.direction && debt.amountMinor === next.amountMinor
+    && normalizeCounterparty(debt.counterparty) === normalizeCounterparty(next.counterparty));
+}
+
+// The debt ids the replies of an open run carry, each once, oldest first.
+export function runDebtIds(run: readonly (RunMessage & { debtId?: string | null })[]): string[] {
+  const ids: string[] = [];
+  for (const message of run) if (message.role === "assistant" && message.debtId && !ids.includes(message.debtId)) ids.push(message.debtId);
+  return ids;
+}
+
+// The one question a duplicate asks, stored as a clarification that carries the saved debt. The code wrote it, so its wording says it.
+const DUPLICATE_OPENING = "You already added ";
+const DUPLICATE_CLOSING = ' in this conversation. Add another, or use that one? Reply "another" or "that one", or cancel.';
+export function duplicateDebtQuestion(debt: { direction: RunDebt["direction"]; counterparty: string }, formattedAmount: string): string {
+  const what = debt.direction === "owed_to_you" ? `${debt.counterparty} owes you ${formattedAmount}` : `you owe ${debt.counterparty} ${formattedAmount}`;
+  return `${DUPLICATE_OPENING}${what}${DUPLICATE_CLOSING}`;
+}
+export function isDuplicateDebtQuestion(content: string): boolean {
+  return content.startsWith(DUPLICATE_OPENING) && content.includes(DUPLICATE_CLOSING);
+}
+
+// The answer to that question, by an exact list like ambiguityChoice: "another" adds a second debt, "that one" goes on with the
+// saved one. Anything else is not an answer and the turn runs as an ordinary one (a repeat of the write asks again).
+export type DuplicateChoice = "another" | "that";
+const ANOTHER_DEBT_WORDS: readonly string[] = ["another", "another one", "add another", "add another one"];
+const THAT_DEBT_WORDS: readonly string[] = ["that one", "use that one", "the same one", "same one"];
+export function duplicateDebtChoice(reply: string): DuplicateChoice | null {
+  const normalized = reply.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").replace(/\s+/g, " ").trim();
+  return ANOTHER_DEBT_WORDS.includes(normalized) ? "another" : THAT_DEBT_WORDS.includes(normalized) ? "that" : null;
+}
+
+// Whether the question the run is waiting on is the duplicate question.
+export function isDuplicateDebtQuestionOf(run: readonly (RunMessage & { content: string })[]): boolean {
+  const open = openQuestionOf(run);
+  return !!open && open.followup === "clarification" && isDuplicateDebtQuestion(open.content);
 }
 
 // What the user said about adding the debt to Transactions in the statement being answered: "optIn" only from an opt-in the

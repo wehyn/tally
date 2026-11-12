@@ -5311,3 +5311,120 @@ describe("the debt flow's yes and link apply only to answers to its own question
     expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
   });
 });
+
+// Review round 25. A debt write never creates a second open debt that duplicates one this same open run already saved
+// (duplicateOfRunDebt), and refusal wording is a small anchored set, not any negation near a verb (isDebtRecordRefusal).
+describe("a debt write never duplicates a debt the run already saved (round 25, finding 25)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    const response = await POST(assistantRequest(prompt, conversationId));
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+  const args = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
+  const expense = { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" };
+  const ana500 = () => store.listDebts(user.id).filter((debt) => debt.counterparty === "Ana" && debt.amountMinor === 50_000);
+  async function dateQuestion() {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const asked = await say("yes, for lunch using Wallet on 2026-13-45", "log_debt", { ...args, account: "Wallet", date: "2026-13-45" }, first.conversationId);
+    expect(asked.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id });
+    return first;
+  }
+
+  it("a date answer that restates the same lunch stays an answer when the provider asks a question: the debt stays on it and use Wallet links to it", async () => {
+    const first = await dateQuestion();
+    const answered = await say("The 500 lunch expense was on 2026-10-08 into Nowhere account", "ask_clarification", { question: "Which account should I use for the advance?" }, first.conversationId);
+    expect(answered.transaction).toBeNull();
+    expect(last(first.conversationId)).toMatchObject({ debtId: first.debt.id });
+    const done = await say("use Wallet", "log_debt", { ...args, account: "Wallet", date: "2026-10-08" }, first.conversationId);
+    expect(done.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+    expect(ana500()).toHaveLength(1);
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+
+  it("a date answer that restates the same lunch is the recorded yes's own answer when the provider only asks", async () => {
+    const first = await dateQuestion();
+    const answered = await say("The 500 lunch expense was on 2026-10-08 using Wallet", "ask_clarification", { question: "Which account should I use for the advance?" }, first.conversationId);
+    expect(answered.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+    expect(ana500()).toHaveLength(1);
+  });
+
+  it("a date answer that restates the same lunch is linked to the saved debt when the provider logs a transaction", async () => {
+    const first = await dateQuestion();
+    const result = await say("The 500 lunch expense was on 2026-10-08 using Wallet", "log_transaction", { ...expense, date: "2026-10-08" }, first.conversationId);
+    expect(result.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+    expect(ana500()).toHaveLength(1);
+  });
+
+  it("the provider's own log_debt for the same debt after the answer never creates a second debt", async () => {
+    const first = await dateQuestion();
+    const result = await say("The 500 lunch expense was on 2026-10-08 using Wallet", "log_debt", { ...args, account: "Wallet", date: "2026-10-08" }, first.conversationId);
+    expect(ana500()).toHaveLength(1);
+    if (result.transaction) expect(result.transaction.debtId).toBe(first.debt.id);
+  });
+
+  it("a new statement of the same debt in the run: \"that one\" goes on with the saved debt and writes no second one", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const asked = await say("Ana owes me 500", "log_debt", args, first.conversationId);
+    expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id });
+    expect(asked.answer).toContain('Reply "another" or "that one", or cancel.');
+    const chosen = await say("that one", "ask_clarification", { question: "Which one?" }, first.conversationId);
+    expect(chosen.debt).toMatchObject({ id: first.debt.id });
+    expect(chosen.answer).toContain("Added it to Debts only");
+    expect(ana500()).toHaveLength(1);
+  });
+
+  it("a new statement of the same debt in the run: \"another\" adds the second debt on purpose", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    await say("Ana owes me 500", "log_debt", args, first.conversationId);
+    const chosen = await say("another", "ask_clarification", { question: "Another what?" }, first.conversationId);
+    expect(chosen.debt).not.toBeNull();
+    expect(chosen.debt.id).not.toBe(first.debt.id);
+    expect(ana500()).toHaveLength(2);
+  });
+
+  it("a provider counterparty mistake then the corrected answer never creates another debt", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const mismatch = await say("yes, for lunch using Wallet", "log_debt", { ...args, counterparty: "Ben", account: "Wallet" }, first.conversationId);
+    expect(mismatch.transaction).toBeNull();
+    await say("Ana", "log_debt", { ...args, account: "Wallet" }, first.conversationId);
+    expect(store.listDebts(user.id)).toHaveLength(1);
+  });
+
+  it("a settled debt of the run is not a duplicate", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    store.updateDebt(user.id, first.debt.id, { status: "settled" });
+    const again = await say("Ana owes me 500", "log_debt", args, first.conversationId);
+    expect(again.debt).not.toBeNull();
+    expect(again.debt.id).not.toBe(first.debt.id);
+    expect(ana500().filter((debt) => debt.status === "open")).toHaveLength(1);
+  });
+
+  it("a new statement of the same debt in the run asks once instead of saving a second one", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const again = await say("Ana owes me 500", "log_debt", args, first.conversationId);
+    expect(again.debt).toBeNull();
+    expect(again.answer).toContain("You already added Ana owes you ₱500.00 in this conversation");
+    expect(ana500()).toHaveLength(1);
+  });
+
+  it("a different amount, counterparty or direction is a different debt and is added", async () => {
+    const first = await say("Ana owes me 500", "log_debt", args);
+    const other = await say("Ana owes me 700", "log_debt", { ...args, amount: "700" }, first.conversationId);
+    expect(other.debt).toMatchObject({ counterparty: "Ana", amountMinor: 70_000 });
+    const ben = await say("Ben owes me 500", "log_debt", { ...args, counterparty: "Ben" }, first.conversationId);
+    expect(ben.debt).toMatchObject({ counterparty: "Ben" });
+    const iOwe = await say("I owe Ana 500", "log_debt", { ...args, direction: "you_owe" }, first.conversationId);
+    expect(iOwe.debt).toMatchObject({ direction: "you_owe" });
+    expect(store.listDebts(user.id)).toHaveLength(4);
+  });
+
+  it("a debt saved before this conversation is not a duplicate of the run", async () => {
+    store.createDebt(user.id, { direction: "owed_to_you", counterparty: "Ana", amountMinor: 50_000 });
+    const result = await say("Ana owes me 500", "log_debt", args);
+    expect(result.debt).not.toBeNull();
+    expect(ana500()).toHaveLength(2);
+  });
+});

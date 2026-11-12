@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, debtFlowAnswers, debtFlowContinues, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, readStatementStart, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -894,6 +894,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const debtRefusedEarlier = debtFlowOpen && userMessagesFor("guard", run).some((message) => refusesToRecord(message.content));
     const debtRefusedNow = debtFlowOpen && !debtQuestionNo && refusesToRecord(input.prompt);
     const debtRefusalOnly = (debtRefusedEarlier || debtRefusedNow) && !uncertainRepayment;
+    // A debt write never duplicates a debt this open run already saved (duplicateOfRunDebt). The debts the run's replies carry are the
+    // ones saved in it. When the write would repeat one, a message that states a debt again is asked about once ("another" or "that
+    // one", answered by duplicateDebtChoice) and anything else goes on with the saved debt instead of creating a second.
+    const savedInRunIds = new Set(runDebtIds(run));
+    const savedInRun = store.listDebts(user.id).filter((item) => savedInRunIds.has(item.id));
+    const duplicateChoice = isDuplicateDebtQuestionOf(run) ? duplicateDebtChoice(input.prompt) : null;
     // The debt flow's recorded consent and its link to the saved debt belong to an answer to that debt's own question and to nothing
     // else (debtFlowAnswers). A turn that is a refusal, a new statement (a different debt, an expense, a restart) or a write for
     // another debt carries neither: it is handled as its own statement. A question the debt flow asked about its saved debt (its
@@ -908,12 +914,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       reading: readStatementStart(lastFollowup, input.prompt, ownMessages.map((message) => message.content), accounts.map((account) => account.name)),
       stated: currentDebtIntent,
       saved: savedDebt,
-      call: { kind: turnCallOf(providerCall.name), names: { direction: providerCall.args.direction === "owed_to_you" || providerCall.args.direction === "you_owe" ? providerCall.args.direction : null, counterparty: typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty : null } },
+      restates: restatesSavedDebt(input.prompt, savedDebt, ownMessages.map((message) => message.content), accounts.map((account) => account.name)),
+      // The answer to the duplicate question is about the saved debt whatever the model made of a bare "another".
+      call: duplicateChoice ? { kind: "ask" } : { kind: turnCallOf(providerCall.name), names: { direction: providerCall.args.direction === "owed_to_you" || providerCall.args.direction === "you_owe" ? providerCall.args.direction : null, counterparty: typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty : null } },
     });
     // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
     // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
     // the carried debt id, which stays link context only. It applies only to an answer to that flow.
-    const debtChainAnswer = debtAnswers ? debtOfferChainAnswer(run) : null;
+    const debtChainAnswer = debtAnswers && duplicateChoice !== "another" ? debtOfferChainAnswer(run) : null;
     const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || (debtAnswers && debtQuestionNo) || debtChainAnswer === "optOut";
     const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || (debtAnswers && debtQuestionYes) || debtChainAnswer === "optIn");
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
@@ -944,7 +952,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       let answeredReadOnly = false;
       // The saved debt an existing-debt flow is adding to Transactions, kept on any question that flow asks.
       let debtInFlow: string | undefined;
-      if (repaymentReportQuestion) {
+      // The answer to the duplicate question is the write it asked about: "another" repeats the debt on purpose, "that one" goes on
+      // with the saved one. The call is built from the saved debt, whatever the model made of a bare "another".
+      const duplicateOf = duplicateChoice && savedDebt && savedDebt.status === "open" && !currentDebtIntent ? savedDebt : undefined;
+      if (duplicateOf) {
+        call = { name: "log_debt", args: { ...(providerCall.name === "log_debt" ? providerCall.args : {}), direction: duplicateOf.direction, counterparty: duplicateOf.counterparty, amount: String(duplicateOf.amountMinor / 100) } };
+      } else if (repaymentReportQuestion) {
         call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
       } else if (ordinaryIncomeFlow) {
         // A read-only call runs as it is and leaves the question pending.
@@ -1049,7 +1062,13 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const dueDate = typeof call.args.dueDate === "string" ? call.args.dueDate.trim() || null : null;
         const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
         const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
-        const isExistingDebtFollowup = debtAnswers && !currentDebtIntent;
+        // "another" is the user's own choice to add a second debt, so it never goes on with the saved one.
+        const isExistingDebtFollowup = debtAnswers && !currentDebtIntent && duplicateChoice !== "another";
+        // The net: a write that would create a debt this run already saved never does (duplicateOfRunDebt).
+        const amountForDuplicate = (() => { try { return amount ? parsePHPToMinor(amount) : undefined; } catch { return undefined; } })();
+        const runDuplicate = direction && counterparty && amountForDuplicate && !isExistingDebtFollowup && duplicateChoice !== "another"
+          ? duplicateOfRunDebt(savedInRun, { direction, counterparty, amountMinor: amountForDuplicate }) : undefined;
+        const continuing = isExistingDebtFollowup || !!runDuplicate;
         if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
         else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
         else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }
@@ -1062,24 +1081,30 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           answer = "The proposed debt does not match the person or direction in your request. Which debt should I record?";
           followup = "clarification";
         }
+        else if (runDuplicate && currentDebtIntent) {
+          // A message that states the debt again is asked about once. The question carries the saved debt, so "that one" goes on with it.
+          answer = duplicateDebtQuestion(runDuplicate, formatPHP(runDuplicate.amountMinor));
+          followup = "clarification"; debtInFlow = runDuplicate.id;
+        }
         else {
-          const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
+          // The debt this write continues: the saved debt the flow answers, or the run's own debt it would have duplicated.
+          const existingDebts = continuing ? store.listDebts(user.id).filter((item) => item.status === "open"
             && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)
-            && item.id === recordedDebtId) : [];
+            && item.id === (runDuplicate?.id ?? recordedDebtId)) : [];
           if (existingDebts.length === 1) debtInFlow = existingDebts[0].id;
           const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
           if (!amountMinor) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
-          else if (isExistingDebtFollowup && existingDebts.length !== 1) {
+          else if (continuing && existingDebts.length !== 1) {
             answer = existingDebts.length ? "Which open debt should I add the transaction to?" : "I couldn't find that open debt. Which debt do you mean?";
             followup = "clarification";
-          } else if (isExistingDebtFollowup && amount && amountMinor !== existingDebts[0].amountMinor) {
+          } else if (continuing && amount && amountMinor !== existingDebts[0].amountMinor) {
             answer = "That amount doesn't match the open debt in this conversation. Which debt should I use?";
             followup = "clarification";
-          } else if (isExistingDebtFollowup && debtTransactionOptOut) {
+          } else if (continuing && debtTransactionOptOut) {
             debt = existingDebts[0];
             answer = `Okay, ${debt.counterparty}'s debt stays in Debts only.`;
           } else if (!debtTransactionRequested) {
-            debt = isExistingDebtFollowup ? existingDebts[0] : store.createDebt(user.id, { direction, counterparty, amountMinor, dueDate, note });
+            debt = continuing ? existingDebts[0] : store.createDebt(user.id, { direction, counterparty, amountMinor, dueDate, note });
             answer = direction === "owed_to_you"
               ? `${formatPHP(debt.amountMinor)} is owed to you by ${debt.counterparty}. Added it to Debts only.`
               : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts only.`;
@@ -1118,7 +1143,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
             else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; }
             else {
               const transactionInput = { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant" as const };
-              const saved = isExistingDebtFollowup
+              const saved = continuing
                 ? store.recordDebtAdvanceTransaction(user.id, existingDebts[0].id, transactionInput)
                 : store.recordDebtAdvance(user.id, { direction, counterparty, amountMinor, dueDate, note }, transactionInput);
               debt = saved.debt; transaction = saved.transaction;

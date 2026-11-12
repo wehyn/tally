@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type DebtTransactionAnswer, type StatementReading, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, restatesSavedDebt, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type StatementReading, type RefusalOutcome, type RunMessage, type TurnCall } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -913,5 +913,85 @@ describe("debt record refusal wording", () => {
     expect(DEBT_REFUSED_AGAIN_REPLY).toContain("recorded");
     expect(DEBT_REFUSED_AGAIN_REPLY).toContain("cancel");
     expect(DEBT_REFUSED_AGAIN_REPLY).not.toContain("payment");
+  });
+});
+
+// Finding 25: a debt write never creates a second open debt that duplicates one the open run already saved.
+describe("duplicateOfRunDebt", () => {
+  const ana: RunDebt = { id: "d1", direction: "owed_to_you", counterparty: "Ana", amountMinor: 50_000, status: "open" };
+  const next: { direction: RunDebt["direction"]; counterparty: string; amountMinor: number } = { direction: "owed_to_you", counterparty: "Ana", amountMinor: 50_000 };
+  const cases: { name: string; saved: RunDebt[]; next: typeof next; duplicate: boolean }[] = [
+    { name: "the same debt again", saved: [ana], next, duplicate: true },
+    { name: "the same counterparty spelled another way", saved: [ana], next: { ...next, counterparty: "  ANA " }, duplicate: true },
+    { name: "a different amount", saved: [ana], next: { ...next, amountMinor: 70_000 }, duplicate: false },
+    { name: "a different counterparty", saved: [ana], next: { ...next, counterparty: "Ben" }, duplicate: false },
+    { name: "a different direction", saved: [ana], next: { ...next, direction: "you_owe" }, duplicate: false },
+    { name: "a settled debt of the run", saved: [{ ...ana, status: "settled" }], next, duplicate: false },
+    { name: "a debt outside the run (not among the saved ones)", saved: [], next, duplicate: false },
+    { name: "the second of two saved debts", saved: [{ ...ana, id: "d0", counterparty: "Ben" }, ana], next, duplicate: true },
+  ];
+  for (const { name, saved, next: input, duplicate } of cases) it(`${duplicate ? "finds" : "does not find"} a duplicate: ${name}`, () => {
+    expect(duplicateOfRunDebt(saved, input)?.id ?? null).toBe(duplicate ? saved.find((debt) => debt.status === "open" && debt.counterparty !== "Ben")!.id : null);
+  });
+});
+
+describe("the debts a run saved and the duplicate question", () => {
+  it("lists each debt id the replies of the run carry once, oldest first", () => {
+    expect(runDebtIds([
+      { role: "user" }, { role: "assistant", followup: "debt_transaction", debtId: "a" },
+      { role: "user" }, { role: "assistant", followup: "clarification", debtId: "a" },
+      { role: "user" }, { role: "assistant", followup: "debt_transaction", debtId: "b" }, { role: "user" }, { role: "assistant" },
+    ])).toEqual(["a", "b"]);
+    expect(runDebtIds([{ role: "user" }, { role: "assistant", followup: "clarification" }])).toEqual([]);
+  });
+
+  it("words the question and recognizes its own wording only", () => {
+    const owed = duplicateDebtQuestion({ direction: "owed_to_you", counterparty: "Ana" }, "₱500.00");
+    expect(owed).toBe('You already added Ana owes you ₱500.00 in this conversation. Add another, or use that one? Reply "another" or "that one", or cancel.');
+    expect(duplicateDebtQuestion({ direction: "you_owe", counterparty: "Ana" }, "₱500.00")).toContain("you owe Ana ₱500.00");
+    expect(isDuplicateDebtQuestion(owed)).toBe(true);
+    for (const text of ["You already added a bill.", "Which one?", ""]) expect(isDuplicateDebtQuestion(text), text).toBe(false);
+  });
+
+  it("reads the open question as the duplicate question only when it is the last one that is not quiet", () => {
+    const question = { role: "assistant" as const, followup: "clarification" as const, content: duplicateDebtQuestion({ direction: "owed_to_you", counterparty: "Ana" }, "₱500.00") };
+    expect(isDuplicateDebtQuestionOf([{ role: "user", content: "x" }, question])).toBe(true);
+    expect(isDuplicateDebtQuestionOf([question, { role: "user", content: "How much did I spend?" }, { role: "assistant", followup: "clarification", readOnly: true, content: "₱0" }])).toBe(true);
+    expect(isDuplicateDebtQuestionOf([question, { role: "user", content: "x" }, { role: "assistant", followup: "clarification", content: "Which one?" }])).toBe(false);
+    expect(isDuplicateDebtQuestionOf([{ role: "assistant", followup: "account_or_date", content: question.content }])).toBe(false);
+  });
+
+  it("answers by an exact list: another, that one, and nothing else", () => {
+    for (const text of ["another", "Another one.", "add another", "ADD ANOTHER ONE!"]) expect(duplicateDebtChoice(text), text).toBe("another");
+    for (const text of ["that one", "Use that one", "the same one.", "same one"]) expect(duplicateDebtChoice(text), text).toBe("that");
+    for (const text of ["yes", "Ana owes me 500", "another debt for Ben", "that one and another", "", "cancel"]) expect(duplicateDebtChoice(text), text).toBeNull();
+  });
+});
+
+describe("restatesSavedDebt", () => {
+  const saved = { amountMinor: 50_000, counterparty: "Ana" };
+  const statement = ["Ana owes me 500", "yes, for lunch using Wallet on 2026-13-45"];
+  const cases: { reply: string; restates: boolean }[] = [
+    { reply: "The 500 lunch expense was on 2026-10-08 using Wallet", restates: true },
+    { reply: "It was 500 for lunch on 2026-10-08, into Wallet", restates: true },
+    { reply: "The 1,000 lunch expense was on 2026-10-08 using Wallet", restates: false },
+    { reply: "Log groceries 500 using Wallet", restates: false },
+    { reply: "Actually log groceries 500 using Wallet", restates: false },
+    { reply: "The 700 lunch expense was on 2026-10-08", restates: false },
+    { reply: "500 using Wallet on 2026-10-08", restates: false },
+    { reply: "The lunch was on 2026-10-08 using Wallet", restates: false },
+    { reply: "Ana, 500", restates: false },
+    { reply: "The 500.00 lunch was on 2026-10-08", restates: true },
+  ];
+  for (const { reply, restates } of cases) it(`${restates ? "restates" : "does not restate"}: ${reply}`, () => expect(restatesSavedDebt(reply, saved, statement, ["Wallet"])).toBe(restates));
+  it("restates nothing without a saved debt", () => expect(restatesSavedDebt("The 500 lunch expense", undefined, statement, [])).toBe(false));
+
+  it("makes a restart-shaped message an answer, and only that, in debtFlowAnswers", () => {
+    const turn: DebtFlowTurn = { pending: "account_or_date", carriesDebt: true, refused: false, reading: { starts: true, uncertain: false }, stated: undefined, saved: { direction: "owed_to_you", counterparty: "Ana" }, call: { kind: "ask" } };
+    expect(debtFlowAnswers(turn)).toBe(false);
+    expect(debtFlowAnswers({ ...turn, restates: true })).toBe(true);
+    expect(debtFlowAnswers({ ...turn, restates: true, refused: true })).toBe(false);
+    expect(debtFlowAnswers({ ...turn, restates: true, stated: { counterparty: "Ben" } })).toBe(false);
+    expect(debtFlowAnswers({ ...turn, restates: true, call: { kind: "write", names: { counterparty: "Ben" } } })).toBe(false);
   });
 });
