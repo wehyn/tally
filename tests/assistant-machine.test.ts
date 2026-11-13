@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { duplicateCallData, parseReplyData } from "../src/lib/assistant-followup";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, separateEntryChoice, shortenAtWord, separateEntryDecision, separateEntryQuestion, holdsSeparate, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, separateEntryChoice, confirmedSeparateRun, shortenAtWord, separateEntryDecision, separateEntryQuestion, holdsSeparate, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -1301,5 +1301,32 @@ describe("shortenAtWord", () => {
   it("cuts one very long word at the limit", () => expect(shortenAtWord("a".repeat(300), 100)).toBe("a".repeat(100)));
   it("never returns more than the limit", () => {
     for (const text of ["x ".repeat(200), "word ".repeat(80), "  padded text that goes on and on  ".repeat(10)]) expect(shortenAtWord(text, 77).length).toBeLessThanOrEqual(77);
+  });
+});
+
+// Round 29, bug 2: a confirmed "yes, separate" starts a new run led by the held statement.
+describe("confirmedSeparateRun", () => {
+  const hold = { name: "log_transaction", args: {}, statement: "Spent 900 on groceries today", at: "2026-10-09T08:00:00.000Z" };
+  const debtRun: (RunMessage & { content: string; createdAt?: string })[] = [
+    { role: "user", content: "Ana owes me 500 for lunch yesterday" },
+    { role: "assistant", followup: "debt_transaction", content: "offer" },
+    { role: "user", content: "Spent 900 on groceries today" },
+    { role: "assistant", followup: "clarification", content: "question", data: { asks: "separate", separate: hold } },
+    { role: "user", content: "yes, separate" },
+    { role: "assistant", followup: "account_or_date", content: "Which account?" },
+  ];
+  it("keeps a run with no confirmed separate entry as it is", () => {
+    const plain = debtRun.slice(0, 2);
+    expect(confirmedSeparateRun(plain)).toBe(plain);
+  });
+  it("starts at the held statement and drops the debt flow, the question and the confirmation", () => {
+    const run = confirmedSeparateRun(debtRun);
+    expect(run.map((message) => message.content)).toEqual(["Spent 900 on groceries today", "Which account?"]);
+    expect(run[0]).toMatchObject({ role: "user", createdAt: hold.at });
+  });
+  it("makes the held statement the only user message a hint reads", () => {
+    const run = [...confirmedSeparateRun(debtRun), { role: "user" as const, content: "using Wallet" }];
+    const own = hintMessagesFor(run.slice(0, 2), "using Wallet", ["Wallet"]).map((message) => message.content);
+    expect(own).toEqual(["Spent 900 on groceries today"]);
   });
 });

@@ -6040,3 +6040,33 @@ describe("a message that is no answer to an open debt flow asks before it writes
     });
   });
 });
+
+// Review round 29. A "yes, separate" starts a new statement: only the held statement's own words and the answers after the confirmation
+// feed its hints (bug 2). The question names the held call from its structured fields, and a newer write-shaped message replaces the
+// hold, so "yes, separate" records the call the user just sent (bug 3).
+describe("a confirmed separate entry is its own statement (round 29, bugs 2 and 3)", () => {
+  const last = (id: string) => store.getConversation(user.id, id)!.messages.at(-1)!;
+  async function say(prompt: string, name: string, args: Record<string, unknown>, conversationId?: string) {
+    vi.stubGlobal("fetch", vi.fn(async () => providerTool(name, args)));
+    const response = await POST(assistantRequest(prompt, conversationId));
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+  const debtArgs = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
+  const expense = { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" };
+
+  describe("bug 2: the open debt flow's hints never reach the separate entry", () => {
+    it("the account answer after 'yes, separate' keeps the separate request's own date, not the debt's", async () => {
+      const first = await say("Ana owes me 500 for lunch yesterday", "log_debt", { ...debtArgs, note: "lunch" });
+      const held = await say("Spent 900 on groceries using Nowhere account today", "log_transaction", { ...expense, amount: "900", description: "groceries", account: "Nowhere" }, first.conversationId);
+      expect(held.transaction).toBeNull();
+      const asked = await say("yes, separate", "ask_clarification", { question: "what?" }, first.conversationId);
+      expect(asked.transaction).toBeNull();
+      expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date" });
+      const done = await say("using Wallet", "log_transaction", { ...expense, amount: "900", description: "groceries", account: "Wallet" }, first.conversationId);
+      expect(done.transaction).toMatchObject({ amountMinor: 90_000, date: "2026-10-09" });
+      expect(done.transaction.debtId ?? null).toBeNull();
+      expect(store.listDebts(user.id)[0].activity).toHaveLength(0);
+    });
+  });
+});

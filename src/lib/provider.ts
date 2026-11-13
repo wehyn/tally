@@ -195,7 +195,11 @@ export function minimalFollowUpContext(messages: AssistantContextMessage[]): (As
       break;
     }
   }
-  return messages.slice(lastCompletedReply + 1).map(({ role, content, createdAt, followup }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null }));
+  return messages.slice(lastCompletedReply + 1).map(contextMessage);
+}
+
+export function contextMessage({ role, content, createdAt, followup }: AssistantContextMessage): AssistantContextMessage & { role: "user" | "assistant"; content: string } {
+  return { role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null };
 }
 
 async function readProviderJson(response: Response, maxBytes: number): Promise<unknown> {

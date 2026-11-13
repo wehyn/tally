@@ -5,9 +5,9 @@ import { getStore } from "@/lib/db";
 import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } from "@/lib/dates";
 import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
-import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
+import { askProvider, contextMessage, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { duplicateCallData, isBillFollowup, plainArgs, withoutSeparate, type Asks, type FollowupKind, type ReplyData, type SeparateHold } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, confirmedSeparateRun, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -790,14 +790,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const continuesFlow = earlyDecision === "continue" && separateHold !== undefined;
     const prompt = recordSeparately ? separateHold.statement : input.prompt;
     const promptAt = recordSeparately ? separateHold.at : receivedAt;
-    const history = recordSeparately ? [] : openRun;
+    // A confirmed "yes, separate" starts a new statement: the open debt flow before it feeds neither the model's history nor any hint.
+    const scopedRun = recordSeparately ? [] : confirmedSeparateRun(runMessages);
+    const history = recordSeparately ? [] : scopedRun === runMessages ? openRun : scopedRun.map(contextMessage);
     const recordedDebtId = recordSeparately ? undefined : conversationMessages.at(-1)?.debtId ?? undefined;
     const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
     // The code reads the user's words two ways. Hints that choose a value (account, date, time, category, amount,
     // payer, the debt the user named, an opt-in, bill details) read userMessageText, which leaves out quiet turns.
     // Guards that can only refuse or ask (uncertain or negated wording, a declined transaction) read guardMessageText,
     // which keeps them. The model still gets the whole run in history.
-    const run: typeof runMessages = recordSeparately ? [] : runMessages;
+    const run: typeof runMessages = [...scopedRun];
     const ownMessages = userMessagesFor("hint", run);
     const userMessages = [
       ...ownMessages.map((message) => ({ content: message.content, createdAt: message.createdAt })),

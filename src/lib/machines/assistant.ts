@@ -202,6 +202,20 @@ export function isQuietReply(reply: RunMessage): boolean {
 export function holdsSeparate(reply: RunMessage | undefined): boolean {
   return reply?.role === "assistant" && !!reply.data?.separate;
 }
+// After "yes, separate" the confirmed statement starts a NEW run. The held statement's own words, which the hold stored, lead it, and the
+// replies after the confirmation follow; the open debt flow, the held message's own turn, the question and the confirmation are left out, so
+// no hint, guard or filler of the debt flow reaches the separate entry's later answers. A run without a confirmed separate entry is
+// returned as it is.
+export function confirmedSeparateRun<T extends RunMessage & { content: string; createdAt?: string }>(run: readonly T[]): readonly T[] {
+  for (let index = run.length - 1; index >= 1; index--) {
+    const hold = run[index - 1].role === "assistant" ? run[index - 1].data?.separate : undefined;
+    if (run[index].role !== "user" || !hold || separateEntryChoice(run[index].content) !== "separate") continue;
+    const held = { role: "user", content: hold.statement, createdAt: hold.at, followup: null } as unknown as T;
+    return [held, ...run.slice(index + 1)];
+  }
+  return run;
+}
+
 // Whether the user message at `index` belongs to the pending question's own words: it is not answered by a quiet or holding reply and
 // does not answer a holding reply.
 function isOwnMessage(run: readonly RunMessage[], index: number): boolean {
