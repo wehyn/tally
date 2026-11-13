@@ -28,9 +28,9 @@ export type FollowupKind = (typeof FOLLOWUP_KINDS)[number];
 // debt write the duplicate question asked about (its note, due date, purpose, account and the rest), so "another" adds that debt and
 // not a bare one rebuilt from the saved debt.
 // `asks`: WHAT the question this reply asks is waiting for, so the answer is judged by that question's vocabulary and not by one
-// list for every question (a category name, a short description, an account, a date, an amount, or the choice a duplicate, an
+// list for every question (a category name, an account, a date, an amount, or the choice a duplicate, an
 // ambiguity or a separate entry offers). A row without it is read as before.
-export const ASKS = ["category", "description", "account", "date", "amount", "duplicate", "ambiguity", "separate"] as const;
+export const ASKS = ["category", "account", "date", "amount", "duplicate", "ambiguity", "separate"] as const;
 export type Asks = (typeof ASKS)[number];
 export type ReplyData = { another?: true; duplicateCall?: Record<string, string | number | boolean>; asks?: Asks; separate?: SeparateHold };
 

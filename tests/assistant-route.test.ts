@@ -5856,15 +5856,35 @@ describe("an open debt flow is closed to messages that are not its answers (roun
       expect(store.listDebts(user.id)).toHaveLength(1);
     });
 
-    it("a request to shorten the description is answered by a short description", async () => {
-      const description = "a".repeat(180);
+    it("a description over the limit is shortened by the code and never asked of the user (round 29, bug 1)", async () => {
+      const description = "lunch with the whole team ".repeat(10).trim();
       const first = await say(`Ana owes me 500 for ${description}`, "log_debt", { ...args, note: description, description });
-      const asked = await say("yes", "log_debt", { ...args, note: description, description }, first.conversationId);
-      expect(asked.answer).toContain("shorten");
-      expect(last(first.conversationId).data).toMatchObject({ asks: "description" });
-      expect(last(first.conversationId).content).toContain("Reply with just a short description");
-      const done = await say("lunch", "log_debt", { ...args, description: "lunch" }, first.conversationId);
-      expect(done.transaction).toMatchObject({ debtId: first.debt.id, description: "Owed by Ana for lunch" });
+      const done = await say("yes", "log_debt", { ...args, note: description, description }, first.conversationId);
+      expect(done.answer).not.toContain("shorten");
+      expect(done.transaction).toMatchObject({ debtId: first.debt.id, amountMinor: 50_000 });
+      const written = done.transaction.description as string;
+      expect(written.length).toBeLessThanOrEqual(180);
+      expect(written.startsWith("Owed by Ana for lunch with the whole team")).toBe(true);
+      const kept = written.slice("Owed by Ana for ".length);
+      expect(description.startsWith(kept)).toBe(true);
+      expect(description[kept.length]).toBe(" ");
+      expect(last(first.conversationId).data ?? null).toBeNull();
+      // "keep it unrecorded" is an ordinary message now: it answers no description question and writes nothing.
+      const after = await say("keep it unrecorded", "ask_clarification", { question: "What do you mean?" }, first.conversationId);
+      expect(after.transaction).toBeNull();
+      expect(store.listTransactions(user.id)).toHaveLength(1);
+    });
+
+    it("a long description is never asked about, even when the account question comes first", async () => {
+      const description = "lunch with the whole team ".repeat(10).trim();
+      const first = await say(`Ana owes me 500 for ${description}`, "log_debt", { ...args, note: description, description });
+      const asked = await say("yes, for lunch using Nowhere account", "log_debt", { ...args, note: description, description, account: "Nowhere" }, first.conversationId);
+      expect(asked.transaction).toBeNull();
+      expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date" });
+      const done = await say("use Wallet", "log_debt", { ...args, note: description, description, account: "Wallet" }, first.conversationId);
+      expect(done.transaction.description.length).toBeLessThanOrEqual(180);
+      const unrecorded = await say("keep it unrecorded", "ask_clarification", { question: "What do you mean?" }, first.conversationId);
+      expect(unrecorded.transaction).toBeNull();
       expect(store.listTransactions(user.id)).toHaveLength(1);
     });
   });

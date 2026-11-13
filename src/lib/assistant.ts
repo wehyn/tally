@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { duplicateCallData, isBillFollowup, plainArgs, withoutSeparate, type Asks, type FollowupKind, type ReplyData, type SeparateHold } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_WORD_CAP, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -1205,8 +1205,10 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
                 requestedCategory?.type === kind ? requestedCategory : undefined,
                 guessCategory(`${userContext} ${note} ${transactionDescription}`, categories),
               ].find((candidate): candidate is AssistantCategory => candidate?.type === kind) ?? fallbackCategory(kind, categories);
-            const details = transactionDescription || note;
-            const description = `${direction === "owed_to_you" ? "Owed by" : "Borrowed from"} ${counterparty}${details ? ` for ${details}` : ""}`;
+            const descriptionLead = `${direction === "owed_to_you" ? "Owed by" : "Borrowed from"} ${counterparty}`;
+            // Too long a description is shortened here, at a word boundary, from the model's own wording. Nothing is asked of the user.
+            const details = shortenAtWord(transactionDescription || note, DESCRIPTION_MAX_LENGTH - descriptionLead.length - " for ".length);
+            const description = `${descriptionLead}${details ? ` for ${details}` : ""}`;
 
             if (!accounts.length) { answer = "Create a financial account first; then I can record this money movement."; followup = "account_or_date"; asks = "account"; }
             else if (!account) {
@@ -1221,10 +1223,6 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
               followup = "clarification"; asks = "category";
             }
             else if (!category) { answer = `Create a ${kind} category before recording this money movement.`; followup = "clarification"; }
-            else if (description.length > 180) {
-              answer = `Please shorten the transaction description to 180 characters or fewer. Reply with just a short description (up to ${DESCRIPTION_WORD_CAP} words), or say cancel.`;
-              followup = "clarification"; asks = "description";
-            }
             else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; asks = "ambiguity"; }
             else {
               const transactionInput = { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant" as const };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { duplicateCallData, parseReplyData } from "../src/lib/assistant-followup";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, separateEntryChoice, separateEntryDecision, separateEntryQuestion, holdsSeparate, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, separateEntryChoice, shortenAtWord, separateEntryDecision, separateEntryQuestion, holdsSeparate, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -1177,7 +1177,8 @@ describe("askedOf", () => {
     expect(askedOf([])).toBeNull();
   });
   it("round trips through the stored data and ignores an unknown value", () => {
-    expect(parseReplyData(JSON.stringify({ asks: "description" }))).toEqual({ asks: "description" });
+    expect(parseReplyData(JSON.stringify({ asks: "description" }))).toBeNull();
+    expect(parseReplyData(JSON.stringify({ asks: "category" }))).toEqual({ asks: "category" });
     expect(parseReplyData(JSON.stringify({ asks: "whatever" }))).toBeNull();
     expect(parseReplyData(JSON.stringify({ another: true, asks: "account" }))).toEqual({ another: true, asks: "account" });
   });
@@ -1189,8 +1190,6 @@ describe("answerShaped, question by question", () => {
   const table: { asks: AnswerQuestion; yes: string[]; no: string[] }[] = [
     { asks: "category", yes: ["Food", "food", "yes, Food", "Eating out", "yes, eating out", "Food, please", "Salary"],
       no: ["Wallet", "lunch", "Sushi", "Food 500", "Record an expense under Food", "don't use Food", "Food and Wallet", "Use Food category", "Ben"] },
-    { asks: "description", yes: ["lunch", "Lunch with Ana", "yes, lunch", "team lunch at the mall", "lunch!", "one two three four five six", "Jollibee."],
-      no: ["one two three four five six seven", "lunch 500", "I don't want to record it", "don't record it", "never mind lunch", "cancel", "lunch. Use Wallet", "instead lunch", "", "500"] },
     { asks: "account", yes: ["Wallet", "use Wallet", "yes, Wallet", "Wallet today", "use Nowhere account", "2026-10-08"], no: ["lunch groceries", "Food", "500 for groceries", "another", "that one"] },
     { asks: "date", yes: ["2026-10-08", "yesterday", "Wallet on 2026-10-08", "today"], no: ["Food", "tomorrow groceries", "another"] },
     { asks: "amount", yes: ["600", "₱600.00", "it's 30", "30 pesos", "1,200.50", "500"], no: ["thirty", "600 for groceries", "make it 30", "Food 600", "don't, 600"] },
@@ -1290,5 +1289,17 @@ describe("the held exchange is no part of the flow's words", () => {
   });
   it("neither adds a word to the flow's statement", () => {
     expect(debtFlowStatement(run)).toEqual(["Ana owes me 500"]);
+  });
+});
+
+// Round 29, bug 1: a description that is too long is shortened by the code at a word boundary, never asked of the user.
+describe("shortenAtWord", () => {
+  it("leaves a description that fits alone", () => expect(shortenAtWord("lunch with Ana", 20)).toBe("lunch with Ana"));
+  it("cuts at the last word boundary that fits", () => expect(shortenAtWord("lunch with the whole team", 17)).toBe("lunch with the"));
+  it("keeps a word that ends exactly at the limit", () => expect(shortenAtWord("lunch with the whole team", 14)).toBe("lunch with the"));
+  it("drops the punctuation the cut leaves behind", () => expect(shortenAtWord("lunch, with the whole team", 6)).toBe("lunch"));
+  it("cuts one very long word at the limit", () => expect(shortenAtWord("a".repeat(300), 100)).toBe("a".repeat(100)));
+  it("never returns more than the limit", () => {
+    for (const text of ["x ".repeat(200), "word ".repeat(80), "  padded text that goes on and on  ".repeat(10)]) expect(shortenAtWord(text, 77).length).toBeLessThanOrEqual(77);
   });
 });

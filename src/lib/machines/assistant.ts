@@ -386,16 +386,18 @@ export type AnswerContext = {
   categoryNames?: readonly string[];
 };
 
-// The longest description a question that asks for one accepts, in words. The question says so.
-export const DESCRIPTION_WORD_CAP = 6;
+// The longest transaction description the store takes, in characters.
+export const DESCRIPTION_MAX_LENGTH = 180;
 
-// The answer to a question that asks for a short description: a few plain words. No digit (an amount), no sentence break, no refusal or
-// reversal word and no more than DESCRIPTION_WORD_CAP words, so a refusal or a new statement is never a description.
-function isShortDescription(message: string): boolean {
-  const text = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").trim().replace(/[.!]+$/, "");
-  if (!text || /[\d.!?;:]/.test(text)) return false;
-  const tokens = answerTokens(text);
-  return tokens.length > 0 && tokens.length <= DESCRIPTION_WORD_CAP && !tokens.some((token) => NEVER_FILLER.has(token));
+// A description that is too long is shortened by the code, never asked of the user: the user's free text is not an answer to anything. The
+// cut is deterministic, at the last word boundary that fits, and applies to the model's own description.
+export function shortenAtWord(text: string, max: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  const cut = trimmed.slice(0, max);
+  const boundary = /\s/.test(trimmed[max] ?? "") ? max : cut.search(/\s\S*$/);
+  const head = (boundary > 0 ? cut.slice(0, boundary) : cut).replace(/[\s,;:.\-–—]+$/u, "");
+  return head || cut.trim();
 }
 
 const ANSWER_FILLER: ReadonlySet<string> = new Set((
@@ -430,10 +432,9 @@ function answerTokens(text: string): string[] {
 
 export function answerShaped(message: string, question: AnswerQuestion, context: AnswerContext): boolean {
   let text = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/₱/g, " ");
-  // Each question has its own vocabulary. A description is free text, so it is a few plain words and nothing else.
+  // Each question has its own vocabulary. No question takes free text.
   // The separate-entry question is answered by an exact list, nothing else.
   if (question === "separate") return separateEntryChoice(message) !== null;
-  if (question === "description") return isShortDescription(text.replace(/^(?:yes|yeah|yep|sure|ok|okay)\b[\s,]*/, ""));
   // A category is one the user has. "yes, Food" is the same answer.
   if (question === "category") return answerTokens(withoutAccountNames(text, context.categoryNames ?? [])).every((token) => ANSWER_FILLER.has(token));
   text = withoutDatesAndTimes(text).replace(WEEKDAY_DATES, " ");
