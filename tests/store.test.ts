@@ -308,6 +308,163 @@ describe("owner-scoped ledger", () => {
     }]);
   });
 
+  it("keeps no context column in assistant messages and does not put one in a conversation's messages", () => {
+    const user = store.registerUser("no_context_column", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    store.addMessage(user.id, conversationId, "user", "Ana paid me");
+    store.addMessage(user.id, conversationId, "assistant", "What amount?", undefined, "repayment_amount");
+
+    const columns = (database.pragma("table_info(assistant_messages)") as { name: string }[]).map((column) => column.name);
+    expect(columns).not.toContain("context_start");
+    for (const message of store.getConversation(user.id, conversationId)!.messages) expect(Object.keys(message)).not.toContain("contextStart");
+  });
+
+  it("opens a database whose assistant messages already have a context_start column, and stores and reads messages", () => {
+    const user = store.registerUser("existing_context_column", "hash");
+    const conversationId = store.createConversation(user.id, "Dev chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
+      context_start INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,context_start,created_at) VALUES('old-cancel',?,?,'user','cancel',1,'2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+
+    store.migrate();
+    store.addMessage(user.id, conversationId, "assistant", "Okay, I dropped that question. Nothing was recorded.");
+
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.content)).toEqual(["cancel", "Okay, I dropped that question. Nothing was recorded."]);
+    expect(store.lastMessageId(user.id, conversationId)).toBe(store.getConversation(user.id, conversationId)!.messages[1].id);
+  });
+
+  it("migrates legacy assistant messages without adding a context column, and migrating again changes nothing", () => {
+    const user = store.registerUser("legacy_message_context", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,created_at) VALUES('old-message',?,?,'user','Lunch','2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+
+    store.migrate();
+    store.migrate();
+
+    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ id: "old-message", content: "Lunch", billId: null }]);
+    expect((database.pragma("table_info(assistant_messages)") as { name: string }[]).map((column) => column.name)).not.toContain("context_start");
+  });
+
+  it("adds the bill column to legacy assistant messages and reads back the bill a reply saved", () => {
+    const user = store.registerUser("message_bill_column", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
+    )`);
+    store.migrate();
+    const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const utilities = store.listCategories(user.id).find((category) => category.name === "Utilities")!;
+    const bill = store.createBill(user.id, { name: "Netflix", amountMinor: 54_900, frequency: "monthly", nextDueDate: "2099-01-01", accountId: wallet.id, categoryId: utilities.id });
+
+    store.addMessage(user.id, conversationId, "assistant", "Saved the bill.", undefined, "repayment_amount", undefined, undefined, bill.id);
+
+    expect(store.getConversation(user.id, conversationId)!.messages).toMatchObject([{ content: "Saved the bill.", billId: bill.id }]);
+  });
+
+  it("adds the read-only column to legacy assistant messages, reads old rows as not read-only, and stores the flag", () => {
+    const user = store.registerUser("message_read_only_column", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,needs_followup,followup_kind,created_at) VALUES('old-reply',?,?,'assistant','Listed',1,'repayment_amount','2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+    store.migrate();
+
+    store.addMessage(user.id, conversationId, "assistant", "Listed again", undefined, "repayment_amount", undefined, undefined, undefined, true);
+    store.addMessage(user.id, conversationId, "assistant", "Asked again", undefined, "repayment_amount");
+
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.readOnly)).toEqual([false, true, false]);
+  });
+
+  it("adds the reply-data column to legacy assistant messages idempotently, reads old rows as having none, and stores the choice of another debt", () => {
+    const user = store.registerUser("message_followup_data_column", "hash");
+    const conversationId = store.createConversation(user.id, "Old chat");
+    database.exec("DROP TABLE assistant_messages");
+    database.exec(`CREATE TABLE assistant_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
+      bill_id TEXT REFERENCES bills(id) ON DELETE SET NULL, read_only INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    )`);
+    database.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,needs_followup,followup_kind,created_at) VALUES('old-reply',?,?,'assistant','Asked',1,'clarification','2026-10-09T00:00:00.000Z')")
+      .run(conversationId, user.id);
+    store.migrate();
+    store.migrate();
+
+    store.addMessage(user.id, conversationId, "assistant", "Which account?", undefined, "account_or_date", undefined, undefined, undefined, false, { another: true });
+    store.addMessage(user.id, conversationId, "assistant", "Add another?", undefined, "clarification", undefined, undefined, undefined, false, { duplicateCall: { note: "groceries", dueDate: "2026-10-20", amount: "500", ignored: { nested: true } } as never });
+    store.addMessage(user.id, conversationId, "assistant", "Plain", undefined, "clarification");
+
+    expect(store.getConversation(user.id, conversationId)!.messages.map((message) => message.data)).toEqual([
+      null, { another: true }, { duplicateCall: { note: "groceries", dueDate: "2026-10-20", amount: "500" } }, null,
+    ]);
+  });
+
+  it("names the last stored message of a conversation by insertion order, and null when it has none", () => {
+    const user = store.registerUser("last_message_id", "hash");
+    const other = store.registerUser("last_message_other", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    expect(store.lastMessageId(user.id, conversationId)).toBeNull();
+
+    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, "2999-01-01T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "assistant", "reply", undefined, "clarification");
+    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, "2026-10-09T00:00:00.000Z");
+
+    const messages = store.getConversation(user.id, conversationId)!.messages;
+    expect(store.lastMessageId(user.id, conversationId)).toBe(messages[2].id);
+    expect(() => store.lastMessageId(other.id, conversationId)).toThrow("Conversation not found.");
+    expect(() => store.lastMessageId(user.id, "00000000-0000-4000-8000-000000000000")).toThrow("Conversation not found.");
+  });
+
+  it("stamps a message with the time it was received and keeps a later reply after it", () => {
+    const user = store.registerUser("received_time_message", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    store.addMessage(user.id, conversationId, "user", "lunch today", undefined, null, undefined, "2026-10-09T15:59:59.000Z");
+    store.addMessage(user.id, conversationId, "assistant", "How much?");
+
+    const messages = store.getConversation(user.id, conversationId)!.messages;
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(messages[0].createdAt).toBe("2026-10-09T15:59:59.000Z");
+  });
+
+  it("keeps each message's own time and lists a conversation in insertion order when the clock goes backwards", () => {
+    const user = store.registerUser("backwards_clock_messages", "hash");
+    const conversationId = store.createConversation(user.id, "Chat");
+    store.addMessage(user.id, conversationId, "user", "first", undefined, null, undefined, "2999-01-01T00:00:00.000Z");
+    store.addMessage(user.id, conversationId, "assistant", "reply");
+    store.addMessage(user.id, conversationId, "user", "second", undefined, null, undefined, "2026-10-09T00:00:00.000Z");
+
+    const messages = store.getConversation(user.id, conversationId)!.messages;
+    expect(messages.map((message) => message.content)).toEqual(["first", "reply", "second"]);
+    expect(messages[0].createdAt).toBe("2999-01-01T00:00:00.000Z");
+    expect(messages[2].createdAt).toBe("2026-10-09T00:00:00.000Z");
+  });
+
   it("adds a nullable time column to legacy transactions without inventing event times", () => {
     const user = store.registerUser("legacy_transaction", "hash");
     const wallet = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
@@ -706,6 +863,29 @@ describe("recurring bills", () => {
     expect(store.listTransactions(available.id, { start: today, end: today }, 10, { kind: "expense" })).toMatchObject([{ description: "Can post", amountMinor: 100, date: today }]);
     const expectedNextDate = new Date(Date.parse(`${today}T00:00:00.000Z`) + 7 * 86_400_000).toISOString().slice(0, 10);
     expect(store.listBills(available.id).find((bill) => bill.id === availableBill.id)?.nextDueDate).toBe(expectedNextDate);
+  });
+
+  it("refuses to move a posted bill back to a date already posted, and keeps legitimate edits", () => {
+    const user = store.registerUser("bill_posted_dates", "hash");
+    const account = store.createAccount(user.id, { name: "Wallet", type: "cash", openingMinor: 0 });
+    const food = store.listCategories(user.id).find((category) => category.name === "Food")!;
+    const today = todayInManila();
+    const plusDays = (days: number) => new Date(Date.parse(`${today}T00:00:00.000Z`) + days * 86_400_000).toISOString().slice(0, 10);
+    const bill = store.createBill(user.id, { name: "Water", amountMinor: 100, frequency: "weekly", nextDueDate: today, accountId: account.id, categoryId: food.id });
+    store.processDueBills(today);
+    const posted = () => (database.prepare("SELECT date FROM transactions WHERE user_id=? AND description='Water' ORDER BY date").all(user.id) as { date: string }[]).map((row) => row.date);
+    expect(posted()).toEqual([today]);
+    const current = store.listBills(user.id).find((entry) => entry.id === bill.id)!;
+
+    expect(() => store.updateBill(user.id, bill.id, { nextDueDate: today }, current.nextDueDate)).toThrow(/already posted/);
+    expect(store.listBills(user.id).find((entry) => entry.id === bill.id)).toMatchObject({ nextDueDate: plusDays(7) });
+    store.processDueBills(today);
+    expect(posted()).toEqual([today]);
+
+    expect(store.updateBill(user.id, bill.id, { amountMinor: 250 }, current.nextDueDate)).toMatchObject({ amountMinor: 250, nextDueDate: plusDays(7) });
+    expect(store.updateBill(user.id, bill.id, { nextDueDate: plusDays(3) }, plusDays(7))).toMatchObject({ nextDueDate: plusDays(3) });
+    store.processDueBills(plusDays(3));
+    expect(posted()).toEqual([today, plusDays(3)]);
   });
 
   it("removes bills before deleting their owner", () => {

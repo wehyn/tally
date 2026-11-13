@@ -5,8 +5,9 @@ import { getStore } from "@/lib/db";
 import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } from "@/lib/dates";
 import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
-import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
-import { isBillFollowup, type FollowupKind } from "@/lib/assistant-followup";
+import { askProvider, contextMessage, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
+import { duplicateCallData, isBillFollowup, plainArgs, withoutSeparate, type Asks, type FollowupKind, type ReplyData, type SeparateHold } from "@/lib/assistant-followup";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, confirmedSeparateRun, heldCallLabel, resumedQuestion, savedQuestionText, statesAmount, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -36,11 +37,11 @@ function isDebtRepaymentReportQuestion(prompt: string, metrics: ReadonlySet<Fina
   return (metrics.has("repaymentsReceived") || metrics.has("repaymentsMade"))
     && /\b(?:how much|what amount|what (?:were|was|are|is)|total|sum|show|display|list|report|breakdown)\b/i.test(prompt);
 }
-function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>, prompt: string, requestedMetrics: ReadonlySet<FinanceMetric>) {
+function answerForFacts(facts: ReturnType<ReturnType<typeof getStore>["getFinanceFacts"]>, prompt: string, requestedMetrics: ReadonlySet<FinanceMetric>, now: Date) {
   if (/\b(?:assets?|balances?|account totals?)\b/i.test(prompt)) {
     return `Account Balances\n\n${facts.accounts.map((account) => `${account.name}: ${formatPHP(account.balanceMinor)}`).join("\n") || "No accounts yet."}`;
   }
-  const currentPeriod = monthToDateRange();
+  const currentPeriod = monthToDateRange(now);
   const period = facts.start === currentPeriod.start && facts.end === currentPeriod.end
     ? `This ${formatAssistantDate(facts.end, "long")}`
     : `From ${formatAssistantDate(facts.start)} to ${formatAssistantDate(facts.end)}`;
@@ -260,7 +261,7 @@ function isBillChoice(text: string, choice: "add" | "update"): boolean {
   return choice === "add" ? /\badd another\b/i.test(text) : /\bupdate (?:the )?(?:existing|current|existing one|one|bill)\b|\bupdate it\b/i.test(text);
 }
 function billScheduleDate(bill: Bill): string { return bill.nextDueDate; }
-type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?: string; followup: FollowupKind | null };
+type AssistantBillResult = { answer: string; bill: Bill | null; postingWarning?: string; followup: FollowupKind | null; ambiguous?: true };
 // When several details are missing at once, the reply is read for the most specific one that is still needed.
 function missingBillFollowup(missing: string[]): FollowupKind {
   const bothDatesMissing = missing.includes("the first due date") && missing.includes("an exact end date");
@@ -275,13 +276,17 @@ function missingBillFollowup(missing: string[]): FollowupKind {
 }
 function handleAssistantBillAction(
   store: ReturnType<typeof getStore>, userId: string, action: "create_bill" | "update_bill", args: Record<string, unknown>,
-  userMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null,
+  userMessages: string[], hintMessages: string[], accounts: Account[], categories: AssistantCategory[], followup: FollowupKind | null, now: Date,
+  otherReading: { hintMessages: string[]; carriesEarlier: boolean; unclear: boolean } | null = null,
 ): AssistantBillResult {
-  const today = todayInManila();
+  const today = todayInManila(now);
   const duplicateFollowup = followup === "bill_duplicate" || followup === "bill_schedule";
   const lastUserMessage = userMessages.at(-1) ?? "";
   const explicitUpdate = /\b(?:update|edit|change|remove|clear|delete)\b.{0,60}\bbill\b/i.test(lastUserMessage);
-  const detailMessages = (action === "update_bill" || explicitUpdate) && !duplicateFollowup ? [lastUserMessage] : userMessages;
+  const ownDetailsOnly = (action === "update_bill" || explicitUpdate) && !duplicateFollowup;
+  const detailMessages = ownDetailsOnly ? [lastUserMessage] : userMessages;
+  // The account and the category the bill uses come from the statement it is for (hintMessagesFor), not the whole run.
+  const hintDetailMessages = ownDetailsOnly ? [lastUserMessage] : hintMessages;
   const amountHint = billAmountHint(detailMessages, followup);
   const frequencyHint = billFrequencyHint(detailMessages);
   const startHint = billDateHint(detailMessages, "start", followup, today);
@@ -344,14 +349,22 @@ function handleAssistantBillAction(
     ? accounts.find((candidate) => ` ${normalizeWords(lastUserMessage)} `.includes(` ${normalizeWords(candidate.name)} `))
       ?? (/^default(?: account)?$/i.test(lastUserMessage.trim()) ? accounts.find((candidate) => candidate.isDefault) : undefined)
     : undefined;
-  const accountHint = accountCorrection ? { account: accountCorrection, mentioned: true } : accountHintFromMessages(detailMessages, accounts);
+  const accountHint = accountCorrection ? { account: accountCorrection, mentioned: true } : accountHintFromMessages(hintDetailMessages, accounts);
   const account = accountHint.mentioned ? accountHint.account
     : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
       : accounts.find((candidate) => candidate.isDefault);
-  const categoryHint = latestCategoryHintFromMessages(detailMessages, categories, "expense");
+  // The account the bill (and the expense it posts when it is due today) would use under the other reading of the hints.
+  const accountUnder = (messages: string[]) => {
+    const hint = accountCorrection ? { account: accountCorrection, mentioned: true } : accountHintFromMessages(messages, accounts);
+    return hint.mentioned ? hint.account
+      : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
+        : accounts.find((candidate) => candidate.isDefault);
+  };
+  const otherAccount = otherReading && !ownDetailsOnly ? accountUnder(otherReading.hintMessages) : undefined;
+  const categoryHint = latestCategoryHintFromMessages(hintDetailMessages, categories, "expense");
   const requestedCategory = typeof args.category === "string" ? findCategory(args.category, categories, "expense") : undefined;
-  const inferredCategory = findCategoryInText(detailMessages.join(" "), categories, "expense")
-    ?? guessCategory(`${detailMessages.join(" ")} ${name}`, categories);
+  const inferredCategory = findCategoryInText(hintDetailMessages.join(" "), categories, "expense")
+    ?? guessCategory(`${hintDetailMessages.join(" ")} ${name}`, categories);
   const category = categoryHint.mentioned ? categoryHint.category
     : effectiveAction === "update_bill" ? categories.find((candidate) => candidate.id === selected?.categoryId)
       : inferredCategory ?? requestedCategory;
@@ -375,6 +388,16 @@ function handleAssistantBillAction(
   if (effectiveAction === "create_bill" && (amountMinor === undefined || !frequency || !firstDueDate || !endDate)) {
     const missingDetails = [amountMinor === undefined ? "amount" : "", !frequency ? "cadence" : "", !firstDueDate ? "first due date" : "", !endDate ? "exact end date" : ""].filter(Boolean);
     return { answer: `Please provide the ${missingDetails.join(", ")}.`, bill: null, followup: amountMinor === undefined ? "bill_amount" : !firstDueDate ? "bill_start_date" : !endDate ? "bill_end_date" : "bill_details" };
+  }
+
+  if (otherReading && !ownDetailsOnly && (otherAccount?.id !== account?.id || otherReading.unclear)) {
+    // The question names the earlier statement's account as it stood before this message, not the account this message named.
+    const earlierMessages = (otherReading.carriesEarlier ? otherReading.hintMessages : hintDetailMessages).slice(0, -1);
+    const earlierHint = accountHintFromMessages(earlierMessages, accounts);
+    const earlier = earlierHint.mentioned ? earlierHint.account
+      : effectiveAction === "update_bill" ? accounts.find((candidate) => candidate.id === selected?.accountId)
+        : accounts.find((candidate) => candidate.isDefault);
+    return { answer: ambiguousHintsQuestion(`bill ${name}`, earlier?.name ?? "an account I could not find"), bill: null, followup: "bill_account", ambiguous: true };
   }
 
   const createInput: BillInput = {
@@ -437,6 +460,10 @@ function isUnconfirmedOutgoingDebtPayment(text: string): boolean {
 }
 function hasOutgoingDebtRepaymentWording(text: string): boolean {
   return /\b(?:i|we)\s+(?:(?:didn't|did not|haven't|have not|hasn't|has not|hadn't|had not|never|maybe|might not)\s+)?(?:paid|pay|repaid|returned|settled)\b|\b(?:i|we)\s+paid\s+back\b/i.test(text);
+}
+// A message with payment wording is handled by the repayment path, never by the income flow, so it opens a payment.
+function hasPaymentWording(text: string): boolean {
+  return hasIncomingDebtRepaymentWording(text) || hasOutgoingDebtRepaymentWording(text);
 }
 function hasOutgoingPayeeOrPurpose(text: string): boolean {
   const match = /\b(?:i|we)\s+(?:paid\s+back|paid|repaid|returned|settled)\s+(.+?)\s*[.!?]?\s*$/i.exec(text);
@@ -571,6 +598,22 @@ function accountMention(text: string, accounts: Account[]): Account | undefined 
     return new RegExp(`\\b(?:${cues})\\s+(?:my\\s+)?${name}(?:\\s+(?:account|card))?\\b`, "i").test(text);
   });
 }
+// The reply the ordinary income clarification asks for, "yes, Wallet", names the account with no cue word, and may
+// restate the date after it ("yes, Maya, 2026-10-05"). Only the income write reads it, from the reply that confirms the
+// income and from the earlier confirmations of the same income question (incomeAccountChoice). Everywhere else a yes
+// followed by a name picks a payer, a payee or a bill detail, so it is not an account choice (accountMention needs a
+// cue word).
+function incomeConfirmationAccount(prompt: string, accounts: Account[]): Account | undefined {
+  return [...accounts].sort((a, b) => b.name.length - a.name.length).find((account) => {
+    const name = account.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    return new RegExp(`^\\s*(?:yes|yeah|yep|sure|okay|ok)\\b[\\s,.:;-]*(?:my\\s+)?${name}(?:\\s+(?:account|card))?(?:[\\s,.:;-]+(?:on\\s+)?(?:\\d{4}-\\d{2}-\\d{2}|today|yesterday|tomorrow))?\\s*[.!]?\\s*$`, "i").test(prompt);
+  });
+}
+// The account an answer to the question naming both choices chooses with no cue word: "yes, Wallet", or the same after the
+// choice words ("new one, Wallet, today", "earlier, BPI").
+function ambiguityAnswerAccount(prompt: string, accounts: Account[]): Account | undefined {
+  return incomeConfirmationAccount(prompt, accounts) ?? incomeConfirmationAccount(`yes, ${withoutAmbiguityChoice(prompt)}`, accounts);
+}
 function accountHintFromMessages(messages: string[], accounts: Account[]): { account?: Account; mentioned: boolean; invalidName?: string } {
   for (let index = messages.length - 1; index >= 0; index--) {
     if (/\b(?:use|choose|select|set|switch(?:\s+to)?|change\s+to)\s+(?:my\s+)?default(?:\s+account)?\b/i.test(messages[index])) return { account: accounts.find((candidate) => candidate.isDefault), mentioned: true };
@@ -663,31 +706,168 @@ function directDebtCapture(prompt: string): { name: string; args: Record<string,
   return null;
 }
 
+// The user message, the write and the reply commit together. A new chat is created in the same step,
+// so a turn that fails (provider error, consent withdrawn, chat deleted) leaves nothing behind.
+// Every turn that stores anything goes through here, so neither recheck below can be skipped by a branch.
+// readLastMessageId is the last message the turn saw when it read the pending question. A turn whose
+// conversation has moved on since (another request answered or cancelled that question) stores nothing.
+// receivedAt is stored as the user message's time, because a later follow-up reads relative dates ("today") from it.
+// Where one write would put its money under one reading of the hints: the account, the date and the time, as the write
+// stores them. Every path that stores a transaction (income, received and paid repayments, a debt with its transaction)
+// reads them here, once for the reading the code chose and once for the other reading, and compares them (ambiguityVerdict).
+type HintMessage = { content: string; createdAt?: string };
+type WritePlace = {
+  requestedAccount: string; accountHint: { account?: Account; mentioned: boolean; invalidName?: string };
+  account: Account | undefined; date: string; time: string; timed: boolean;
+};
+function writePlaceOf(hints: readonly HintMessage[], args: Record<string, unknown>, accounts: Account[], options: { accountChoice?: Account; providerTime: boolean; now: Date }): WritePlace {
+  const hintText = hints.map((message) => message.content);
+  const requestedAccount = typeof args.account === "string" ? args.account.trim() : "";
+  const accountHint = options.accountChoice ? { account: options.accountChoice, mentioned: true } : accountHintFromMessages(hintText, accounts);
+  const defaultAccount = accounts.find((candidate) => candidate.isDefault);
+  const account = accountHint.mentioned
+    ? accountHint.account
+    : requestedAccount
+      ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
+      : defaultAccount;
+  const dateHint = priorDateHint([...hints]);
+  const requestedDate = typeof args.date === "string" ? args.date.trim() : "";
+  const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila(options.now));
+  const timeHint = timeHintFromMessages(hintText);
+  const requestedTime = options.providerTime && typeof args.time === "string" ? args.time.trim() : "";
+  const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila(options.now);
+  return { requestedAccount, accountHint, account, date, time, timed: !!timeHint && isTime(timeHint) };
+}
+const placeKey = (place: WritePlace) => ({ account: place.account?.id ?? `?${place.accountHint.invalidName ?? place.requestedAccount}`, date: place.date, time: place.time });
+function describePlace(place: WritePlace): string {
+  return `${place.account?.name ?? "an account I could not find"} on ${place.date ? formatAssistantDate(place.date) : "a date I could not read"}${place.timed ? ` at ${place.time}` : ""}`;
+}
+// How the separate-entry question names the saved debt.
+function separateDebtLabel(debt: Debt | undefined): string {
+  if (!debt) return "the debt you just saved";
+  return debt.direction === "owed_to_you" ? `${debt.counterparty}'s ${formatPHP(debt.amountMinor)} debt` : `your ${formatPHP(debt.amountMinor)} debt to ${debt.counterparty}`;
+}
+function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, readLastMessageId: string | null, prompt: string, receivedAt: string, work: (conversationId: string) => T): T {
+  return store.transaction(() => {
+    assertAssistantAccess(store, userId);
+    if (conversationId && !turnMayCommit(readLastMessageId, store.lastMessageId(userId, conversationId))) {
+      throw new HttpError(409, "Your conversation changed while this ran. Send that again.");
+    }
+    const id = conversationId ?? store.createConversation(userId, prompt.slice(0, 80));
+    store.addMessage(userId, id, "user", prompt, undefined, null, undefined, receivedAt);
+    return work(id);
+  });
+}
+
 export async function runAssistantPrompt(store: ReturnType<typeof getStore>, user: { id: string }, input: AssistantPromptInput) {
+    const receivedAt = new Date().toISOString();
     const accounts = store.listAccounts(user.id);
     const categories = store.listCategories(user.id);
-    let conversationId = input.conversationId;
-    if (conversationId) {
-      if (!store.getConversation(user.id, conversationId)) throw new HttpError(404, "Conversation not found.");
-    } else conversationId = store.createConversation(user.id, input.prompt.slice(0, 80));
-    const conversationMessages = store.getConversation(user.id, conversationId)?.messages ?? [];
-    const history = minimalFollowUpContext(conversationMessages);
-    const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
-    const promptCreatedAt = new Date().toISOString();
+    const conversation = input.conversationId ? store.getConversation(user.id, input.conversationId) : null;
+    if (input.conversationId && !conversation) throw new HttpError(404, "Conversation not found.");
+    const conversationMessages = conversation?.messages ?? [];
+    const readLastMessageId = conversationMessages.at(-1)?.id ?? null;
+    const openRun = minimalFollowUpContext(conversationMessages);
+    const pending = openRun.at(-1)?.followup ?? null;
+    const outcome = pendingOutcome(pending, input.prompt);
+    if (pending && (outcome === "cancel" || runExpired(openRun.length, outcome))) {
+      const saved = runSaved(conversationMessages);
+      const answer = outcome === "cancel" ? cancelReply(pending, saved) : expiredReply(saved);
+      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
+        store.addMessage(user.id, conversationId, "assistant", answer);
+        return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
+      });
+    }
+    const runMessages = openRun.length ? conversationMessages.slice(-openRun.length) : [];
+    // The separate-entry question (separateEntryQuestion) holds a statement that was no answer to the open debt flow. Its exact reply
+    // "yes, separate" writes that statement as an ordinary new statement of its own: no earlier message, no recorded yes and no debt
+    // link is read, so the turn below runs on the held words alone. "that debt" goes on with the saved debt's flow.
+    const separateHold = askedOf(runMessages) === "separate" ? openQuestionOf(runMessages)?.data?.separate : undefined;
+    const separateOpen = separateHold !== undefined;
+    const separateChoice = separateOpen ? separateEntryChoice(input.prompt) : null;
+    const earlyDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: true, shaped: false, refusal: "proceed", call: "ask", states: false });
+    const recordSeparately = earlyDecision === "record" && separateHold !== undefined;
+    const continuesFlow = earlyDecision === "continue" && separateHold !== undefined;
+    const prompt = recordSeparately ? separateHold.statement : input.prompt;
+    const promptAt = recordSeparately ? separateHold.at : receivedAt;
+    // A confirmed "yes, separate" starts a new statement: the open debt flow before it feeds neither the model's history nor any hint.
+    const scopedRun = recordSeparately ? [] : confirmedSeparateRun(runMessages);
+    const history = recordSeparately ? [] : scopedRun === runMessages ? openRun : scopedRun.map(contextMessage);
+    const recordedDebtId = recordSeparately ? undefined : conversationMessages.at(-1)?.debtId ?? undefined;
+    const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
+    // The code reads the user's words two ways. Hints that choose a value (account, date, time, category, amount,
+    // payer, the debt the user named, an opt-in, bill details) read userMessageText, which leaves out quiet turns.
+    // Guards that can only refuse or ask (uncertain or negated wording, a declined transaction) read guardMessageText,
+    // which keeps them. The model still gets the whole run in history.
+    const run: typeof runMessages = [...scopedRun];
+    const ownMessages = userMessagesFor("hint", run);
     const userMessages = [
-      ...history.filter((message) => message.role === "user").map((message) => ({ content: message.content, createdAt: message.createdAt })),
-      { content: input.prompt, createdAt: promptCreatedAt },
+      ...ownMessages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
+      { content: prompt, createdAt: promptAt },
     ];
     const userMessageText = userMessages.map((message) => message.content);
-    const requestedMetrics = requestedFinanceMetrics(input.prompt);
-    const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
-    store.addMessage(user.id, conversationId, "user", input.prompt);
-    if (debtQuestion(input.prompt, requestedMetrics)) {
-      const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
-      store.addMessage(user.id, conversationId, "assistant", answer);
-      return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
+    // A hint that chooses a value reads only the statement this write is for, so a cue word or a date said about an earlier,
+    // different payment, debt, bill or transaction of the same run never applies (hintMessagesFor). The payer, the amount,
+    // the bill details and the guards keep reading the whole run.
+    // The text rule that decides which messages those are can be unsure about a reply (hintReadingsFor). `otherHintMessages` is
+    // the reading it did not choose, null when it would not change which messages apply, and every write compares where the
+    // two readings put the money before it writes (writePlaceOf, ambiguityVerdict).
+    const readings = hintReadingsFor(run, prompt, accounts.map((account) => account.name));
+    const withCurrent = (messages: readonly { content: string; createdAt?: string }[]) => [
+      ...messages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
+      { content: prompt, createdAt: promptAt },
+    ];
+    // Which reading carries the earlier statement's hints: the longer list of messages. The other is the restart.
+    const primaryIsEarlier = !readings.other || readings.other.length <= readings.primary.length;
+    // The message answering the question that named both choices says which one it means ("earlier" or "new one"), and the
+    // reading it picks is the one written. Any other message is read by the text rule's own reading.
+    const answersAmbiguity = isAmbiguityQuestionOf(run);
+    const answerChoice = answersAmbiguity && readings.other ? ambiguityChoice(prompt) : null;
+    const chosenIsEarlier = answerChoice === null ? primaryIsEarlier : answerChoice === "earlier";
+    const chosenReading = !readings.other ? readings.primary : chosenIsEarlier === primaryIsEarlier ? readings.primary : readings.other;
+    const unchosenReading = !readings.other ? null : chosenReading === readings.primary ? readings.other : readings.primary;
+    const hintMessages = withCurrent(chosenReading);
+    const otherHintMessages = unchosenReading ? withCurrent(unchosenReading) : null;
+    const hintText = hintMessages.map((message) => message.content);
+    // Whether the other reading is the one that carries the earlier statement.
+    const otherCarriesEarlier = !!otherHintMessages && !chosenIsEarlier;
+    // One instant for the whole request: the default date, the default time, a relative date and a bill's "today" all read it, so a
+    // provider call that crosses midnight cannot give a date from one side and a time from the other.
+    const requestedAt = new Date(receivedAt);
+    // The message answering the question that named both choices states the account and the date it means.
+    // "yes, Wallet" and "new one, Wallet, today" name their account with no cue word, so no hint reads it. The answer's account is
+    // the one every write uses, as the verdict counts it.
+    const answeredAccount = answersAmbiguity ? ambiguityAnswerAccount(prompt, accounts) : undefined;
+    const answeringAmbiguity = answersAmbiguity
+      ? { namesAccount: accountHintFromMessages([prompt], accounts).mentioned || answeredAccount !== undefined, namesDate: dateHintFromMessage(prompt, requestedAt).mentioned, choice: answerChoice ?? "unmarked" as const }
+      : null;
+    // The write's place under each reading. When they differ the write is not made: ask once, naming the earlier statement's
+    // place, and store nothing (ambiguityVerdict).
+    const placesOf = (args: Record<string, unknown>, providerTime: boolean, accountChoice?: Account) => {
+      const choice = accountChoice ?? answeredAccount;
+      const primary = writePlaceOf(hintMessages, args, accounts, { accountChoice: choice, providerTime, now: requestedAt });
+      const other = otherHintMessages ? writePlaceOf(otherHintMessages, args, accounts, { accountChoice: choice, providerTime, now: requestedAt }) : null;
+      // The question names where the earlier statement alone would put the money. Asked again after an answer, that is read without
+      // the answer, whose account and date are the user's choice and not the earlier statement's.
+      const earlierMessages = otherCarriesEarlier ? otherHintMessages : hintMessages;
+      const earlierAlone = answeringAmbiguity && earlierMessages ? writePlaceOf(earlierMessages.slice(0, -1), args, accounts, { providerTime, now: requestedAt }) : null;
+      const earlier = earlierAlone ?? (other && otherCarriesEarlier ? other : primary);
+      const question = (what: string) => other && ambiguityVerdict(placeKey(primary), placeKey(other), answeringAmbiguity) === "ask" ? ambiguousHintsQuestion(what, describePlace(earlier)) : null;
+      return { place: primary, question };
+    };
+    const guardMessageText = [...userMessagesFor("guard", run).map((message) => message.content), prompt];
+    const requestedMetrics = requestedFinanceMetrics(prompt);
+    const repaymentReportQuestion = isDebtRepaymentReportQuestion(prompt, requestedMetrics);
+    if (debtQuestion(prompt, requestedMetrics)) {
+      const answer = answerForDebts(store.listDebts(user.id), prompt, store.listAccounts(user.id));
+      // Reading the debt list is not an answer to a pending question, so the question and the debt it offered stay.
+      const stored = followupAfterTurn(pending, null, "read");
+      return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
+        store.addMessage(user.id, conversationId, "assistant", answer, undefined, stored, stored ? recordedDebtId : undefined, undefined, undefined, stored !== null);
+        return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
+      });
     }
-    const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
+    const directCapture = history.length || recordSeparately ? null : directDebtCapture(prompt) ?? directCategoryCapture(prompt, categories);
     const openOwedToYouDebts = store.listDebts(user.id)
       .filter((debt) => debt.direction === "owed_to_you" && debt.status === "open")
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -696,34 +876,105 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       .filter((debt) => debt.direction === "you_owe" && debt.status === "open")
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const openYouOwe = openYouOweDebts.map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
-    const providerCall = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou, openYouOwe });
+    // "yes, separate" runs the held call. "that debt" goes on with the saved debt and never writes from the held words: a held debt write
+    // that names the saved debt with another amount is run as an answer to its flow, which can only end in the amount-mismatch question,
+    // and anything else asks the question the flow was waiting on again.
+    const heldAmount = (() => { try { return typeof separateHold?.args.amount === "string" || typeof separateHold?.args.amount === "number" ? parsePHPToMinor(String(separateHold.args.amount)) : undefined; } catch { return undefined; } })();
+    const heldNamesSavedDebt = continuesFlow && separateHold.name === "log_debt" && !!savedDebt && heldAmount !== undefined && heldAmount !== savedDebt.amountMinor
+      && separateHold.args.direction === savedDebt.direction && typeof separateHold.args.counterparty === "string"
+      && normalizeCounterparty(separateHold.args.counterparty) === normalizeCounterparty(savedDebt.counterparty);
+    // "that debt" with nothing to apply asks the saved question again. That question is never rewritten into a write.
+    const resumesQuestion = continuesFlow && !heldNamesSavedDebt;
+    const resumed = resumesQuestion ? separateHold.resume : undefined;
+    const heldCall = recordSeparately ? { name: separateHold.name, args: separateHold.args }
+      : heldNamesSavedDebt ? { name: "log_debt", args: separateHold!.args }
+      : continuesFlow ? { name: "ask_clarification", args: { question: resumedQuestion(resumed?.text) } }
+      : null;
+    const providerCall = heldCall ?? directCapture ?? await askProvider({ prompt, history, categories, openOwedToYou, openYouOwe });
     if (!providerCall) throw new Error("Assistant provider returned no action.");
     const lastFollowup: FollowupKind | null = history.at(-1)?.followup ?? null;
     const ordinaryIncomeQuestionIndex = history.map((message) => message.role === "assistant" ? message.followup : null).lastIndexOf("ordinary_income");
     const ordinaryIncomeQuestionPending = lastFollowup === "ordinary_income";
-    const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? history.slice(ordinaryIncomeQuestionIndex + 1) : [];
-    const ordinaryIncomeConfirmedInHistory = afterOrdinaryIncomeQuestion.some((message) => message.role === "user"
-      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(message.content))
-      && !afterOrdinaryIncomeQuestion.some((message) => message.role === "user" && (hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
-    const ordinaryIncomeFlow = !hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt)
-      && (ordinaryIncomeConfirmedInHistory || ordinaryIncomeQuestionPending);
-    const ordinaryIncomeAccepted = ordinaryIncomeConfirmedInHistory || (ordinaryIncomeQuestionPending
-      && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|record it|record that)\b/i.test(input.prompt));
-    const ordinaryIncomeDeclined = ordinaryIncomeFlow && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
+    const afterOrdinaryIncomeQuestion = ordinaryIncomeQuestionIndex >= 0 ? run.slice(ordinaryIncomeQuestionIndex + 1) : [];
+    // The income flow is open from the question until its run ends, through any account, date or amount question it
+    // asks. Being open authorizes nothing: only a message that is itself a yes writes (ordinaryIncomeTurn).
+    const ordinaryIncomeOpen = ordinaryIncomeQuestionPending || (ordinaryIncomeQuestionIndex >= 0
+      && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasPaymentWording(message.content)));
+    const ordinaryIncomeFlow = !hasPaymentWording(prompt) && ordinaryIncomeOpen;
+    const incomeTurn = ordinaryIncomeFlow ? ordinaryIncomeTurn(prompt, turnCallOf(providerCall.name)) : null;
+    const ordinaryIncomeAccepted = incomeTurn === "write";
+    const ordinaryIncomeDeclined = incomeTurn === "decline";
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
-    const debtQuestionYes = debtTransactionQuestion && /^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|add it|record it)\b/i.test(input.prompt);
-    const debtQuestionNo = debtTransactionQuestion && /^\s*(?:no|nope|nah)\b/i.test(input.prompt);
-    const debtTransactionOptOut = hasClearDebtTransactionOptOut(userMessageText) || debtQuestionNo;
-    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(userMessageText) || debtQuestionYes);
+    const debtQuestionYes = debtTransactionQuestion && isDebtOfferYes(prompt);
+    const debtQuestionNo = debtTransactionQuestion && isDebtOfferNo(prompt);
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
-    const currentDebtIntent = explicitNewDebtIntent(input.prompt);
-    const uncertainNewDebt = userMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
-    const repaymentContextText = ordinaryIncomeFlow ? input.prompt : userMessageText.join(" ");
+    const currentDebtIntent = explicitNewDebtIntent(prompt);
+    const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
+    const repaymentContextText = ordinaryIncomeFlow ? prompt : userMessageText.join(" ");
     const payerSelection = lastFollowup === "repayment_payer";
-    const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
+    const repaymentMatchText = payerSelection ? prompt : repaymentContextText;
     const repaymentFollowup = lastFollowup === "repayment_payer" || lastFollowup === "repayment_amount";
-    const uncertainRepayment = !repaymentReportQuestion && (userMessageText.some((message) => isUnconfirmedIncomingDebtPayment(message) || isUnconfirmedOutgoingDebtPayment(message))
-      || repaymentFollowup && isUncertainStatement(input.prompt));
+    const unconfirmedPayment = (text: string) => isUnconfirmedIncomingDebtPayment(text) || isUnconfirmedOutgoingDebtPayment(text);
+    // A refusal said in an earlier turn of the run (a quiet turn too) and one in this message are told apart, because
+    // refusalOutcome decides what the turn may write from them before anything is stored.
+    const refusedEarlier = !repaymentReportQuestion && userMessagesFor("guard", run).some((message) => unconfirmedPayment(message.content));
+    const refusedNow = !repaymentReportQuestion && (unconfirmedPayment(prompt) || repaymentFollowup && isUncertainStatement(prompt));
+    const uncertainRepayment = refusedEarlier || refusedNow;
+    // Refusal wording inside an open debt flow ("No, don't record it", isDebtRecordRefusal's small anchored set) is read from the messages
+    // that answered the flow and the current message, and refusalOutcome decides the turn from it: a yes recorded earlier in the flow never overrides it. The
+    // clear "no transaction" opt-out keeps its own meaning (the debt stays in Debts only), and so does a plain no to the offer.
+    const refusesToRecord = (text: string) => isDebtRecordRefusal(text) && !hasClearDebtTransactionOptOut([text]);
+    const debtFlowOpen = debtFlowContinues(lastFollowup, recordedDebtId !== undefined);
+    // Only a message that answered the debt flow's own question is read (debtFlowUserMessages): an earlier message about something else
+    // never refuses for a later answer, and a plain no to the offer is the opt-out and no refusal.
+    const debtRefusedEarlier = debtFlowOpen && debtFlowUserMessages(run).some(({ message, answersOffer }) => refusesToRecord(message.content) && !(answersOffer && isDebtOfferNo(message.content)));
+    const debtRefusedNow = debtFlowOpen && !debtQuestionNo && refusesToRecord(prompt);
+    const debtRefusalOnly = (debtRefusedEarlier || debtRefusedNow) && !uncertainRepayment;
+    // A debt write never duplicates a debt this open run already saved (duplicateOfRunDebt). The debts the run's replies carry are the
+    // ones saved in it. When the write would repeat one, a message that states a debt again is asked about once ("another" or "that
+    // one", answered by duplicateDebtChoice) and anything else goes on with the saved debt instead of creating a second.
+    const savedInRunIds = new Set(runDebtIds(run));
+    const savedInRun = store.listDebts(user.id).filter((item) => savedInRunIds.has(item.id));
+    const duplicateChoice = isDuplicateDebtQuestionOf(run) ? duplicateDebtChoice(prompt) : null;
+    // "another" is the user's choice to add a second debt on purpose. It is recorded on the question row (ReplyData), so it holds for the
+    // account or date question that follows, and the debt that question is about is never merged into the first one.
+    const questionData = openQuestionData(run);
+    // A message that states a debt again is a new statement, not the answer to the second debt's question, so it is asked about again.
+    const anotherOpen = duplicateChoice === "another" || (questionData?.another === true && !currentDebtIntent);
+    // The debt flow's recorded consent and its link to the saved debt belong to an answer to that debt's own question and to nothing
+    // else (debtFlowAnswers). A turn that is a refusal, a new statement (a different debt, an expense, a restart) or a write for
+    // another debt carries neither: it is handled as its own statement. A question the debt flow asked about its saved debt (its
+    // account, its date, its amount, the choice between two readings of the hints) stores that debt with it, so its answer goes on
+    // with the same debt instead of saving a second one. That is the debt the answer links to and nothing more: it is never the
+    // user's opt-in to add the debt to Transactions (debtTransactionRequested). A question about any other statement carries no debt.
+    // Whether the current message is answer-shaped for the debt flow's question (answerShaped): the only thing that lets it use the
+    // recorded yes or the saved debt's link. A refusal, a restart or a new expense is not one, however it is worded.
+    const answerContext = { accountNames: accounts.map((account) => account.name), counterparty: savedDebt?.counterparty, amountMinor: savedDebt?.amountMinor, statement: debtFlowStatement(run), categoryNames: categories.map((category) => category.name) };
+    // The question's own vocabulary: what it asks for (askedOf) decides which words count, the choice words included.
+    const pendingAsks = askedOf(run);
+    const debtAnswerShaped = debtFlowOpen && answerShaped(prompt, lastFollowup === "debt_transaction" ? "offer" : pendingAsks ?? "detail", answerContext);
+    const flowTurn = (call: DebtFlowTurn["call"]): DebtFlowTurn => ({
+      pending: lastFollowup,
+      carriesDebt: recordedDebtId !== undefined,
+      refused: refusedEarlier || refusedNow || debtRefusedEarlier || debtRefusedNow,
+      shaped: debtAnswerShaped,
+      stated: currentDebtIntent,
+      saved: savedDebt,
+      call,
+    });
+    // The answer to the duplicate question is about the saved debt whatever the model made of a bare "another".
+    const providerNames: DebtRef = { direction: providerCall.args.direction === "owed_to_you" || providerCall.args.direction === "you_owe" ? providerCall.args.direction : null, counterparty: typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty : null };
+    const debtAnswers = debtFlowAnswers(flowTurn(duplicateChoice ? { kind: "ask" } : { kind: turnCallOf(providerCall.name), names: providerNames }));
+    // Whether the user's own message answers the flow when the model's mistake is left out. A write the model made for another
+    // counterparty than the user's message states gets no recorded consent (debtAnswers), but the question it makes the code ask
+    // is still about the saved debt when the user was answering it, so it carries that debt and the corrected answer links to it.
+    const userAnswersDebtFlow = debtFlowAnswers(flowTurn({ kind: turnCallOf(providerCall.name) }));
+    // A yes or a no said to the offer earlier in this debt's flow, kept through the account or date question it led to. It is read
+    // from the stored reply kinds and debt ids of the run (debtOfferChainAnswer), so it is the user's recorded answer and not
+    // the carried debt id, which stays link context only. It applies only to an answer to that flow.
+    const debtChainAnswer = debtAnswers && !anotherOpen ? debtOfferChainAnswer(run, (content) => answerShaped(content, "offer", answerContext)) : null;
+    const debtTransactionOptOut = hasClearDebtTransactionOptOut(guardMessageText) || (debtAnswers && debtQuestionNo) || debtChainAnswer === "optOut";
+    const debtTransactionRequested = !debtTransactionOptOut && (hasClearDebtTransactionOptIn(hintText) || (debtAnswers && debtQuestionYes) || debtChainAnswer === "optIn");
     const incomingRepaymentIntent = !repaymentReportQuestion && hasIncomingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const outgoingRepaymentIntent = !repaymentReportQuestion && hasOutgoingDebtRepaymentWording(repaymentContextText) && !uncertainRepayment;
     const repaymentIntent = incomingRepaymentIntent || outgoingRepaymentIntent;
@@ -736,353 +987,414 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       : [];
     const repaymentDebt = repaymentCandidates[0];
     const accountOrDateClarificationPending = lastFollowup === "account_or_date";
-    const latestRepaymentPrompt = [...history].reverse().find((message) => message.role === "user"
-      && (hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content)));
+    const latestRepaymentPrompt = [...ownMessages].reverse().find((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content));
     const currentAmountFollowup = lastFollowup === "repayment_amount";
-    const statedRepaymentAmount = repaymentAmountFromPrompt(input.prompt)
-      ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
-      ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
+    const statedRepaymentAmount = repaymentAmountFromPrompt(prompt)
+      ?? (currentAmountFollowup ? bareAmountFromPrompt(prompt) : undefined)
+      ?? (!hasIncomingDebtRepaymentWording(prompt) && !hasOutgoingDebtRepaymentWording(prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
-    let call = providerCall;
-    // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
-    let clarificationKind: FollowupKind | null = null;
-    if (repaymentReportQuestion) {
-      call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
-    } else if (ordinaryIncomeFlow) {
-      if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
-        const providerCounterparty = typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty.trim() : "";
-        const description = typeof providerCall.args.description === "string" && providerCall.args.description.trim()
-          ? providerCall.args.description.trim()
-          : providerCounterparty ? `${providerCounterparty} paid me` : "";
-        call = { name: "log_transaction", args: { ...providerCall.args, kind: "income", category: "Other income", description } };
-      } else if (ordinaryIncomeDeclined) {
-        call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
-      } else if (!ordinaryIncomeAccepted) {
-        call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } }; clarificationKind = "ordinary_income";
-      }
-    } else if (uncertainRepayment && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
-      call = { name: "ask_clarification", args: { question: "Was this a completed payment toward an existing debt? Please confirm before I record it." } };
-    } else if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
-      const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeCounterparty(providerCall.args.counterparty) : "";
-      if (repaymentNames.length > 1) {
-        call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } }; clarificationKind = "repayment_payer";
-      } else if (!statedRepaymentAmount) {
-        call = { name: "ask_clarification", args: { question: "What amount should I use for the repayment?" } }; clarificationKind = "repayment_amount";
-      } else if (parseProviderAmount(providerCall.args.amount) !== statedRepaymentAmount) {
-        call = { name: "ask_clarification", args: { question: `I understood ${formatPHP(statedRepaymentAmount)}. Please re-enter the repayment amount if that is correct.` } }; clarificationKind = "repayment_amount";
-      } else if (!repaymentDebt && incomingRepaymentIntent) {
-        call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } }; clarificationKind = "ordinary_income";
-      } else if (!repaymentDebt && outgoingRepaymentIntent) {
-        if (openYouOweDebts.length && !hasOutgoingPayeeOrPurpose(repaymentMatchText)) {
-          call = { name: "ask_clarification", args: { question: "Who did you repay? I found open debts you owe and need the person before applying this payment." } };
-          clarificationKind = "repayment_payer";
-        } else {
+    return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
+      let call = providerCall;
+      // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
+      let clarificationKind: FollowupKind | null = resumed?.kind ?? null;
+      // True when the question is the model's own wording, which never carries the cancel hint.
+      let modelWorded = false;
+      // True when the turn only read the ledger, which a pending question survives.
+      let answeredReadOnly = false;
+      // The saved debt an existing-debt flow is adding to Transactions, kept on any question that flow asks.
+      let debtInFlow: string | undefined;
+      // The answer to the duplicate question is the write it asked about: "another" repeats the debt on purpose, "that one" goes on
+      // with the saved one. The call is built from the saved debt, whatever the model made of a bare "another".
+      const duplicateOf = duplicateChoice && savedDebt && savedDebt.status === "open" && !currentDebtIntent ? savedDebt : undefined;
+      // The data stored on the reply this turn stores (ReplyData).
+      let replyData: ReplyData | null = resumed?.data ?? null;
+      // What the question this turn asks is waiting for (Asks), stored with it so its answer is judged by that vocabulary.
+      let asks: Asks | null = resumed?.data?.asks ?? null;
+      if (duplicateOf) {
+        // "another" adds the debt the question asked about, with the note, due date, purpose and account of that statement, which the
+        // question stored. The bare word says none of it, so a model that did not understand it cannot drop them.
+        const askedAbout = duplicateChoice === "another" && questionData?.duplicateCall ? questionData.duplicateCall : providerCall.name === "log_debt" ? providerCall.args : {};
+        call = { name: "log_debt", args: { ...askedAbout, direction: duplicateOf.direction, counterparty: duplicateOf.counterparty, amount: String(duplicateOf.amountMinor / 100) } };
+      } else if (repaymentReportQuestion) {
+        call = providerCall.name === "finance_question" ? providerCall : { name: "finance_question", args: {} };
+      } else if (ordinaryIncomeFlow) {
+        // A read-only call runs as it is and leaves the question pending.
+        if (ordinaryIncomeDeclined) {
+          call = { name: "ask_clarification", args: { question: "Okay, I won't record the money as income." } };
+        } else if (ordinaryIncomeAccepted && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
+          const providerCounterparty = typeof providerCall.args.counterparty === "string" ? providerCall.args.counterparty.trim() : "";
+          const description = typeof providerCall.args.description === "string" && providerCall.args.description.trim()
+            ? providerCall.args.description.trim()
+            : providerCounterparty ? `${providerCounterparty} paid me` : "";
+          call = { name: "log_transaction", args: { ...providerCall.args, kind: "income", category: "Other income", description } };
+        } else if (incomeTurn === "askAgain") {
+          call = { name: "ask_clarification", args: { question: "Please answer yes if you want me to record this as ordinary income, or no to leave it unrecorded." } }; clarificationKind = "ordinary_income";
+        }
+      } else if (uncertainRepayment && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
+        call = { name: "ask_clarification", args: { question: "Was this a completed payment toward an existing debt? Please confirm before I record it." } };
+      } else if (repaymentIntent && ["log_debt", "log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
+        const providerCounterparty = typeof providerCall.args.counterparty === "string" ? normalizeCounterparty(providerCall.args.counterparty) : "";
+        if (repaymentNames.length > 1) {
+          call = { name: "ask_clarification", args: { question: "Which person's open debt should I apply this payment to?" } }; clarificationKind = "repayment_payer";
+        } else if (!statedRepaymentAmount) {
+          call = { name: "ask_clarification", args: { question: "What amount should I use for the repayment?" } }; clarificationKind = "repayment_amount";
+        } else if (parseProviderAmount(providerCall.args.amount) !== statedRepaymentAmount) {
+          call = { name: "ask_clarification", args: { question: `I understood ${formatPHP(statedRepaymentAmount)}. Please re-enter the repayment amount if that is correct.` } }; clarificationKind = "repayment_amount";
+        } else if (!repaymentDebt && incomingRepaymentIntent) {
+          call = { name: "ask_clarification", args: { question: "I couldn't find an open debt matching this payment. Should I record the money as ordinary income instead?" } }; clarificationKind = "ordinary_income";
+        } else if (!repaymentDebt && outgoingRepaymentIntent) {
+          if (openYouOweDebts.length && !hasOutgoingPayeeOrPurpose(repaymentMatchText)) {
+            call = { name: "ask_clarification", args: { question: "Who did you repay? I found open debts you owe and need the person before applying this payment." } };
+            clarificationKind = "repayment_payer";
+          } else {
+            call = { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
+          }
+        } else if (repaymentDebt && providerCounterparty && providerCounterparty !== normalizeCounterparty(repaymentDebt.counterparty)) {
+          call = { name: "ask_clarification", args: { question: `I couldn't confirm which person ${incomingRepaymentIntent ? "paid you" : "you paid"}. Which person's open debt should I update?` } }; clarificationKind = "repayment_payer";
+        } else if (repaymentDebt && incomingRepaymentIntent) {
+          call = { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
+        } else if (repaymentDebt && outgoingRepaymentIntent) {
+          call = { name: "record_debt_repayment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
+        } else if (outgoingRepaymentIntent) {
           call = { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
         }
-      } else if (repaymentDebt && providerCounterparty && providerCounterparty !== normalizeCounterparty(repaymentDebt.counterparty)) {
-        call = { name: "ask_clarification", args: { question: `I couldn't confirm which person ${incomingRepaymentIntent ? "paid you" : "you paid"}. Which person's open debt should I update?` } }; clarificationKind = "repayment_payer";
-      } else if (repaymentDebt && incomingRepaymentIntent) {
-        call = { name: "record_debt_payment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
-      } else if (repaymentDebt && outgoingRepaymentIntent) {
-        call = { name: "record_debt_repayment", args: { ...providerCall.args, counterparty: repaymentDebt.counterparty } };
-      } else if (outgoingRepaymentIntent) {
-        call = { name: "log_transaction", args: { ...providerCall.args, kind: "expense", description: providerCall.args.description || `Paid ${repaymentMatchText}` } };
+      } else if (currentDebtIntent && ["log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
+        call = uncertainNewDebt
+          ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
+          : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
+      } else if (debtContinuationRewrites(turnCallOf(providerCall.name), debtAnswers, debtTransactionRequested ? "optIn" : debtTransactionOptOut ? "optOut" : null) && statedDebtIntent && !resumesQuestion) {
+        const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
+          && item.direction === statedDebtIntent.direction
+          && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)
+          && item.id === recordedDebtId);
+        call = matchingDebts.length === 1
+          ? { name: "log_debt", args: { ...providerCall.args, direction: statedDebtIntent.direction, counterparty: matchingDebts[0].counterparty, amount: providerCall.args.amount ?? String(matchingDebts[0].amountMinor / 100), recordTransaction: debtTransactionRequested } }
+          : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
       }
-    } else if (currentDebtIntent && ["log_transaction", "record_debt_payment", "record_debt_repayment"].includes(providerCall.name)) {
-      call = uncertainNewDebt
-        ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
-        : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
-    } else if (debtTransactionQuestion && (debtTransactionRequested || debtTransactionOptOut) && statedDebtIntent) {
-      const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
-        && item.direction === statedDebtIntent.direction
-        && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)
-        && item.id === recordedDebtId);
-      call = matchingDebts.length === 1
-        ? { name: "log_debt", args: { ...providerCall.args, direction: statedDebtIntent.direction, counterparty: matchingDebts[0].counterparty, amount: providerCall.args.amount ?? String(matchingDebts[0].amountMinor / 100), recordTransaction: debtTransactionRequested } }
-        : { name: "ask_clarification", args: { question: matchingDebts.length ? "Which open debt should I update?" : "I couldn't find that open debt. Which debt do you mean?" } };
-    }
 
-    const billFollowupPending = history.some((message) => message.role === "user" && isBillTrackingIntent(message.content)) && isBillFollowup(lastFollowup);
-    const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && providerCall.name !== "finance_question");
-    if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
+      const billFollowupPending = ownMessages.some((message) => isBillTrackingIntent(message.content)) && isBillFollowup(lastFollowup);
+      const billFlow = isBillTrackingIntent(prompt) || (billFollowupPending && turnCallOf(providerCall.name) !== "read");
+      if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
-    let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
-    if (call.name === "create_bill" || call.name === "update_bill") {
-      const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, accounts, categories, lastFollowup);
-      answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup;
-    }
-    else if (call.name === "ask_clarification") {
-      // A repayment with no amount yet expects the amount next, whatever wording the model used.
-      const expectedRepaymentAmount: FollowupKind | null = repaymentIntent && !statedRepaymentAmount ? "repayment_amount" : null;
-      answer = safeClarification(call.args.question);
-      followup = clarificationKind ?? expectedRepaymentAmount ?? "clarification";
-    }
-    else if (call.name === "finance_question") {
-      const defaultRange = monthToDateRange();
-      const start = typeof call.args.start === "string" && isDateOnly(call.args.start) ? call.args.start : defaultRange.start;
-      const end = typeof call.args.end === "string" && isDateOnly(call.args.end) ? call.args.end : todayInManila();
-      if (start > end) { answer = "Which date range would you like me to check? Please use a start and end date."; followup = "clarification"; }
-      else {
-        const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
-        const facts = store.getFinanceFacts(user.id, start, end, category);
-        answer = answerForFacts(facts, input.prompt, requestedMetrics);
+      // The refusal decision is taken here, on the call as it will run, before any branch below can write.
+      const refusal = refusalOutcome({ earlier: refusedEarlier || debtRefusedEarlier, now: refusedNow || debtRefusedNow }, lastFollowup, turnCallOf(call.name));
+      const refusalReason = debtRefusalOnly ? "declined" : "refused";
+      // Inside an open debt flow a message that is no answer to its question never writes on its own authority, however clear a new
+      // statement it looks: the call is held and the user is asked once (separateEntryDecision).
+      const separateDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: debtFlowOpen, shaped: debtAnswerShaped, refusal, call: turnCallOf(call.name), states: statesAmount(input.prompt) });
+      const asksSeparate = separateDecision === "holdNew" || separateDecision === "askAgain";
+      let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
+      // The account an earlier confirmation of this income question chose, when this reply names none and the turn asks again.
+      let incomeEchoedAccount: string | undefined;
+      if (refusal === "askAgain") {
+        // The question stays pending and the turn is quiet, so this message is not read as an answer to it.
+        answer = debtRefusalOnly ? DEBT_REFUSED_AGAIN_REPLY : REFUSED_AGAIN_REPLY; answeredReadOnly = true;
       }
-    } else if (call.name === "log_debt") {
-      const direction = call.args.direction === "owed_to_you" || call.args.direction === "you_owe" ? call.args.direction : statedDebtIntent?.direction ?? null;
-      const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
-      const counterparty = typeof call.args.counterparty === "string" && call.args.counterparty.trim() ? call.args.counterparty.trim() : statedDebtIntent?.counterparty ?? "";
-      const dueDate = typeof call.args.dueDate === "string" ? call.args.dueDate.trim() || null : null;
-      const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
-      const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
-      const isExistingDebtFollowup = debtTransactionQuestion && !currentDebtIntent;
-      if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
-      else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
-      else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }
-      else if (!direction) { answer = "Is this money owed to you, or do you owe the other person?"; followup = "clarification"; }
-      else if (!amount && !isExistingDebtFollowup) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
-      else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; followup = "clarification"; }
-      else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; followup = "clarification"; }
-      else if (uncertainNewDebt) { answer = "I'm not sure whether this is a confirmed debt. Do you want me to record it?"; followup = "clarification"; }
-      else if (statedDebtIntent && (statedDebtIntent.direction !== direction || normalizeCounterparty(statedDebtIntent.counterparty) !== normalizeCounterparty(counterparty))) {
-        answer = "The proposed debt does not match the person or direction in your request. Which debt should I record?";
-        followup = "clarification";
+      else if (refusal === "refuse") { answer = endedQuestionReply(refusalReason, "", false); followup = null; }
+      else if (asksSeparate && separateHold !== undefined && separateDecision === "askAgain") {
+        // The separate-entry question is open and this message answers it with neither choice: the same question, the same held call.
+        answer = separateEntryQuestion(separateDebtLabel(savedDebt), heldCallLabel(separateHold)); followup = "clarification"; asks = "separate"; modelWorded = true;
+        debtInFlow = recordedDebtId; replyData = { separate: separateHold };
       }
-      else {
-        const existingDebts = isExistingDebtFollowup ? store.listDebts(user.id).filter((item) => item.status === "open"
-          && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)
-          && item.id === recordedDebtId) : [];
-        const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
-        if (!amountMinor) { answer = "What amount should I use for this debt?"; followup = "clarification"; }
-        else if (isExistingDebtFollowup && existingDebts.length !== 1) {
-          answer = existingDebts.length ? "Which open debt should I add the transaction to?" : "I couldn't find that open debt. Which debt do you mean?";
+      else if (asksSeparate) {
+        // The message is no answer to the open debt flow and the call would write. Nothing is written. The question stores the call, the
+        // words and the question it replaced, so "yes, separate" can record it and "that debt" can ask that question again.
+        const open = openQuestionOf(run);
+        const hold: SeparateHold = {
+          name: providerCall.name, args: plainArgs(providerCall.args), statement: prompt.slice(0, 2000), at: receivedAt,
+          ...(separateOpen ? (separateHold?.resume ? { resume: separateHold.resume } : {}) : open?.followup ? { resume: { kind: open.followup, text: savedQuestionText(open.content).slice(0, 2000), ...(withoutSeparate(open.data) ? { data: withoutSeparate(open.data) } : {}) } } : {}),
+        };
+        answer = separateEntryQuestion(separateDebtLabel(savedDebt), heldCallLabel(hold)); followup = "clarification"; asks = "separate"; modelWorded = true;
+        debtInFlow = recordedDebtId; replyData = { separate: hold };
+      }
+      else if (call.name === "create_bill" || call.name === "update_bill") {
+        const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup, requestedAt,
+          otherHintMessages ? { hintMessages: otherHintMessages.map((message) => message.content), carriesEarlier: otherCarriesEarlier, unclear: answerChoice === "unclear" } : null);
+        answer = result.answer; bill = result.bill; postingWarning = result.postingWarning; followup = result.followup; modelWorded = !!result.ambiguous; if (result.ambiguous) asks = "ambiguity";
+      }
+      else if (call.name === "ask_clarification") {
+        // A repayment with no amount yet expects the amount next, whatever wording the model used.
+        const expectedRepaymentAmount: FollowupKind | null = repaymentIntent && !statedRepaymentAmount ? "repayment_amount" : null;
+        // "that debt" gives the saved question back as it was, whatever its length: it is the code's own text and not a model question.
+        answer = continuesFlow && call === providerCall ? String(call.args.question) : safeClarification(call.args.question);
+        followup = clarificationKind ?? expectedRepaymentAmount ?? "clarification";
+        modelWorded = call === providerCall;
+        // A question the debt flow asks about its saved debt keeps that debt, so its answer links to it and a later opt-in never saves a
+        // second one. A clarification of any other statement (debtFlowAnswers is false) never carries it.
+        if (debtAnswers && !currentDebtIntent) debtInFlow = recordedDebtId;
+      }
+      else if (call.name === "finance_question") {
+        const defaultRange = monthToDateRange(requestedAt);
+        const start = typeof call.args.start === "string" && isDateOnly(call.args.start) ? call.args.start : defaultRange.start;
+        const end = typeof call.args.end === "string" && isDateOnly(call.args.end) ? call.args.end : todayInManila(requestedAt);
+        if (start > end) { answer = "Which date range would you like me to check? Please use a start and end date."; followup = "clarification"; }
+        else {
+          const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
+          const facts = store.getFinanceFacts(user.id, start, end, category);
+          answer = answerForFacts(facts, prompt, requestedMetrics, requestedAt);
+          answeredReadOnly = true;
+        }
+      } else if (call.name === "log_debt") {
+        const direction = call.args.direction === "owed_to_you" || call.args.direction === "you_owe" ? call.args.direction : statedDebtIntent?.direction ?? null;
+        const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
+        const counterparty = typeof call.args.counterparty === "string" && call.args.counterparty.trim() ? call.args.counterparty.trim() : statedDebtIntent?.counterparty ?? "";
+        const dueDate = typeof call.args.dueDate === "string" ? call.args.dueDate.trim() || null : null;
+        const note = typeof call.args.note === "string" ? call.args.note.trim() : "";
+        const transactionDescription = typeof call.args.description === "string" ? call.args.description.trim() : "";
+        // "another" is the user's own choice to add a second debt, so it never goes on with the saved one.
+        const isExistingDebtFollowup = debtAnswers && !currentDebtIntent && !anotherOpen;
+        // The net: a write that would create a debt this run already saved never does (duplicateOfRunDebt).
+        const amountForDuplicate = (() => { try { return amount ? parsePHPToMinor(amount) : undefined; } catch { return undefined; } })();
+        const runDuplicate = direction && counterparty && amountForDuplicate && !isExistingDebtFollowup && !anotherOpen
+          ? duplicateOfRunDebt(savedInRun, { direction, counterparty, amountMinor: amountForDuplicate }) : undefined;
+        const continuing = isExistingDebtFollowup || !!runDuplicate;
+        if (!counterparty) { answer = "Who is this debt with?"; followup = "clarification"; }
+        else if (counterparty.length > 80) { answer = "What shorter name should I use for the other person?"; followup = "clarification"; }
+        else if (unclearDebtCounterparty.test(counterparty)) { answer = "Who specifically is this debt with?"; followup = "clarification"; }
+        else if (!direction) { answer = "Is this money owed to you, or do you owe the other person?"; followup = "clarification"; }
+        else if (!amount && !isExistingDebtFollowup) { answer = "What amount should I use for this debt?"; followup = "clarification"; asks = "amount"; }
+        else if (dueDate && !isDateOnly(dueDate)) { answer = "What due date should I use? Please give it as YYYY-MM-DD."; followup = "clarification"; }
+        else if (note.length > 500) { answer = "Please shorten the note to 500 characters or fewer."; followup = "clarification"; }
+        else if (uncertainNewDebt) { answer = "I'm not sure whether this is a confirmed debt. Do you want me to record it?"; followup = "clarification"; }
+        else if (statedDebtIntent && (statedDebtIntent.direction !== direction || normalizeCounterparty(statedDebtIntent.counterparty) !== normalizeCounterparty(counterparty))) {
+          answer = "The proposed debt does not match the person or direction in your request. Which debt should I record?";
           followup = "clarification";
-        } else if (isExistingDebtFollowup && amount && amountMinor !== existingDebts[0].amountMinor) {
-          answer = "That amount doesn't match the open debt in this conversation. Which debt should I use?";
-          followup = "clarification";
-        } else if (isExistingDebtFollowup && debtTransactionOptOut) {
-          debt = existingDebts[0];
-          answer = `Okay, ${debt.counterparty}'s debt stays in Debts only.`;
-        } else if (!debtTransactionRequested) {
-          debt = isExistingDebtFollowup ? existingDebts[0] : store.createDebt(user.id, { direction, counterparty, amountMinor, dueDate, note });
-          answer = direction === "owed_to_you"
-            ? `${formatPHP(debt.amountMinor)} is owed to you by ${debt.counterparty}. Added it to Debts only.`
-            : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts only.`;
-          if (!debtTransactionOptOut) {
-            answer += ' If you want to record the money movement too, say "add it to Transactions" and tell me what it was for.';
-            followup = "debt_transaction";
-          }
-        } else {
-          const userContext = userMessageText.join(" ");
-          const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-          const accountHint = accountHintFromMessages(userMessageText, accounts);
-          const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-          const account = accountHint.mentioned
-            ? accountHint.account
-            : requestedAccount
-              ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-              : defaultAccount;
-          const dateHint = priorDateHint(userMessages);
-          const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-          const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-          const timeHint = timeHintFromMessages(userMessageText);
-          const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
-          const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
-          const kind: "expense" | "income" = direction === "owed_to_you" ? "expense" : "income";
-          const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, kind) : undefined;
-          const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, kind);
-          const category = categoryHint.mentioned
-            ? categoryHint.category
-            : [
-              findCategoryInText(userContext, categories, kind),
-              requestedCategory?.type === kind ? requestedCategory : undefined,
-              guessCategory(`${userContext} ${note} ${transactionDescription}`, categories),
-            ].find((candidate): candidate is AssistantCategory => candidate?.type === kind) ?? fallbackCategory(kind, categories);
-          const details = transactionDescription || note;
-          const description = `${direction === "owed_to_you" ? "Owed by" : "Borrowed from"} ${counterparty}${details ? ` for ${details}` : ""}`;
+          if (userAnswersDebtFlow && !currentDebtIntent) debtInFlow = recordedDebtId;
+        }
+        else if (runDuplicate && currentDebtIntent) {
+          // A message that states the debt again is asked about once. The question carries the saved debt, so "that one" goes on with it.
+          answer = duplicateDebtQuestion(runDuplicate, formatPHP(runDuplicate.amountMinor));
+          followup = "clarification"; debtInFlow = runDuplicate.id; asks = "duplicate";
+          replyData = { duplicateCall: duplicateCallData(call.args) };
+        }
+        else {
+          // The debt this write continues: the saved debt the flow answers, or the run's own debt it would have duplicated.
+          const existingDebts = continuing ? store.listDebts(user.id).filter((item) => item.status === "open"
+            && item.direction === direction && normalizeCounterparty(item.counterparty) === normalizeCounterparty(counterparty)
+            && item.id === (runDuplicate?.id ?? recordedDebtId)) : [];
+          if (existingDebts.length === 1) debtInFlow = existingDebts[0].id;
+          const amountMinor = amount ? parsePHPToMinor(amount) : existingDebts[0]?.amountMinor;
+          if (!amountMinor) { answer = "What amount should I use for this debt?"; followup = "clarification"; asks = "amount"; }
+          else if (continuing && existingDebts.length !== 1) {
+            answer = existingDebts.length ? "Which open debt should I add the transaction to?" : "I couldn't find that open debt. Which debt do you mean?";
+            followup = "clarification";
+          } else if (continuing && amount && amountMinor !== existingDebts[0].amountMinor) {
+            answer = "That amount doesn't match the open debt in this conversation. Which debt should I use?";
+            followup = "clarification"; asks = "amount";
+          } else if (continuing && debtTransactionOptOut) {
+            debt = existingDebts[0];
+            answer = `Okay, ${debt.counterparty}'s debt stays in Debts only.`;
+          } else if (!debtTransactionRequested) {
+            debt = continuing ? existingDebts[0] : store.createDebt(user.id, { direction, counterparty, amountMinor, dueDate, note });
+            answer = direction === "owed_to_you"
+              ? `${formatPHP(debt.amountMinor)} is owed to you by ${debt.counterparty}. Added it to Debts only.`
+              : `You owe ${debt.counterparty} ${formatPHP(debt.amountMinor)}. Added it to Debts only.`;
+            if (!debtTransactionOptOut) {
+              answer += ' If you want to record the money movement too, say "add it to Transactions" and tell me what it was for.';
+              followup = "debt_transaction";
+            }
+          } else {
+            const userContext = hintText.join(" ");
+            const { place, question: ambiguousQuestion } = placesOf(call.args, true);
+            const { requestedAccount, accountHint, account, date, time } = place;
+            const ambiguity = ambiguousQuestion(`debt with ${counterparty}`);
+            const kind: "expense" | "income" = direction === "owed_to_you" ? "expense" : "income";
+            const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, kind) : undefined;
+            const categoryHint = latestCategoryHintFromMessages(hintText, categories, kind);
+            const category = categoryHint.mentioned
+              ? categoryHint.category
+              : [
+                findCategoryInText(userContext, categories, kind),
+                requestedCategory?.type === kind ? requestedCategory : undefined,
+                guessCategory(`${userContext} ${note} ${transactionDescription}`, categories),
+              ].find((candidate): candidate is AssistantCategory => candidate?.type === kind) ?? fallbackCategory(kind, categories);
+            const descriptionLead = `${direction === "owed_to_you" ? "Owed by" : "Borrowed from"} ${counterparty}`;
+            // Too long a description is shortened here, at a word boundary, from the model's own wording. Nothing is asked of the user.
+            const details = shortenAtWord(transactionDescription || note, DESCRIPTION_MAX_LENGTH - descriptionLead.length - " for ".length);
+            const description = `${descriptionLead}${details ? ` for ${details}` : ""}`;
 
-          if (!accounts.length) { answer = "Create a financial account first; then I can record this money movement."; followup = "account_or_date"; }
-          else if (!account) {
-            const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
-            answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this money movement.";
-            followup = "account_or_date";
-          }
-          else if (!date) { answer = "What date should I use? Please give it as YYYY-MM-DD."; followup = "account_or_date"; }
-          else if (!category && categoryHint.mentioned) { answer = `Which ${kind} category should I use? Choose one from your categories.`; followup = "clarification"; }
-          else if (!category) { answer = `Create a ${kind} category before recording this money movement.`; followup = "clarification"; }
-          else if (description.length > 180) { answer = "Please shorten the transaction description to 180 characters or fewer."; followup = "clarification"; }
-          else {
-            const transactionInput = { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant" as const };
-            const saved = isExistingDebtFollowup
-              ? store.recordDebtAdvanceTransaction(user.id, existingDebts[0].id, transactionInput)
-              : store.recordDebtAdvance(user.id, { direction, counterparty, amountMinor, dueDate, note }, transactionInput);
-            debt = saved.debt; transaction = saved.transaction;
-            answer = `Recorded ${formatPHP(transaction.amountMinor)} as ${kind} for ${debt.counterparty}.\n${transaction.categoryName} · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\nAdded to Debts and Transactions.`;
+            if (!accounts.length) { answer = "Create a financial account first; then I can record this money movement."; followup = "account_or_date"; asks = "account"; }
+            else if (!account) {
+              const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
+              answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this money movement.";
+              followup = "account_or_date"; asks = "account";
+            }
+            else if (!date) { answer = "What date should I use? Please give it as YYYY-MM-DD."; followup = "account_or_date"; asks = "date"; }
+            else if (!category && categoryHint.mentioned) {
+              // The question says what to reply with, so the answer is judged as a category and a rejected reply asks the same again.
+              answer = `Which ${kind} category should I use? Reply with just the category, for example ${(categories.find((item) => item.type === kind) ?? categories[0])?.name ?? "Food"}, or say cancel.`;
+              followup = "clarification"; asks = "category";
+            }
+            else if (!category) { answer = `Create a ${kind} category before recording this money movement.`; followup = "clarification"; }
+            else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; asks = "ambiguity"; }
+            else {
+              const transactionInput = { kind, amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant" as const };
+              const saved = continuing
+                ? store.recordDebtAdvanceTransaction(user.id, existingDebts[0].id, transactionInput)
+                : store.recordDebtAdvance(user.id, { direction, counterparty, amountMinor, dueDate, note }, transactionInput);
+              debt = saved.debt; transaction = saved.transaction;
+              answer = `Recorded ${formatPHP(transaction.amountMinor)} as ${kind} for ${debt.counterparty}.\n${transaction.categoryName} · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\nAdded to Debts and Transactions.`;
+            }
           }
         }
-      }
-    } else if (call.name === "record_debt_payment") {
-      const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
-      const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
-      if (!counterparty || counterparty.length > 80) { answer = "Who paid you?"; followup = "repayment_payer"; }
-      else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); followup = "repayment_amount"; }
-      else {
-        const normalizedCounterparty = normalizeCounterparty(counterparty);
-        const matchingDebt = repaymentDebt && normalizeCounterparty(repaymentDebt.counterparty) === normalizedCounterparty
-          ? repaymentDebt
-          : undefined;
-        const amountMinor = parsePHPToMinor(amount);
-        if (!matchingDebt) {
-          answer = `I couldn't find an open debt owed to you by ${counterparty}. Should I record ${formatPHP(amountMinor)} as ordinary income instead?`;
-          followup = "ordinary_income";
-        } else if (amountMinor > matchingDebt.amountMinor) {
-          answer = `That payment is more than the ${formatPHP(matchingDebt.amountMinor)} still owed by ${matchingDebt.counterparty}. How should I handle it?`;
-          followup = "clarification";
-        } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
+      } else if (call.name === "record_debt_payment") {
+        const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
+        const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
+        if (!counterparty || counterparty.length > 80) { answer = "Who paid you?"; followup = "repayment_payer"; }
+        else if (!amount) { answer = safeClarification("What amount should I use for the repayment?"); followup = "repayment_amount"; }
         else {
-          const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-          const accountHint = accountHintFromMessages(userMessageText, accounts);
-          const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-          const account = accountHint.mentioned
-            ? accountHint.account
-            : requestedAccount
-              ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-              : defaultAccount;
-          const dateHint = priorDateHint(userMessages);
-          const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-          const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-          const timeHint = timeHintFromMessages(userMessageText);
-          const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
-          const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
-          if (!account) {
+          const normalizedCounterparty = normalizeCounterparty(counterparty);
+          const matchingDebt = repaymentDebt && normalizeCounterparty(repaymentDebt.counterparty) === normalizedCounterparty
+            ? repaymentDebt
+            : undefined;
+          const amountMinor = parsePHPToMinor(amount);
+          if (!matchingDebt) {
+            answer = `I couldn't find an open debt owed to you by ${counterparty}. Should I record ${formatPHP(amountMinor)} as ordinary income instead?`;
+            followup = "ordinary_income";
+          } else if (amountMinor > matchingDebt.amountMinor) {
+            answer = `That payment is more than the ${formatPHP(matchingDebt.amountMinor)} still owed by ${matchingDebt.counterparty}. How should I handle it?`;
+            followup = "clarification";
+          } else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
+          else {
+            const { place, question: ambiguousQuestion } = placesOf(call.args, true);
+            const { requestedAccount, accountHint, account, date, time } = place;
+            const ambiguity = ambiguousQuestion(`payment from ${matchingDebt.counterparty}`);
+            if (!account) {
+              const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
+              answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment.";
+              followup = "account_or_date";
+            }
+            else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
+            else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; asks = "ambiguity"; }
+            else {
+              const description = typeof call.args.description === "string" && call.args.description.trim()
+                ? call.args.description.trim().slice(0, 180)
+                : `${matchingDebt.counterparty} paid me`;
+              const saved = store.recordDebtPayment(user.id, matchingDebt.id, {
+                amountMinor, description, accountId: account.id, date, time,
+              });
+              transaction = saved.transaction; debt = saved.debt;
+              const debtStatus = debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to you.`;
+              answer = `Recorded ${formatPHP(transaction.amountMinor)} repayment from ${matchingDebt.counterparty}.\nRepayment received · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\n${debtStatus}`;
+            }
+          }
+        }
+      } else if (call.name === "record_debt_repayment") {
+        const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
+        const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
+        if (!outgoingRepaymentIntent) { answer = "Tell me who you paid and how much before I update a debt."; followup = "repayment_payer"; }
+        else if (!counterparty || counterparty.length > 80) { answer = "Who did you pay?"; followup = "repayment_payer"; }
+        else if (!amount) { answer = safeClarification("What amount did you pay?"); followup = "repayment_amount"; }
+        else if (!repaymentDebt || normalizeCounterparty(repaymentDebt.counterparty) !== normalizeCounterparty(counterparty)) {
+          answer = `I couldn't find an open debt you owe to ${counterparty}. I can record this as an ordinary expense.`;
+          followup = "clarification";
+        } else {
+          const amountMinor = parsePHPToMinor(amount);
+          const { place, question: ambiguousQuestion } = placesOf(call.args, true);
+          const { requestedAccount, accountHint, account, date, time } = place;
+          const ambiguity = ambiguousQuestion(`payment to ${repaymentDebt.counterparty}`);
+          const categoryHint = latestCategoryHintFromMessages(hintText, categories, "expense");
+          const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, "expense") : undefined;
+          const category = categoryHint.mentioned ? categoryHint.category : requestedCategory ?? fallbackCategory("expense", categories);
+          if (amountMinor > repaymentDebt.amountMinor) { answer = `That payment is more than the ${formatPHP(repaymentDebt.amountMinor)} you still owe ${repaymentDebt.counterparty}. How should I handle it?`; followup = "clarification"; }
+          else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
+          else if (!account) {
             const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
             answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment.";
             followup = "account_or_date";
           }
           else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
+          else if (!category && (categoryHint.mentioned || typeof call.args.category === "string")) { answer = "Which expense category should I use? Choose one from your categories."; followup = "clarification"; }
+          else if (!category) { answer = "Create an expense category before recording this repayment."; followup = "clarification"; }
+          else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; asks = "ambiguity"; }
           else {
             const description = typeof call.args.description === "string" && call.args.description.trim()
               ? call.args.description.trim().slice(0, 180)
-              : `${matchingDebt.counterparty} paid me`;
-            const saved = store.recordDebtPayment(user.id, matchingDebt.id, {
-              amountMinor, description, accountId: account.id, date, time,
+              : `Paid ${repaymentDebt.counterparty}`;
+            const saved = store.recordDebtRepayment(user.id, repaymentDebt.id, {
+              kind: "expense", amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant",
             });
             transaction = saved.transaction; debt = saved.debt;
-            const debtStatus = debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to you.`;
-            answer = `Recorded ${formatPHP(transaction.amountMinor)} repayment from ${matchingDebt.counterparty}.\nRepayment received · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\n${debtStatus}`;
+            const debtStatus = debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to ${debt.counterparty}.`;
+            answer = `Saved ${formatPHP(transaction.amountMinor)} paid to ${repaymentDebt.counterparty}.\n${transaction.categoryName} · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\n${debtStatus}`;
           }
         }
-      }
-    } else if (call.name === "record_debt_repayment") {
-      const counterparty = typeof call.args.counterparty === "string" ? call.args.counterparty.trim() : "";
-      const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
-      if (!outgoingRepaymentIntent) { answer = "Tell me who you paid and how much before I update a debt."; followup = "repayment_payer"; }
-      else if (!counterparty || counterparty.length > 80) { answer = "Who did you pay?"; followup = "repayment_payer"; }
-      else if (!amount) { answer = safeClarification("What amount did you pay?"); followup = "repayment_amount"; }
-      else if (!repaymentDebt || normalizeCounterparty(repaymentDebt.counterparty) !== normalizeCounterparty(counterparty)) {
-        answer = `I couldn't find an open debt you owe to ${counterparty}. I can record this as an ordinary expense.`;
-        followup = "clarification";
-      } else {
-        const amountMinor = parsePHPToMinor(amount);
-        const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-        const accountHint = accountHintFromMessages(userMessageText, accounts);
-        const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-        const account = accountHint.mentioned
-          ? accountHint.account
-          : requestedAccount
-            ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-            : defaultAccount;
-        const dateHint = priorDateHint(userMessages);
-        const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-        const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-        const timeHint = timeHintFromMessages(userMessageText);
-        const requestedTime = typeof call.args.time === "string" ? call.args.time.trim() : "";
-        const time = timeHint && isTime(timeHint) ? timeHint : requestedTime && isTime(requestedTime) ? requestedTime : timeInManila();
-        const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, "expense");
-        const requestedCategory = typeof call.args.category === "string" ? findCategory(call.args.category, categories, "expense") : undefined;
-        const category = categoryHint.mentioned ? categoryHint.category : requestedCategory ?? fallbackCategory("expense", categories);
-        if (amountMinor > repaymentDebt.amountMinor) { answer = `That payment is more than the ${formatPHP(repaymentDebt.amountMinor)} you still owe ${repaymentDebt.counterparty}. How should I handle it?`; followup = "clarification"; }
-        else if (!accounts.length) { answer = "Create a financial account first; then I can record this repayment."; followup = "account_or_date"; }
-        else if (!account) {
-          const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
-          answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording this repayment.";
-          followup = "account_or_date";
-        }
-        else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
-        else if (!category && (categoryHint.mentioned || typeof call.args.category === "string")) { answer = "Which expense category should I use? Choose one from your categories."; followup = "clarification"; }
-        else if (!category) { answer = "Create an expense category before recording this repayment."; followup = "clarification"; }
+      } else if (call.name === "log_transaction") {
+        const kindHint = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;
+        const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
+        const description = typeof call.args.description === "string" ? call.args.description.trim().replace(/\p{L}/u, (letter) => letter.toUpperCase()).slice(0, 180) : "";
+        if (!amount) { answer = safeClarification("What amount should I use?"); followup = "clarification"; }
+        else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; followup = "account_or_date"; }
         else {
-          const description = typeof call.args.description === "string" && call.args.description.trim()
-            ? call.args.description.trim().slice(0, 180)
-            : `Paid ${repaymentDebt.counterparty}`;
-          const saved = store.recordDebtRepayment(user.id, repaymentDebt.id, {
-            kind: "expense", amountMinor, description, accountId: account.id, categoryId: category.id, date, time, source: "assistant",
-          });
-          transaction = saved.transaction; debt = saved.debt;
-          const debtStatus = debt.status === "settled" ? "The debt is settled." : `${formatPHP(debt.amountMinor)} remains owed to ${debt.counterparty}.`;
-          answer = `Saved ${formatPHP(transaction.amountMinor)} paid to ${repaymentDebt.counterparty}.\n${transaction.categoryName} · ${transaction.accountName}\n${formatAssistantDate(transaction.date)} ${transaction.time}.\n${debtStatus}`;
+          const userContext = hintText.join(" ");
+          // An income write takes an account from the current reply only. When the reply names none and an earlier confirmation
+          // of this income question chose one, it asks again instead of guessing that the choice still stands (incomeAccountChoice).
+          const incomeChoice = ordinaryIncomeAccepted
+            ? incomeAccountChoice(
+              { confirmed: incomeConfirmationAccount(prompt, accounts), names: accountHintFromMessages([prompt], accounts).mentioned },
+              incomeChainAccount(incomeChainAnswers(run, hasPaymentWording), (confirmation) => incomeConfirmationAccount(confirmation, accounts)))
+            : { use: "none" as const };
+          if (incomeChoice.use === "ask") incomeEchoedAccount = incomeChoice.earlier.name;
+          const { place, question: ambiguousQuestion } = placesOf(call.args, false, incomeChoice.use === "account" ? incomeChoice.account : undefined);
+          const { requestedAccount, accountHint, account, date, time } = place;
+          const ambiguity = ambiguousQuestion(description || "transaction");
+          const explicitKind = ordinaryIncomeAccepted ? "income" : outgoingRepaymentIntent ? "expense" : explicitTransactionKind(userContext);
+          const promptCategory = findCategoryInText(userContext, categories, explicitKind ?? kindHint ?? undefined);
+          const promptCategoryAmbiguous = promptCategory === null;
+          const providerPreferredType = explicitKind ?? (!promptCategoryAmbiguous && !promptCategory ? kindHint ?? undefined : undefined);
+          const requestedCategoryHint = typeof call.args.category === "string"
+            ? findCategory(call.args.category, categories, providerPreferredType)
+            : undefined;
+          const requestedCategory = requestedCategoryHint?.type === providerPreferredType || !providerPreferredType ? requestedCategoryHint : undefined;
+          const categoryText = `${userContext} ${description}`;
+          const textCategory = findCategoryInText(categoryText, categories, providerPreferredType);
+          const categoryHint = latestCategoryHintFromMessages(hintText, categories, providerPreferredType);
+          const categoryAmbiguous = promptCategoryAmbiguous || categoryHint.mentioned && !categoryHint.category || requestedCategory === null || textCategory === null;
+          const category = categoryHint.mentioned ? categoryHint.category : (promptCategory && promptCategory !== null ? promptCategory : undefined)
+            ?? (requestedCategory && requestedCategory !== null ? requestedCategory : undefined)
+            ?? (textCategory && textCategory !== null ? textCategory : undefined)
+            ?? (!categoryAmbiguous ? guessCategory(categoryText, categories) : undefined);
+          const kind = explicitKind ?? category?.type ?? (!categoryAmbiguous ? transactionKind(kindHint, categoryText) : null);
+          const resolvedCategory = category ?? (!categoryAmbiguous && kind ? fallbackCategory(kind, categories) : undefined);
+          if (incomeChoice.use === "ask") { answer = `You chose ${incomeChoice.earlier.name} earlier.`; followup = "account_or_date"; }
+          else if (!account) {
+            const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
+            answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording a transaction.";
+            followup = "account_or_date";
+          }
+          else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
+          else if (!resolvedCategory || !kind) {
+            const ambiguousCategory = typeof call.args.category === "string" ? `“${call.args.category.trim()}”` : "That category name";
+            answer = categoryAmbiguous ? `${ambiguousCategory} appears under both income and expense. Which category type did you mean?` : "Which category should I use?";
+            followup = "clarification";
+          }
+          else if (ambiguity) { answer = ambiguity; followup = "account_or_date"; modelWorded = true; asks = "ambiguity"; }
+          else {
+            const amountMinor = parsePHPToMinor(amount);
+            const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: resolvedCategory.id, date, time, source: "assistant" });
+            transaction = saved; undoUntil = saved.undoUntil;
+            answer = `Saved ${formatPHP(saved.amountMinor)}${saved.description ? ` for ${saved.description}` : ""}.\n${saved.categoryName} · ${saved.accountName}\n${formatAssistantDate(saved.date)} ${saved.time}.`;
+          }
         }
-      }
-    } else if (call.name === "log_transaction") {
-      const kindHint = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : null;
-      const amount = typeof call.args.amount === "string" ? call.args.amount : typeof call.args.amount === "number" && Number.isFinite(call.args.amount) ? String(call.args.amount) : "";
-      const description = typeof call.args.description === "string" ? call.args.description.trim().replace(/\p{L}/u, (letter) => letter.toUpperCase()).slice(0, 180) : "";
-      if (!amount) { answer = safeClarification("What amount should I use?"); followup = "clarification"; }
-      else if (!accounts.length) { answer = "Create a financial account first; then I can record this transaction."; followup = "account_or_date"; }
-      else {
-        const userContext = userMessageText.join(" ");
-        const requestedAccount = typeof call.args.account === "string" ? call.args.account.trim() : "";
-        const accountHint = accountHintFromMessages(userMessageText, accounts);
-        const defaultAccount = accounts.find((candidate) => candidate.isDefault);
-        const account = accountHint.mentioned
-          ? accountHint.account
-          : requestedAccount
-            ? /^(default|default account)$/i.test(requestedAccount) ? defaultAccount : accounts.find((candidate) => candidate.name.toLowerCase() === requestedAccount.toLowerCase())
-            : defaultAccount;
-        const dateHint = priorDateHint(userMessages);
-        const requestedDate = typeof call.args.date === "string" ? call.args.date.trim() : "";
-        const date = dateHint.date ?? (dateHint.mentioned ? requestedDate && isDateOnly(requestedDate) ? requestedDate : "" : todayInManila());
-        const timeHint = timeHintFromMessages(userMessageText);
-        const time = timeHint && isTime(timeHint) ? timeHint : timeInManila();
-        const explicitKind = ordinaryIncomeAccepted ? "income" : outgoingRepaymentIntent ? "expense" : explicitTransactionKind(userContext);
-        const promptCategory = findCategoryInText(userContext, categories, explicitKind ?? kindHint ?? undefined);
-        const promptCategoryAmbiguous = promptCategory === null;
-        const providerPreferredType = explicitKind ?? (!promptCategoryAmbiguous && !promptCategory ? kindHint ?? undefined : undefined);
-        const requestedCategoryHint = typeof call.args.category === "string"
-          ? findCategory(call.args.category, categories, providerPreferredType)
-          : undefined;
-        const requestedCategory = requestedCategoryHint?.type === providerPreferredType || !providerPreferredType ? requestedCategoryHint : undefined;
-        const categoryText = `${userContext} ${description}`;
-        const textCategory = findCategoryInText(categoryText, categories, providerPreferredType);
-        const categoryHint = latestCategoryHintFromMessages(userMessageText, categories, providerPreferredType);
-        const categoryAmbiguous = promptCategoryAmbiguous || categoryHint.mentioned && !categoryHint.category || requestedCategory === null || textCategory === null;
-        const category = categoryHint.mentioned ? categoryHint.category : (promptCategory && promptCategory !== null ? promptCategory : undefined)
-          ?? (requestedCategory && requestedCategory !== null ? requestedCategory : undefined)
-          ?? (textCategory && textCategory !== null ? textCategory : undefined)
-          ?? (!categoryAmbiguous ? guessCategory(categoryText, categories) : undefined);
-        const kind = explicitKind ?? category?.type ?? (!categoryAmbiguous ? transactionKind(kindHint, categoryText) : null);
-        const resolvedCategory = category ?? (!categoryAmbiguous && kind ? fallbackCategory(kind, categories) : undefined);
-        if (!account) {
-          const invalidName = accountHint.invalidName?.replace(/^my\s+/i, "") || requestedAccount;
-          answer = invalidName ? `I couldn't find the account “${invalidName}”. Choose one of your listed accounts: ${accounts.map((item) => item.name).join(", ")}.` : "Set a default financial account in Accounts before recording a transaction.";
-          followup = "account_or_date";
-        }
-        else if (!date) { answer = "What date should I use? Please give the date as YYYY-MM-DD."; followup = "account_or_date"; }
-        else if (!resolvedCategory || !kind) {
-          const ambiguousCategory = typeof call.args.category === "string" ? `“${call.args.category.trim()}”` : "That category name";
-          answer = categoryAmbiguous ? `${ambiguousCategory} appears under both income and expense. Which category type did you mean?` : "Which category should I use?";
-          followup = "clarification";
-        }
-        else {
-          const amountMinor = parsePHPToMinor(amount);
-          const saved = store.createTransaction(user.id, { kind, amountMinor, description, accountId: account.id, categoryId: resolvedCategory.id, date, time, source: "assistant" });
-          transaction = saved; undoUntil = saved.undoUntil;
-          answer = `Saved ${formatPHP(saved.amountMinor)}${saved.description ? ` for ${saved.description}` : ""}.\n${saved.categoryName} · ${saved.accountName}\n${formatAssistantDate(saved.date)} ${saved.time}.`;
-        }
-      }
-    } else answer = "I couldn't complete that request. Please rephrase it.";
+      } else answer = "I couldn't complete that request. Please rephrase it.";
 
-    if (uncertainRepayment) { answer = "I didn't record anything because I couldn't confirm that the payment happened. If it did, tell me who paid and how much."; followup = null; }
-    else if (ordinaryIncomeDeclined) { answer = "Okay, I won't record the money."; followup = null; }
-    store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, followup, debt?.id);
-    return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
+      // Nothing below can add a write. A reply that says nothing was recorded is only made for a turn that wrote
+      // nothing; after a write the reply keeps its receipt and says the question was dropped.
+      const wrote = transaction !== null || debt !== null || bill !== null;
+      const refusedTurn = refusal === "refuse" || refusal === "endQuestion";
+      if (refusal === "endQuestion") { answer = endedQuestionReply(refusalReason, answer, wrote); followup = null; }
+      else if (ordinaryIncomeDeclined && refusal === "proceed") { answer = endedQuestionReply("declined", answer, wrote); followup = null; }
+      // A yes the user just gave does not carry over: when the turn still needs an account, date or answer, it says how to confirm.
+      const confirmHint = ordinaryIncomeAccepted && !wrote && (followup === "account_or_date" || followup === "clarification")
+        ? incomeConfirmHint(followup, incomeEchoedAccount ?? (accounts.find((candidate) => candidate.isDefault) ?? accounts[0])?.name) : null;
+      const hint = confirmHint ?? cancelHint(lastFollowup, followup, modelWorded);
+      // A question that already says how to answer it and how to cancel needs no second hint.
+      if (hint && !answer.endsWith("or say cancel.")) answer = `${answer} ${hint}`;
+      // A second debt the user chose on purpose and that still waits on an account or a date stays distinct from the first.
+      if (keepsAnotherChoice({ chosen: anotherOpen, call: call.name, debtCreated: debt !== null, asks: followup !== null, debtOnQuestion: debtInFlow !== undefined })) replyData = { another: true };
+      const stored = followupAfterTurn(lastFollowup, followup, refusedTurn || ordinaryIncomeDeclined ? "other" : answeredReadOnly ? "read" : bill ? "billSaved" : "other");
+      const storedData: ReplyData | null = stored !== null && (replyData || (asks && followup !== null)) ? { ...replyData, ...(asks && followup !== null ? { asks } : {}) } : null;
+      store.addMessage(user.id, conversationId, "assistant", answer, transaction?.id, stored, debt?.id ?? (followup === null && stored ? recordedDebtId : followup !== null ? debtInFlow : undefined), undefined, bill?.id, answeredReadOnly && stored !== null, storedData);
+      return { conversationId, answer, transaction, undoUntil, debt, bill, ...(postingWarning ? { postingWarning } : {}) };
+    });
 }

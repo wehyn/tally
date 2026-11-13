@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { debtAfterPayment, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus } from "./lifecycle";
+import { answerInvitation, contributionRefusal, decideSuccession, nextGoalStatus, nextMembershipStatus, type GoalStatus, type MembershipStatus, type SuccessionCause, type SuccessionMember } from "./machines/goal";
+import { acceptsAdvance, acceptsPayment, canChangeDirection, debtAfterPayment, historyAdjustmentForUpdate, nextDebtStatus, type DebtDirection, type DebtStatus } from "./machines/debt";
+import { deleteRefusal, nextAccountState, roleForRegistration, type AccountState } from "./machines/identity";
 import type Database from "better-sqlite3";
 import { normalizeCounterparty } from "./counterparty";
-import { advanceBillDate, isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
+import { isDateOnly, isTime, timeInManila, todayInManila, type BillFrequency } from "./dates";
+import { canScheduleDueDate, planPosting, type BillSchedule } from "./machines/bill";
 import { DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji, type BillIcon } from "./bill-icons";
 import { defaultCategoryIcon, isCategoryIconId, type CategoryIconId, type CategoryType } from "./category-icons";
-import { isFollowupKind, type FollowupKind } from "./assistant-followup";
+import { isFollowupKind, parseReplyData, type FollowupKind, type ReplyData } from "./assistant-followup";
+import { canUndo, canWrite, undoUntilFor, type ConsentState } from "./machines/assistant";
 import { isManualTransactionKind, type ManualTransactionKind, type TransactionKind } from "./transaction-model";
 
 export { BILL_ICONS, DEFAULT_BILL_ICON_BACKGROUND_COLOR, DEFAULT_BILL_ICON_FOREGROUND_COLOR, isBillIcon, isBillIconColor, isBillIconEmoji } from "./bill-icons";
@@ -23,8 +27,8 @@ export const STARTER_CATEGORIES = {
 } as const;
 
 export type Role = "admin" | "user";
-export type User = { id: string; username: string; passwordHash: string; role: Role; enabled: boolean; assistantOptIn: boolean; createdAt: string };
-export type PublicUser = Omit<User, "passwordHash">;
+export type PublicUser = { id: string; username: string; role: Role; enabled: boolean; assistantOptIn: boolean; createdAt: string };
+export type User = PublicUser & { passwordHash: string; sessionVersion: number };
 export type AccountType = "cash" | "bank";
 export type Account = { id: string; name: string; type: AccountType; openingMinor: number; balanceMinor: number; isDefault: boolean };
 export type Category = { id: string; name: string; type: CategoryType; icon: CategoryIconId };
@@ -35,8 +39,7 @@ export type TransactionUpdateInput = Omit<TransactionInput, "kind"> & { kind: Tr
 type DebtRepaymentTransactionInput = Omit<TransactionFields, "source"> & { kind: "debt_repayment"; categoryId?: never; destinationAccountId?: never };
 export type DebtPaymentInput = Omit<TransactionFields, "source"> & { kind?: never; categoryId?: never; destinationAccountId?: never };
 export type Transaction = { id: string; kind: TransactionKind; amountMinor: number; accountId: string; destinationAccountId?: string; categoryId?: string; debtId?: string; description: string; date: string; time: string | null; source: "manual" | "assistant"; categoryName: string | null; categoryIcon: CategoryIconId | null; accountName: string; destinationAccountName: string | null; undoUntil: string | null };
-export type DebtDirection = "owed_to_you" | "you_owe";
-export type DebtStatus = "open" | "settled";
+export type { DebtDirection, DebtStatus };
 export type DebtActivity = {
   transactionId: string; date: string; time: string | null; kind: Exclude<TransactionKind, "transfer">; amountMinor: number;
   categoryName: string | null; accountName: string; description: string;
@@ -144,7 +147,7 @@ export function createStore(db: Database.Database) {
         anchor_day INTEGER NOT NULL CHECK(anchor_day BETWEEN 1 AND 31), anchor_month INTEGER NOT NULL CHECK(anchor_month BETWEEN 1 AND 12),
         account_id TEXT NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
         category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE RESTRICT,
-        archived_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        last_posted_due_date TEXT, archived_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS bills_due ON bills(archived_at,next_due_date);
       CREATE TABLE IF NOT EXISTS assistant_consents (
@@ -159,7 +162,7 @@ export function createStore(db: Database.Database) {
         id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')),
         content TEXT NOT NULL, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
-        needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, created_at TEXT NOT NULL
+        needs_followup INTEGER NOT NULL DEFAULT 0, followup_kind TEXT, debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL, bill_id TEXT REFERENCES bills(id) ON DELETE SET NULL, read_only INTEGER NOT NULL DEFAULT 0, followup_data TEXT, created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS goals (
         id TEXT PRIMARY KEY, manager_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -212,6 +215,9 @@ export function createStore(db: Database.Database) {
       db.exec("ALTER TABLE users ADD COLUMN shortcut_credential_hash TEXT");
     }
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_shortcut_credential_hash ON users(shortcut_credential_hash) WHERE shortcut_credential_hash IS NOT NULL");
+    if (!userColumns.some((column) => column.name === "session_version")) {
+      db.exec("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0");
+    }
     const accountColumns = db.pragma("table_info(financial_accounts)") as { name: string }[];
     if (!accountColumns.some((column) => column.name === "balance_adjustment_minor_exact")) {
       db.transaction(() => {
@@ -292,22 +298,26 @@ export function createStore(db: Database.Database) {
     if (!billColumns.some((column) => column.name === "icon_emoji")) db.exec("ALTER TABLE bills ADD COLUMN icon_emoji TEXT");
     if (!billColumns.some((column) => column.name === "icon_foreground_color")) db.exec(`ALTER TABLE bills ADD COLUMN icon_foreground_color TEXT NOT NULL DEFAULT '${DEFAULT_BILL_ICON_FOREGROUND_COLOR}'`);
     if (!billColumns.some((column) => column.name === "icon_background_color")) db.exec(`ALTER TABLE bills ADD COLUMN icon_background_color TEXT NOT NULL DEFAULT '${DEFAULT_BILL_ICON_BACKGROUND_COLOR}'`);
+    if (!billColumns.some((column) => column.name === "last_posted_due_date")) db.exec("ALTER TABLE bills ADD COLUMN last_posted_due_date TEXT");
     const messageColumns = db.pragma("table_info(assistant_messages)") as { name: string }[];
     if (!messageColumns.some((column) => column.name === "transaction_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL");
     if (!messageColumns.some((column) => column.name === "debt_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL");
+    if (!messageColumns.some((column) => column.name === "bill_id")) db.exec("ALTER TABLE assistant_messages ADD COLUMN bill_id TEXT REFERENCES bills(id) ON DELETE SET NULL");
+    if (!messageColumns.some((column) => column.name === "read_only")) db.exec("ALTER TABLE assistant_messages ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0");
+    if (!messageColumns.some((column) => column.name === "followup_data")) db.exec("ALTER TABLE assistant_messages ADD COLUMN followup_data TEXT");
     if (!messageColumns.some((column) => column.name === "needs_followup")) db.exec("ALTER TABLE assistant_messages ADD COLUMN needs_followup INTEGER NOT NULL DEFAULT 0");
     // Older rows only have needs_followup = 1; read them back as a generic clarification.
     if (!messageColumns.some((column) => column.name === "followup_kind")) db.exec("ALTER TABLE assistant_messages ADD COLUMN followup_kind TEXT");
   }
 
-  function registerUser(username: string, passwordHash: string): PublicUser {
+  function registerUser(username: string, passwordHash: string): PublicUser & { sessionVersion: number } {
     const normalized = username.trim();
     if (!/^[A-Za-z0-9_]{3,32}$/.test(normalized)) throw new Error("Username must be 3–32 letters, numbers, or underscores.");
     if (!passwordHash) throw new Error("A password hash is required.");
     return db.transaction(() => {
       const exists = db.prepare("SELECT 1 FROM users WHERE username = ?").get(normalized);
       if (exists) throw new Error("That username is already taken.");
-      const role: Role = db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get() ? "user" : "admin";
+      const role: Role = roleForRegistration(Boolean(db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get()));
       const user = { id: randomUUID(), username: normalized, passwordHash, role, enabled: true, assistantOptIn: false, createdAt: stamp() };
       db.prepare("INSERT INTO users(id,username,password_hash,role,enabled,assistant_opt_in,created_at) VALUES(?,?,?,?,1,0,?)")
         .run(user.id, normalized, passwordHash, role, user.createdAt);
@@ -315,17 +325,36 @@ export function createStore(db: Database.Database) {
       for (const type of ["income", "expense"] as const) {
         for (const name of STARTER_CATEGORIES[type]) insert.run(randomUUID(), user.id, name, type, defaultCategoryIcon(type, name));
       }
-      return { id: user.id, username: user.username, role, enabled: true, assistantOptIn: false, createdAt: user.createdAt };
+      return { id: user.id, username: user.username, role, enabled: true, assistantOptIn: false, createdAt: user.createdAt, sessionVersion: 0 };
     }).immediate();
   }
 
+  function userFromRow(row: Record<string, unknown>): User {
+    return { ...publicUser(row), passwordHash: String(row.password_hash), sessionVersion: Number(row.session_version) };
+  }
   function getUserByUsername(username: string): User | null {
     const row = db.prepare("SELECT * FROM users WHERE username = ?").get(username.trim()) as Record<string, unknown> | undefined;
-    return row ? { ...publicUser(row), passwordHash: String(row.password_hash) } : null;
+    return row ? userFromRow(row) : null;
   }
   function getUserById(id: string): User | null {
     const row = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    return row ? { ...publicUser(row), passwordHash: String(row.password_hash) } : null;
+    return row ? userFromRow(row) : null;
+  }
+  // The account state the machine decides from, read in the same transaction that writes it.
+  function accountState(userId: string, now: string): AccountState | null {
+    const row = db.prepare("SELECT enabled, reset_token_hash, reset_expires_at, shortcut_credential_hash, session_version FROM users WHERE id = ?")
+      .get(userId) as { enabled: number; reset_token_hash: string | null; reset_expires_at: string | null; shortcut_credential_hash: string | null; session_version: number } | undefined;
+    if (!row) return null;
+    const reset = row.reset_token_hash === null ? "none" : !row.reset_expires_at || row.reset_expires_at < now ? "expired" : "live";
+    return { enabled: Boolean(row.enabled), reset, shortcut: row.shortcut_credential_hash === null ? "none" : "live", sessionVersion: row.session_version };
+  }
+  // Writes what the machine decided. A credential that is not live is cleared; a live one keeps its stored value.
+  function saveAccountState(userId: string, state: AccountState): void {
+    db.prepare(`UPDATE users SET enabled = ?, session_version = ?,
+      reset_token_hash = CASE WHEN ? = 'live' THEN reset_token_hash END,
+      reset_expires_at = CASE WHEN ? = 'live' THEN reset_expires_at END,
+      shortcut_credential_hash = CASE WHEN ? = 'live' THEN shortcut_credential_hash END
+      WHERE id = ?`).run(state.enabled ? 1 : 0, state.sessionVersion, state.reset, state.reset, state.shortcut, userId);
   }
   function listUsers(): PublicUser[] {
     return (db.prepare("SELECT id,username,role,enabled,assistant_opt_in,created_at FROM users ORDER BY created_at")
@@ -333,18 +362,34 @@ export function createStore(db: Database.Database) {
   }
   function setUserEnabled(adminId: string, userId: string, enabled: boolean): void {
     if (adminId === userId) throw new Error("You cannot disable your own admin account.");
-    const result = db.prepare("UPDATE users SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, userId);
-    if (!result.changes) throw new Error("User not found.");
+    db.transaction(() => {
+      const state = accountState(userId, stamp());
+      if (!state) throw new Error("User not found.");
+      const next = nextAccountState(state, enabled ? "enable" : "disable");
+      if (!next) throw new Error("This account cannot change state.");
+      saveAccountState(userId, next);
+      const belongs = db.prepare(`SELECT g.id FROM goals g JOIN goal_members m ON m.goal_id=g.id
+        WHERE m.user_id=? AND m.status='accepted' AND g.status!='archived'`).all(userId) as { id: string }[];
+      for (const goal of belongs) handOverFromDisabledManager(goal.id);
+    }).immediate();
   }
   function setResetCredential(userId: string, hash: string, expiresAt: string): void {
-    const result = db.prepare("UPDATE users SET reset_token_hash = ?, reset_expires_at = ? WHERE id = ?").run(hash, expiresAt, userId);
-    if (!result.changes) throw new Error("User not found.");
+    return db.transaction(() => {
+      const state = accountState(userId, stamp());
+      if (!state) throw new Error("User not found.");
+      if (!nextAccountState(state, "issueReset")) throw new Error("Only an enabled user can receive a reset code.");
+      db.prepare("UPDATE users SET reset_token_hash = ?, reset_expires_at = ? WHERE id = ?").run(hash, expiresAt, userId);
+    }).immediate();
   }
   function consumeResetCredential(userId: string, tokenHash: string, newPasswordHash: string): boolean {
     return db.transaction(() => {
-      const row = db.prepare("SELECT reset_token_hash, reset_expires_at FROM users WHERE id = ? AND enabled = 1").get(userId) as { reset_token_hash: string | null; reset_expires_at: string | null } | undefined;
-      if (!row || row.reset_token_hash !== tokenHash || !row.reset_expires_at || row.reset_expires_at < stamp()) return false;
-      db.prepare("UPDATE users SET password_hash = ?, reset_token_hash = NULL, reset_expires_at = NULL WHERE id = ?").run(newPasswordHash, userId);
+      const state = accountState(userId, stamp());
+      const row = db.prepare("SELECT reset_token_hash FROM users WHERE id = ?").get(userId) as { reset_token_hash: string | null } | undefined;
+      if (!state || row?.reset_token_hash !== tokenHash) return false;
+      const next = nextAccountState(state, "resetPassword");
+      if (!next) return false;
+      db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(newPasswordHash, userId);
+      saveAccountState(userId, next);
       return true;
     }).immediate();
   }
@@ -570,7 +615,7 @@ export function createStore(db: Database.Database) {
     return db.transaction(() => {
       const row = db.prepare("SELECT id,direction,status,amount_minor FROM debts WHERE id=? AND user_id=?").get(debtId, userId) as { id: string; direction: DebtDirection; status: DebtStatus; amount_minor: number } | undefined;
       if (!row) throw new Error("Debt not found.");
-      if (row.status !== "open") throw new Error("A settled debt cannot receive an advance transaction.");
+      if (!acceptsAdvance(row.status)) throw new Error("A settled debt cannot receive an advance transaction.");
       const expectedKind = row.direction === "owed_to_you" ? "expense" : "income";
       if (input.kind !== expectedKind) throw new Error(`This debt advance must be recorded as ${expectedKind}.`);
       if (input.amountMinor !== row.amount_minor) throw new Error("Debt advance transaction must match the debt amount.");
@@ -598,12 +643,16 @@ export function createStore(db: Database.Database) {
       dueDate: input.dueDate === undefined ? current.dueDate : input.dueDate,
       note: input.note ?? current.note,
     });
-    const status = input.status ?? current.status;
+    const status = nextDebtStatus(current.status, input.status);
     if (!(status === "open" || status === "settled")) throw new Error("Choose open or settled status.");
-    if (value.direction !== current.direction && db.prepare("SELECT 1 FROM transactions WHERE debt_id=? AND user_id=? LIMIT 1").get(debtId, userId)) {
+    const hasLinkedActivity = !!db.prepare("SELECT 1 FROM transactions WHERE debt_id=? AND user_id=? LIMIT 1").get(debtId, userId);
+    if (value.direction !== current.direction && !canChangeDirection(hasLinkedActivity)) {
       throw new Error("A debt with linked activity cannot change direction.");
     }
     const updatedAt = stamp();
+    const adjustments = addAdjustment
+      ? historyAdjustmentForUpdate(current, { status, amountMinor: value.amountMinor }, debtBalanceFromPayments(userId, current))
+      : [];
     const counterpartyId = ensureCounterparty(userId, value.counterparty);
     db.prepare(`UPDATE debts SET direction=?,counterparty=?,counterparty_id=?,amount_minor=?,note=?,due_date=?,status=?,updated_at=?
       WHERE id=? AND user_id=?`).run(value.direction, value.counterparty, counterpartyId, value.amountMinor, value.note, value.dueDate, status, updatedAt, debtId, userId);
@@ -612,10 +661,10 @@ export function createStore(db: Database.Database) {
         SELECT 1 FROM debts WHERE counterparty_id=?
       )`).run(row.counterparty_id, userId, row.counterparty_id);
     }
-    if (addAdjustment && value.amountMinor !== current.amountMinor) {
+    for (const adjustment of adjustments) {
       db.prepare(`INSERT INTO debt_payments(id,user_id,debt_id,direction,kind,amount_minor,delta_minor,reason,transaction_id,created_at)
         VALUES(?,?,?,?,'adjustment',?,?,?,NULL,?)`).run(randomUUID(), userId, debtId, value.direction,
-        Math.abs(value.amountMinor - current.amountMinor), value.amountMinor - current.amountMinor, "manual amount edit", stamp());
+        Math.abs(adjustment.deltaMinor), adjustment.deltaMinor, adjustment.reason, stamp());
     }
     return listDebts(userId).find((debt) => debt.id === debtId)!;
   }
@@ -679,6 +728,12 @@ export function createStore(db: Database.Database) {
       archivedAt: row.archived_at ? String(row.archived_at) : null,
     };
   }
+  function billSchedule(row: Record<string, unknown>): BillSchedule {
+    return {
+      nextDueDate: String(row.next_due_date), endDate: row.end_date == null ? null : String(row.end_date), archived: row.archived_at != null,
+      frequency: row.frequency as BillFrequency, anchorDay: Number(row.anchor_day), anchorMonth: Number(row.anchor_month),
+    };
+  }
   const billSelect = `SELECT b.*,a.name AS account_name,c.name AS category_name FROM bills b
     JOIN financial_accounts a ON a.id=b.account_id JOIN categories c ON c.id=b.category_id`;
   function listBills(userId: string): Bill[] {
@@ -722,6 +777,7 @@ export function createStore(db: Database.Database) {
         iconForegroundColor: isBillIconColor(currentRow.icon_foreground_color) ? currentRow.icon_foreground_color : DEFAULT_BILL_ICON_FOREGROUND_COLOR,
         iconBackgroundColor: isBillIconColor(currentRow.icon_background_color) ? currentRow.icon_background_color : DEFAULT_BILL_ICON_BACKGROUND_COLOR };
       if (current.nextDueDate !== expectedNextDueDate) throw new Error("Bill schedule changed while editing. Refresh the Bills page before saving.");
+      const lastPostedDueDate = currentRow.last_posted_due_date == null ? null : String(currentRow.last_posted_due_date);
       const value = {
         ...current, ...input, name: (input.name ?? current.name).trim(),
         endDate: input.endDate === undefined ? current.endDate : input.endDate,
@@ -732,6 +788,7 @@ export function createStore(db: Database.Database) {
       };
       const dateUnchanged = value.nextDueDate === current.nextDueDate;
       validateBillInput(userId, value, dateUnchanged, true);
+      if (!canScheduleDueDate(lastPostedDueDate, value.nextDueDate)) throw new Error(`Bill due date ${value.nextDueDate} was already posted. Choose a date after ${lastPostedDueDate}.`);
       const reanchor = value.frequency !== current.frequency || value.nextDueDate !== current.nextDueDate;
       const anchorDay = reanchor ? Number(value.nextDueDate.slice(-2)) : Number(currentRow.anchor_day);
       const anchorMonth = reanchor ? Number(value.nextDueDate.slice(5, 7)) : Number(currentRow.anchor_month);
@@ -757,22 +814,24 @@ export function createStore(db: Database.Database) {
         try {
           posted = db.transaction(() => {
             const row = db.prepare("SELECT * FROM bills WHERE id=? AND user_id=? AND archived_at IS NULL").get(candidate.id, candidate.user_id) as Record<string, unknown> | undefined;
-            if (!row || String(row.next_due_date) > today) return false;
+            if (!row) return false;
             dueDate = String(row.next_due_date);
-            if (row.end_date != null && dueDate > String(row.end_date)) {
+            const plan = planPosting(billSchedule(row), today);
+            if (plan.kind === "none") return false;
+            if (plan.kind === "end") {
               db.prepare("UPDATE bills SET archived_at=?,updated_at=? WHERE id=? AND user_id=? AND archived_at IS NULL").run(stamp(), stamp(), candidate.id, candidate.user_id);
               return false;
             }
+            dueDate = plan.dueDate;
             const tx: TransactionInput = { kind: "expense", amountMinor: safeMinorNumber(row.amount_minor, "Bill amount"), accountId: String(row.account_id), categoryId: String(row.category_id), description: String(row.name), date: dueDate };
             assertTransactionInput(candidate.user_id, tx);
             const id = randomUUID();
             db.prepare(`INSERT INTO transactions(id,user_id,kind,amount_minor,account_id,category_id,description,date,time,source,undo_until,created_at)
               VALUES(?,?,'expense',?,?,?,?,?,NULL,'manual',NULL,?)`).run(id, candidate.user_id, tx.amountMinor, tx.accountId, tx.categoryId, tx.description, dueDate, stamp());
             assertLedgerTotalsSafe(candidate.user_id);
-            const nextDueDate = advanceBillDate(dueDate, row.frequency as BillFrequency, Number(row.anchor_day), Number(row.anchor_month));
-            const ended = row.end_date != null && nextDueDate > String(row.end_date);
-            const advanced = db.prepare("UPDATE bills SET next_due_date=?,archived_at=CASE WHEN ? THEN ? ELSE archived_at END,updated_at=? WHERE id=? AND archived_at IS NULL AND next_due_date=?")
-              .run(nextDueDate, ended ? 1 : 0, ended ? stamp() : null, stamp(), candidate.id, dueDate);
+            const ended = plan.outcome === "ended";
+            const advanced = db.prepare("UPDATE bills SET next_due_date=?,last_posted_due_date=?,archived_at=CASE WHEN ? THEN ? ELSE archived_at END,updated_at=? WHERE id=? AND archived_at IS NULL AND next_due_date=?")
+              .run(plan.nextDueDate, dueDate, ended ? 1 : 0, ended ? stamp() : null, stamp(), candidate.id, dueDate);
             if (!advanced.changes) throw new Error("Bill schedule changed while posting.");
             return true;
           }).immediate();
@@ -822,7 +881,7 @@ export function createStore(db: Database.Database) {
       const transactionInput = { ...input, time };
       assertTransactionInput(userId, transactionInput);
       const source = input.source ?? "manual";
-      const undoUntil = source === "assistant" ? new Date(Date.now() + 10_000).toISOString() : null;
+      const undoUntil = undoUntilFor(source, Date.now());
       return insertTransaction(userId, transactionInput, { source, undoUntil });
     }).immediate();
   }
@@ -832,7 +891,7 @@ export function createStore(db: Database.Database) {
         FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
       if (!row) throw new Error("Debt not found.");
       const debt = debtFromRow(row);
-      if (debt.status !== "open" || debt.direction !== "owed_to_you") throw new Error("Only an open debt owed to you can receive a payment.");
+      if (!acceptsPayment(debt, "owed_to_you")) throw new Error("Only an open debt owed to you can receive a payment.");
       if (["kind", "categoryId", "destinationAccountId", "source"].some((field) => Object.hasOwn(input, field))) {
         throw new Error("A debt repayment accepts only the payment details.");
       }
@@ -854,7 +913,7 @@ export function createStore(db: Database.Database) {
         FROM debts WHERE id=? AND user_id=?`).get(debtId, userId) as Record<string, unknown> | undefined;
       if (!row) throw new Error("Debt not found.");
       const debt = debtFromRow(row);
-      if (debt.status !== "open" || debt.direction !== "you_owe") throw new Error("Only an open debt you owe can receive a repayment.");
+      if (!acceptsPayment(debt, "you_owe")) throw new Error("Only an open debt you owe can receive a repayment.");
       if (input.kind !== "expense") throw new Error("A debt repayment you make must be recorded as an expense.");
       const paymentInput = { ...input, kind: "expense" as const, source: "assistant" as const };
       assertTransactionInput(userId, paymentInput);
@@ -928,7 +987,7 @@ export function createStore(db: Database.Database) {
       const row = db.prepare("SELECT source,undo_until,debt_id FROM transactions WHERE id=? AND user_id=?").get(id, userId) as { source: string; undo_until: string | null; debt_id: string | null } | undefined;
       if (!row) throw new Error("Transaction not found.");
       if (row.debt_id) throw new Error("A transaction linked to a debt cannot be deleted. Delete the debt first.");
-      if (undoOnly && (row.source !== "assistant" || !row.undo_until || Date.now() > Date.parse(row.undo_until))) throw new Error("The 10-second Undo period has expired.");
+      if (undoOnly && !canUndo({ source: row.source as "manual" | "assistant", undoUntil: row.undo_until }, Date.now())) throw new Error("The 10-second Undo period has expired.");
       db.prepare("DELETE FROM transactions WHERE id=? AND user_id=?").run(id, userId);
       assertLedgerTotalsSafe(userId);
     }).immediate();
@@ -1009,12 +1068,15 @@ export function createStore(db: Database.Database) {
       else db.prepare("DELETE FROM assistant_consents WHERE user_id=?").run(userId);
     }).immediate();
   }
-  function getAssistantOptIn(userId: string, disclosureHash?: string): boolean {
+  function getAssistantConsent(userId: string, disclosureHash?: string): ConsentState {
     const enabled = Boolean((db.prepare("SELECT assistant_opt_in FROM users WHERE id=?").get(userId) as { assistant_opt_in: number } | undefined)?.assistant_opt_in);
-    if (!enabled) return false;
-    if (!disclosureHash) return true;
+    if (!enabled) return "off";
+    if (!disclosureHash) return "on";
     const consent = db.prepare("SELECT disclosure_hash FROM assistant_consents WHERE user_id=?").get(userId) as { disclosure_hash: string } | undefined;
-    return consent?.disclosure_hash === disclosureHash;
+    return consent?.disclosure_hash === disclosureHash ? "on" : "stale";
+  }
+  function getAssistantOptIn(userId: string, disclosureHash?: string): boolean {
+    return canWrite(getAssistantConsent(userId, disclosureHash));
   }
 
   function createConversation(userId: string, title: string): string {
@@ -1029,13 +1091,13 @@ export function createStore(db: Database.Database) {
   function getConversation(userId: string, id: string) {
     const conversation = db.prepare("SELECT id,title FROM conversations WHERE user_id=? AND id=?").get(userId, id) as { id: string; title: string } | undefined;
     if (!conversation) return null;
-    const messages = db.prepare(`SELECT m.id,m.role,m.content,m.created_at AS createdAt,m.transaction_id AS transactionId,m.needs_followup AS needsFollowup,m.followup_kind AS followupKind,m.debt_id AS messageDebtId,
+    const messages = db.prepare(`SELECT m.id,m.role,m.content,m.created_at AS createdAt,m.transaction_id AS transactionId,m.needs_followup AS needsFollowup,m.followup_kind AS followupKind,m.debt_id AS messageDebtId,m.bill_id AS messageBillId,m.read_only AS readOnly,m.followup_data AS followupData,
       t.kind,t.amount_minor AS amountMinor,t.account_id AS accountId,t.category_id AS categoryId,t.debt_id AS debtId,t.description AS transactionDescription,
       t.date AS transactionDate,t.time AS transactionTime,c.name AS categoryName,a.name AS accountName,t.source,t.undo_until AS undoUntil
       FROM assistant_messages m LEFT JOIN transactions t ON t.id=m.transaction_id
       LEFT JOIN categories c ON c.id=t.category_id LEFT JOIN financial_accounts a ON a.id=t.account_id
-      WHERE m.user_id=? AND m.conversation_id=? ORDER BY m.created_at`).all(userId, id) as Record<string, unknown>[];
-    return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), followup: followupFromRow(message), debtId: message.messageDebtId ? String(message.messageDebtId) : null,
+      WHERE m.user_id=? AND m.conversation_id=? ORDER BY m.rowid`).all(userId, id) as Record<string, unknown>[];
+    return { ...conversation, messages: messages.map((message) => ({ id: String(message.id), role: message.role as "user" | "assistant", content: String(message.content), createdAt: String(message.createdAt), followup: followupFromRow(message), debtId: message.messageDebtId ? String(message.messageDebtId) : null, billId: message.messageBillId ? String(message.messageBillId) : null, readOnly: message.readOnly === 1, data: parseReplyData(message.followupData),
       transaction: message.transactionId ? {
         id: String(message.transactionId), kind: message.kind as TransactionKind, amountMinor: Number(message.amountMinor), accountId: String(message.accountId),
         categoryId: message.categoryId ? String(message.categoryId) : undefined, debtId: message.debtId ? String(message.debtId) : undefined,
@@ -1044,10 +1106,17 @@ export function createStore(db: Database.Database) {
         accountName: message.accountName ? String(message.accountName) : "", undoUntil: message.undoUntil ? String(message.undoUntil) : null,
       } : null })) };
   }
-  function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, followup: FollowupKind | null = null, debtId?: string): void {
+  function lastMessageId(userId: string, conversationId: string): string | null {
+    if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");
+    const row = db.prepare("SELECT id FROM assistant_messages WHERE conversation_id=? AND user_id=? ORDER BY rowid DESC LIMIT 1").get(conversationId, userId) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+  function addMessage(userId: string, conversationId: string, role: "user" | "assistant", content: string, transactionId?: string, followup: FollowupKind | null = null, debtId?: string, createdAt?: string, billId?: string, readOnly = false, data?: ReplyData | null): void {
     if (!db.prepare("SELECT 1 FROM conversations WHERE id=? AND user_id=?").get(conversationId, userId)) throw new Error("Conversation not found.");
     const now = stamp();
-    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, now);
+    // A user message keeps the time its request was received, which relative dates in later follow-ups read.
+    // The turn commits prompt then reply in one transaction, so rowid order is their order whatever the clock did.
+    db.prepare("INSERT INTO assistant_messages(id,conversation_id,user_id,role,content,transaction_id,needs_followup,followup_kind,debt_id,bill_id,read_only,followup_data,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(), conversationId, userId, role, content.slice(0, 8000), transactionId ?? null, followup ? 1 : 0, followup, debtId ?? null, billId ?? null, readOnly ? 1 : 0, data ? JSON.stringify(data) : null, createdAt ?? now);
     db.prepare("UPDATE conversations SET updated_at=? WHERE id=? AND user_id=?").run(now, conversationId, userId);
   }
   function deleteConversation(userId: string, id: string): void {
@@ -1098,10 +1167,15 @@ export function createStore(db: Database.Database) {
     else db.prepare("INSERT INTO goal_members(id,goal_id,user_id,username_snapshot,status,invited_at) VALUES(?,?,?,?, 'invited',?)").run(randomUUID(), goalId, invitee.id, invitee.username, stamp());
   }
   function respondInvitation(userId: string, membershipId: string, accept: boolean): void {
-    const next = nextMembershipStatus("invited", accept ? "accept" : "decline")!;
-    const result = db.prepare("UPDATE goal_members SET status=?,accepted_at=? WHERE id=? AND user_id=? AND status='invited'")
-      .run(next, accept ? stamp() : null, membershipId, userId);
-    if (!result.changes) throw new Error("Invitation not found or already answered.");
+    db.transaction(() => {
+      const row = db.prepare("SELECT g.id AS goalId,g.status FROM goal_members m JOIN goals g ON g.id=m.goal_id WHERE m.id=? AND m.user_id=? AND m.status='invited'")
+        .get(membershipId, userId) as { goalId: string; status: GoalStatus } | undefined;
+      if (!row) throw new Error("Invitation not found or already answered.");
+      const next = answerInvitation(row.status, accept);
+      if (!next) throw new Error("This goal is archived.");
+      db.prepare("UPDATE goal_members SET status=?,accepted_at=? WHERE id=?").run(next, accept ? stamp() : null, membershipId);
+      if (accept) handOverFromDisabledManager(row.goalId);
+    }).immediate();
   }
   function listInvitations(userId: string) {
     return db.prepare(`SELECT m.id,g.id AS goalId,g.name AS goalName,u.username AS managerName,m.invited_at AS invitedAt
@@ -1126,11 +1200,25 @@ export function createStore(db: Database.Database) {
       db.prepare(`UPDATE goals SET ${updates.join(",")} WHERE id=?`).run(...args, goalId);
     }).immediate();
   }
-  function succession(goalId: string, outgoingUserId: string): void {
-    const successor = db.prepare(`SELECT m.user_id FROM goal_members m JOIN users u ON u.id=m.user_id
-      WHERE m.goal_id=? AND m.status='accepted' AND m.user_id!=? AND u.enabled=1 ORDER BY m.accepted_at,m.invited_at LIMIT 1`).get(goalId, outgoingUserId) as { user_id: string } | undefined;
-    if (successor) db.prepare("UPDATE goals SET manager_id=? WHERE id=?").run(successor.user_id, goalId);
-    else db.prepare("UPDATE goals SET manager_id=NULL,status='archived' WHERE id=?").run(goalId);
+  function succession(goalId: string, outgoingUserId: string, cause: SuccessionCause): void {
+    const members = (db.prepare(`SELECT m.user_id AS userId,m.status,m.accepted_at AS acceptedAt,m.invited_at AS invitedAt,u.enabled
+      FROM goal_members m JOIN users u ON u.id=m.user_id WHERE m.goal_id=? AND m.user_id IS NOT NULL`).all(goalId) as (Omit<SuccessionMember, "enabled"> & { enabled: number })[])
+      .map((row): SuccessionMember => ({ ...row, enabled: row.enabled === 1 }));
+    const next = decideSuccession(outgoingUserId, members, cause);
+    if ("keep" in next) return;
+    if ("managerId" in next) {
+      db.prepare("UPDATE goals SET manager_id=? WHERE id=?").run(next.managerId, goalId);
+      return;
+    }
+    db.prepare("UPDATE goals SET manager_id=NULL,status='archived' WHERE id=?").run(goalId);
+    db.prepare("UPDATE goal_members SET status='left' WHERE goal_id=? AND status='accepted'").run(goalId);
+  }
+  // A disabled manager hands a live goal on as soon as an enabled accepted member exists. Run after anything
+  // that can create one: a user is disabled or enabled, or an invitation is accepted.
+  function handOverFromDisabledManager(goalId: string): void {
+    const goal = db.prepare("SELECT g.manager_id AS managerId FROM goals g JOIN users u ON u.id=g.manager_id WHERE g.id=? AND g.status!='archived' AND u.enabled=0")
+      .get(goalId) as { managerId: string } | undefined;
+    if (goal) succession(goalId, goal.managerId, "disable");
   }
   function changeMembership(actorId: string, goalId: string, targetUserId: string, action: "leave" | "remove"): void {
     const goal = requireGoalMember(actorId, goalId);
@@ -1139,14 +1227,15 @@ export function createStore(db: Database.Database) {
     const target = db.prepare("SELECT status FROM goal_members WHERE goal_id=? AND user_id=?").get(goalId, targetUserId) as { status: MembershipStatus } | undefined;
     const nextStatus = target ? nextMembershipStatus(target.status, action) : null;
     if (!nextStatus) throw new Error("Member not found.");
-    if (goal.manager_id === targetUserId) succession(goalId, targetUserId);
+    if (goal.manager_id === targetUserId) succession(goalId, targetUserId, "leave");
     db.prepare("UPDATE goal_members SET status=? WHERE goal_id=? AND user_id=?").run(nextStatus, goalId, targetUserId);
   }
   function addContribution(userId: string, goalId: string, input: { amountMinor: number; note?: string; date: string }): string {
     return db.transaction(() => {
       const goal = requireGoalMember(userId, goalId);
-      if (goal.status === "completed") throw new Error("This goal is complete. Its manager must raise the target before continuing.");
-      if (goal.status === "archived") throw new Error("This goal is archived.");
+      const refusal = contributionRefusal(goal.status as GoalStatus);
+      if (refusal === "completed") throw new Error("This goal is complete. Its manager must raise the target before continuing.");
+      if (refusal === "archived") throw new Error("This goal is archived.");
       if (!validMoney(input.amountMinor) || !isDateOnly(input.date) || (input.note ?? "").length > 200) throw new Error("Enter a valid contribution amount, date, and note.");
       const username = (db.prepare("SELECT username FROM users WHERE id=?").get(userId) as { username: string }).username;
       const id = randomUUID(); const now = stamp();
@@ -1191,22 +1280,24 @@ export function createStore(db: Database.Database) {
     db.transaction(() => {
       const user = getUserById(userId);
       if (!user) throw new Error("User not found.");
-      if (user.role === "admin") {
-        const enabled = db.prepare("SELECT id FROM users WHERE enabled=1 AND id!=?").all(userId) as { id: string }[];
-        if (enabled.length && !adminHandoffTo) throw new Error("Choose an enabled user to receive admin access before deleting this account.");
-        if (adminHandoffTo) {
-          if (!enabled.some((entry) => entry.id === adminHandoffTo)) throw new Error("Admin handoff must go to another enabled user.");
-          db.prepare("UPDATE users SET role='user' WHERE id=?").run(userId);
-          db.prepare("UPDATE users SET role='admin' WHERE id=? AND enabled=1").run(adminHandoffTo);
-        }
+      const enabled = (db.prepare("SELECT id FROM users WHERE enabled=1 AND id!=?").all(userId) as { id: string }[]).map((entry) => entry.id);
+      const refusal = deleteRefusal(user.role, enabled, adminHandoffTo);
+      if (refusal === "handoff-required") throw new Error("Choose an enabled user to receive admin access before deleting this account.");
+      if (refusal === "handoff-not-enabled") throw new Error("Admin handoff must go to another enabled user.");
+      if (user.role === "admin" && adminHandoffTo) {
+        db.prepare("UPDATE users SET role='user' WHERE id=?").run(userId);
+        db.prepare("UPDATE users SET role='admin' WHERE id=? AND enabled=1").run(adminHandoffTo);
       }
       const managed = db.prepare("SELECT id FROM goals WHERE manager_id=? AND status!='archived'").all(userId) as { id: string }[];
-      for (const goal of managed) succession(goal.id, userId);
+      for (const goal of managed) succession(goal.id, userId, "leave");
       db.prepare("UPDATE goal_contributions SET user_id=NULL,member_name='Former member' WHERE user_id=?").run(userId);
       db.prepare("UPDATE goal_members SET user_id=NULL,username_snapshot='Former member',status='former' WHERE user_id=?").run(userId);
       db.prepare("DELETE FROM bills WHERE user_id=?").run(userId);
       db.prepare("DELETE FROM users WHERE id=?").run(userId);
     }).immediate();
+  }
+  function transaction<T>(work: () => T): T {
+    return db.transaction(work).immediate();
   }
   function deleteAllConversations(userId: string): void {
     db.prepare("DELETE FROM conversations WHERE user_id=?").run(userId);
@@ -1219,7 +1310,7 @@ export function createStore(db: Database.Database) {
     listDebts, listDebtPayments, debtBalanceFromPayments, createDebt, updateDebt, deleteDebt, recordDebtAdvance, recordDebtAdvanceTransaction, recordDebtPayment, recordDebtRepayment,
     listBills, createBill, updateBill, archiveBill, processDueBills,
     createTransaction, getTransaction, listTransactions, updateTransaction, deleteTransaction, getDashboard, getFinanceFacts,
-    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, addMessage, deleteConversation, deleteAllConversations,
+    setAssistantConsent, getAssistantOptIn, createConversation, listConversations, getConversation, lastMessageId, addMessage, deleteConversation, deleteAllConversations, transaction,
     createGoal, listGoals, inviteToGoal, respondInvitation, listInvitations, updateGoal, changeMembership, addContribution, updateContribution,
     deleteContribution, deleteAccountOwner,
   };

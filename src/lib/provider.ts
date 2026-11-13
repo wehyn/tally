@@ -195,7 +195,11 @@ export function minimalFollowUpContext(messages: AssistantContextMessage[]): (As
       break;
     }
   }
-  return messages.slice(lastCompletedReply + 1).slice(-12).map(({ role, content, createdAt, followup }) => ({ role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null }));
+  return messages.slice(lastCompletedReply + 1).map(contextMessage);
+}
+
+export function contextMessage({ role, content, createdAt, followup }: AssistantContextMessage): AssistantContextMessage & { role: "user" | "assistant"; content: string } {
+  return { role, content: content.slice(0, 4000), ...(createdAt ? { createdAt } : {}), followup: followup ?? null };
 }
 
 async function readProviderJson(response: Response, maxBytes: number): Promise<unknown> {
@@ -280,7 +284,7 @@ Current date and time in Asia/Manila: ${currentDateTime}. Today's date is ${toda
     method: "POST", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: config.model, messages: [
       { role: "system", content: systemPrompt },
-      ...(input.history ?? []).slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
+      ...(input.history ?? []).map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
       debtSummaryMessage,
       { role: "user", content: input.prompt },
     ], tools: [transactionTool(input.categories ?? []), debtTool(input.categories ?? []), debtPaymentTool, debtRepaymentTool, questionTool, ...billTools(input.categories ?? []), clarificationTool], tool_choice: "required" }),

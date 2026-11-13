@@ -1,0 +1,29 @@
+---
+title: "A debt from first record to deletion"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: blue
+    lg1: teal
+    lg2: tan
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 tan
+  s0: Open
+  s1: Open, partly repaid
+  s2: Settled
+  s3: Deleted (transactions stay, unlinked)
+  [*] --> s0
+  s0 --> s2: last payment is recorded or you press Settle
+  s0 --> s3: you delete the debt
+  s0 --> s1: a partial payment is recorded
+  s1 --> s2: you press Settle or last payment is recorded
+  s1 --> s3: you delete the debt
+  s2 --> s3: you delete the debt
+  s2 --> s1: you press Reopen
+  s2 --> s0: you press Reopen
+  class s0 blue
+  class s1 blue
+  class s2 teal
+  class s3 tan

@@ -12,8 +12,10 @@ function secretKey() {
   return new TextEncoder().encode(secret);
 }
 
-export async function setSession(user: Pick<PublicUser, "id" | "role">) {
-  const token = await new SignJWT({ role: user.role }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(`${TTL_SECONDS}s`).sign(secretKey());
+// The version must come from the same row the caller verified, never a later read: a reset that
+// commits in between would otherwise hand an old-password sign-in a token for the new version.
+export async function setSession(user: Pick<PublicUser, "id" | "role"> & { sessionVersion: number }) {
+  const token = await new SignJWT({ role: user.role, sessionVersion: user.sessionVersion }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(`${TTL_SECONDS}s`).sign(secretKey());
   const jar = await cookies();
   jar.set(COOKIE_NAME, token, { httpOnly: true, secure: secureCookie(), sameSite: "lax", path: "/", maxAge: TTL_SECONDS });
 }
@@ -30,7 +32,7 @@ export async function currentUser(): Promise<PublicUser | null> {
     const { payload } = await jwtVerify(token, secretKey(), { algorithms: ["HS256"] });
     if (!payload.sub) return null;
     const user = getStore().getUserById(payload.sub);
-    if (!user || !user.enabled) return null;
+    if (!user || !user.enabled || payload.sessionVersion !== user.sessionVersion) return null;
     return { id: user.id, username: user.username, role: user.role, enabled: user.enabled, assistantOptIn: user.assistantOptIn, createdAt: user.createdAt };
   } catch {
     return null;

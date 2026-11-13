@@ -1,0 +1,37 @@
+---
+title: "Log a transaction, then Undo"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: ready
+    lg1: waiting
+    lg2: saved
+    lg3: error
+  }
+  class lg0 teal
+  class lg1 blue
+  class lg2 purple
+  class lg3 pink
+  s0: Ready
+  s1: Waiting for the model: complete transaction
+  s2: Error shown
+  s3: Saved, Undo open
+  s4: Saved, Undo expired
+  s5: Saved, then undone
+  [*] --> s0
+  s0 --> s1: you send a complete transaction
+  s1 --> s2: the model call fails
+  s1 --> s3: the model answers and Tally saves it
+  s2 --> s0: you give up
+  s2 --> s1: you send it again
+  s3 --> s4: ten seconds pass
+  s3 --> s5: you press Undo
+  s3 --> s1: you send a complete transaction
+  s4 --> s1: you send a complete transaction
+  s5 --> s1: you send a complete transaction
+  class s0 teal
+  class s1 blue
+  class s2 pink
+  class s3 purple
+  class s4 purple
+  class s5 purple

@@ -1,0 +1,46 @@
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: normal
+    lg1: disabled
+    lg2: none
+  }
+  class lg0 teal
+  class lg1 tan
+  class lg2 blue
+  s0: Alice no account, Bob no account
+  s1: Alice admin, Bob no account
+  s2: Alice no account, Bob admin
+  s3: Alice admin, Bob member
+  s4: Alice member, Bob admin
+  s5: Alice admin, Bob member (disabled)
+  s6: Alice member (disabled), Bob admin
+  s7: Alice no account, Bob member (disabled)
+  s8: Alice member (disabled), Bob no account
+  [*] --> s0
+  s0 --> s1: Alice registers
+  s0 --> s2: Bob registers
+  s1 --> s0: Alice deletes their account
+  s1 --> s3: Bob registers
+  s2 --> s0: Bob deletes their account
+  s2 --> s4: Alice registers
+  s3 --> s1: Bob deletes their account
+  s3 --> s2: Alice deletes their account and hands admin to the other
+  s3 --> s5: the admin disables Bob
+  s4 --> s1: Bob deletes their account and hands admin to the other
+  s4 --> s2: Alice deletes their account
+  s4 --> s6: the admin disables Alice
+  s5 --> s3: the admin re-enables Bob
+  s5 --> s7: Alice deletes their account
+  s6 --> s4: the admin re-enables Alice
+  s6 --> s8: Bob deletes their account
+  s7 --> s5: Alice registers
+  s8 --> s6: Bob registers
+  class s0 blue
+  class s1 teal
+  class s2 teal
+  class s3 teal
+  class s4 teal
+  class s5 tan
+  class s6 tan
+  class s7 tan
+  class s8 tan

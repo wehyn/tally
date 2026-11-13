@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="pele pele-state" viewBox="0 0 966 1186" width="966" height="1186" style="max-width:100%;height:auto;--_bg:var(--pele-bg,#fff);--_fg:var(--pele-fg,#1f1f1f);--_m:var(--pele-muted,#6e6e6e);--_l:var(--pele-line,#1f1f1f);--_s:var(--pele-surface,#f3f3f3);--_a:var(--pele-surface-alt,#e6e6e6);--_b:var(--pele-border,#8a8a8a);--_c:var(--pele-accent,#5b7bd5);color:var(--_fg);--_fm:var(--pele-font-mono,monospace);font:16px sans-serif;letter-spacing:normal;word-spacing:normal;text-transform:none;direction:ltr;font-family:var(--pele-font,sans-serif)" fill="var(--_fg)" role="graphics-document document" aria-roledescription="state"><style>.pele {
+  --pele-bg: #ffffff;
+  --pele-fg: #1c1c1c;
+  --pele-muted: #656565;
+  --pele-line: #808080;
+  --pele-surface: #fcfcfc;
+  --pele-surface-alt: #f1f1f1;
+  --pele-border: #c9c9c9;
+}
+.pele .blue rect { fill: #c3e0ff; }
+.pele .orange rect { fill: #f0d3bf; }
+.pele .purple rect { fill: #e3d5ff; }
+.pele .yellow rect { fill: #f0dcbf; }
+.pele .teal rect { fill: #bfe3df; }
+.pele .tan rect { fill: #e5d9ce; }
+.pele .pink rect { fill: #ffcbe6; }
+.pele .breaks rect {
+  fill: #ffecee !important;
+  stroke: #e72e3b !important;
+  stroke-width: 2.5px !important;
+}
+.pele .breaks text {
+  fill: #cd2834 !important;
+}
+.pele .mayBreak rect {
+  fill: #fff3e6 !important;
+  stroke: #e8730c !important;
+  stroke-width: 2.5px !important;
+}
+.pele .mayBreak text {
+  fill: #b85a06 !important;
+}
+.pele .bugPath rect {
+  stroke: #1680f3 !important;
+  stroke-width: 2.5px !important;
+}
+.pele .repeats rect {
+  stroke: #9b35d6 !important;
+  stroke-width: 2.5px !important;
+  stroke-dasharray: 6 3;
+}
+@media (prefers-color-scheme: dark) {
+  .pele {
+    --pele-bg: #1f1f1f;
+    --pele-fg: #f5f5f5;
+    --pele-muted: #acacac;
+    --pele-line: #939393;
+    --pele-surface: #121212;
+    --pele-surface-alt: #2c2c2c;
+    --pele-border: #4e4e4e;
+  }
+  .pele .blue rect { fill: #1b3857; }
+  .pele .orange rect { fill: #573117; }
+  .pele .purple rect { fill: #3c2e57; }
+  .pele .yellow rect { fill: #573d17; }
+  .pele .teal rect { fill: #174641; }
+  .pele .tan rect { fill: #3d3127; }
+  .pele .pink rect { fill: #57233e; }
+  .pele .breaks rect {
+    fill: #2e2021 !important;
+    stroke: #cf2b35 !important;
+  }
+  .pele .breaks text {
+    fill: #ff6463 !important;
+  }
+  .pele .mayBreak rect {
+    fill: #2e2619 !important;
+    stroke: #d0700f !important;
+  }
+  .pele .mayBreak text {
+    fill: #ffa257 !important;
+  }
+  .pele .bugPath rect {
+    stroke: #116dd2 !important;
+  }
+  .pele .repeats rect {
+    stroke: #9a3fcf !important;
+  }
+}
+</style><g class="pele-clusters"><g class="pele-cluster pele-state-composite" data-id="legend"><rect x="629.12" y="8" width="328.05" height="112" rx="10" fill="var(--_a)" fill-opacity="0.5" stroke="var(--_b)"/><path d="M629.12,44H957.17" fill="none" stroke="var(--_b)"/><text class="pele-cluster-label" x="793.14" y="31.6" text-anchor="middle">Legend</text></g></g><g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round"><g class="pele-edge pele-transition" data-id="edge0"><path d="M582.12,120L582.12,157"/><path class="pele-marker" d="M582.12,164L578.76,156L585.48,156Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge1"><path d="M582.12,208L582.12,285"/><path class="pele-marker" d="M582.12,292L578.76,284L585.48,284Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge2"><path d="M550.12,336L550.12,348.25C550.12,358.02 488.88,364 388.97,364C289.06,364 227.83,379.2 227.83,404L227.83,444"/><path class="pele-marker" d="M227.83,451L224.47,443L231.19,443Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge3"><path d="M598.12,336L598.12,349C598.12,400 735.4,400 735.4,451L735.4,1083.75C735.4,1088.44 325.84,1097.81 325.84,1102.5L325.84,1108.5"/><path class="pele-marker" d="M325.84,1115.5L322.48,1107.5L329.2,1107.5Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge4"><path d="M243.83,451L243.83,441.38C243.83,435.19 331.03,435.19 331.03,429L331.03,404C331.03,386.64 375.7,376 448.58,376C521.45,376 566.12,365.74 566.12,349L566.12,343"/><path class="pele-marker" d="M566.12,336L569.48,344L562.76,344Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge5"><path d="M233.23,495L233.23,508C233.23,535.5 101.53,535.5 101.53,563L101.53,618"/><path class="pele-marker" d="M101.53,625L98.17,617L104.89,617Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge6"><path d="M216.54,1115.5L216.54,1102.5C216.54,1074.5 71.66,1074.5 71.66,1046.5L71.66,694"/><path class="pele-marker" d="M71.66,687L75.02,695L68.3,695Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge7"><path d="M341.84,1115.5L341.84,1102.5C341.84,1097.81 849.39,1088.44 849.39,1083.75L849.39,451C849.39,400 614.12,400 614.12,349L614.12,343"/><path class="pele-marker" d="M614.12,336L617.48,344L610.76,344Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge8"><path d="M123.41,687L123.41,1046.5C123.41,1074.5 232.54,1074.5 232.54,1102.5L232.54,1108.5"/><path class="pele-marker" d="M232.54,1115.5L229.18,1107.5L235.9,1107.5Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge9"><path d="M148.69,625L148.69,615.38C148.69,610.24 268.04,608.13 268.04,603L268.04,563C268.04,543 249.23,543 249.23,523L249.23,502"/><path class="pele-marker" d="M249.23,495L252.59,503L245.87,503Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge10"><path d="M156.69,687L156.69,699.25C156.69,709.02 194.29,715 255.63,715C316.98,715 354.58,730.2 354.58,755L354.58,813.5"/><path class="pele-marker" d="M354.58,820.5L351.22,812.5L357.94,812.5Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge11"><path d="M469.36,820.5L469.36,807.5C469.36,747.25 582.12,747.25 582.12,687L582.12,343"/><path class="pele-marker" d="M582.12,336L585.48,344L578.76,344Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge12"><path d="M453.36,820.5L453.36,807.5C453.36,796.25 460.03,796.25 460.03,785L460.03,573C460.03,542 423.02,523 362.63,523C302.24,523 265.23,517.02 265.23,507.25L265.23,502"/><path class="pele-marker" d="M265.23,495L268.59,503L261.87,503Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge13"><path d="M352.26,882.5L352.26,977.5"/><path class="pele-marker" d="M352.26,984.5L348.9,976.5L355.62,976.5Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge14"><path d="M352.26,1046.5L352.26,1090C352.26,1096.94 309.84,1096.94 309.84,1103.88L309.84,1108.5"/><path class="pele-marker" d="M309.84,1115.5L306.48,1107.5L313.2,1107.5Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge15"><path d="M292.66,984.5L292.66,971.5C292.66,959.75 249.13,959.75 249.13,948L249.13,765C249.13,741.44 228.53,727 194.91,727C161.29,727 140.69,716.74 140.69,700L140.69,694"/><path class="pele-marker" d="M140.69,687L144.05,695L137.33,695Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge16"><path d="M411.86,984.5L411.86,974.88C411.86,970.72 559.24,966.66 559.24,962.5L559.24,904.5C559.24,899.26 462.68,898.49 462.68,893.25L462.68,889.5"/><path class="pele-marker" d="M462.68,882.5L466.04,890.5L459.32,890.5Z" fill="var(--_l)" stroke="none"/></g></g><g class="pele-edge-labels" font-size="14"><g class="pele-edge-label" data-id="edge1"><rect x="480.08" y="228.5" width="204.07" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="582.12" y="242.4">you register (the first user is the</tspan><tspan x="582.12" y="260.4">admin)</tspan></text></g><g class="pele-edge-label" data-id="edge2"><rect x="190.37" y="406" width="74.92" height="21" rx="3" fill="var(--_bg)"/><text x="227.83" y="421.4" text-anchor="middle">you sign in</text></g><g class="pele-edge-label" data-id="edge3"><rect x="643.86" y="638" width="183.07" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="735.4" y="651.9">the admin issues a one-time</tspan><tspan x="735.4" y="669.9">reset code</tspan></text></g><g class="pele-edge-label" data-id="edge4"><rect x="289.29" y="406" width="83.49" height="21" rx="3" fill="var(--_bg)"/><text x="331.03" y="421.4" text-anchor="middle">you sign out</text></g><g class="pele-edge-label" data-id="edge5"><rect x="10" y="565" width="183.07" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="101.53" y="578.9">the admin issues a one-time</tspan><tspan x="101.53" y="596.9">reset code</tspan></text></g><g class="pele-edge-label" data-id="edge6"><rect x="34.2" y="1005" width="74.92" height="21" rx="3" fill="var(--_bg)"/><text x="71.66" y="1020.4" text-anchor="middle">you sign in</text></g><g class="pele-edge-label" data-id="edge7"><rect x="745.4" y="833.5" width="207.99" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="849.39" y="847.4">15 minutes pass or you use the</tspan><tspan x="849.39" y="865.4">code to choose a new password</tspan></text></g><g class="pele-edge-label" data-id="edge8"><rect x="81.66" y="841" width="83.49" height="21" rx="3" fill="var(--_bg)"/><text x="123.41" y="856.4" text-anchor="middle">you sign out</text></g><g class="pele-edge-label" data-id="edge9"><rect x="213.07" y="572.5" width="109.93" height="21" rx="3" fill="var(--_bg)"/><text x="268.04" y="587.9" text-anchor="middle">15 minutes pass</text></g><g class="pele-edge-label" data-id="edge10"><rect x="259.13" y="757" width="190.9" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="354.58" y="770.9">you use the code to choose a</tspan><tspan x="354.58" y="788.9">new password</tspan></text></g><g class="pele-edge-label" data-id="edge11"><rect x="540.37" y="645.5" width="83.49" height="21" rx="3" fill="var(--_bg)"/><text x="582.12" y="660.9" text-anchor="middle">you sign out</text></g><g class="pele-edge-label" data-id="edge12"><rect x="422.57" y="645.5" width="74.92" height="21" rx="3" fill="var(--_bg)"/><text x="460.03" y="660.9" text-anchor="middle">you sign in</text></g><g class="pele-edge-label" data-id="edge13"><rect x="260.72" y="915.5" width="183.07" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="352.26" y="929.4">the admin issues a one-time</tspan><tspan x="352.26" y="947.4">reset code</tspan></text></g><g class="pele-edge-label" data-id="edge14"><rect x="310.51" y="1067" width="83.49" height="21" rx="3" fill="var(--_bg)"/><text x="352.26" y="1082.4" text-anchor="middle">you sign out</text></g><g class="pele-edge-label" data-id="edge15"><rect x="211.67" y="841" width="74.92" height="21" rx="3" fill="var(--_bg)"/><text x="249.13" y="856.4" text-anchor="middle">you sign in</text></g><g class="pele-edge-label" data-id="edge16"><rect x="463.79" y="906.5" width="190.9" height="54" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="559.24" y="920.4">you use the code to choose a</tspan><tspan x="559.24" y="938.4">new password or 15 minutes</tspan><tspan x="559.24" y="956.4">pass</tspan></text></g></g><g class="pele-nodes"><g class="pele-node pele-state tan" data-id="s0" transform="translate(582.12,186)"><rect x="-56.46" y="-22" width="112.93" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">No account</text></g><g class="pele-node pele-state teal" data-id="s1" transform="translate(582.12,314)"><rect x="-54.25" y="-22" width="108.5" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Signed out</text></g><g class="pele-node pele-state teal" data-id="s2" transform="translate(239.83,473)"><rect x="-49.35" y="-22" width="98.7" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Signed in</text></g><g class="pele-node pele-state orange" data-id="s3" transform="translate(268.58,1146.5)"><rect x="-96.05" y="-31" width="192.1" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Signed out, reset code</tspan><tspan x="0" y="16.1">waiting</tspan></text></g><g class="pele-node pele-state orange" data-id="s4" transform="translate(109.53,656)"><rect x="-91.15" y="-31" width="182.3" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Signed in, reset code</tspan><tspan x="0" y="16.1">waiting</tspan></text></g><g class="pele-node pele-state teal" data-id="s5" transform="translate(426.22,851.5)"><rect x="-88.46" y="-31" width="176.93" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Old browser session</tspan><tspan x="0" y="16.1">refused</tspan></text></g><g class="pele-node pele-state orange" data-id="s6" transform="translate(352.26,1015.5)"><rect x="-111.6" y="-31" width="223.2" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Old browser session</tspan><tspan x="0" y="16.1">refused, reset code waiting</tspan></text></g><g class="pele-node pele-state-start" data-id="root_start" transform="translate(582.12,113)"><circle r="7" fill="var(--_l)"/></g><g class="pele-node pele-state teal" data-id="lg0" transform="translate(685.57,82)"><rect x="-40.45" y="-22" width="80.9" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">normal</text></g><g class="pele-node pele-state orange" data-id="lg1" transform="translate(799.8,82)"><rect x="-33.78" y="-22" width="67.57" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">reset</text></g><g class="pele-node pele-state tan" data-id="lg2" transform="translate(907.37,82)"><rect x="-33.79" y="-22" width="67.58" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">none</text></g></g></svg>

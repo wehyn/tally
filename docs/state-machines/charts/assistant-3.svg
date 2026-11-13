@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="pele pele-state" viewBox="0 0 1103 916" width="1103" height="916" style="max-width:100%;height:auto;--_bg:var(--pele-bg,#fff);--_fg:var(--pele-fg,#1f1f1f);--_m:var(--pele-muted,#6e6e6e);--_l:var(--pele-line,#1f1f1f);--_s:var(--pele-surface,#f3f3f3);--_a:var(--pele-surface-alt,#e6e6e6);--_b:var(--pele-border,#8a8a8a);--_c:var(--pele-accent,#5b7bd5);color:var(--_fg);--_tw:var(--pele-title-weight,bold);--_fm:var(--pele-font-mono,monospace);font:16px sans-serif;letter-spacing:normal;word-spacing:normal;text-transform:none;direction:ltr;font-family:var(--pele-font,sans-serif)" fill="var(--_fg)" role="graphics-document document" aria-roledescription="state"><style>.pele {
+  --pele-bg: #ffffff;
+  --pele-fg: #1c1c1c;
+  --pele-muted: #656565;
+  --pele-line: #808080;
+  --pele-surface: #fcfcfc;
+  --pele-surface-alt: #f1f1f1;
+  --pele-border: #c9c9c9;
+}
+.pele .blue rect { fill: #c3e0ff; }
+.pele .orange rect { fill: #f0d3bf; }
+.pele .purple rect { fill: #e3d5ff; }
+.pele .yellow rect { fill: #f0dcbf; }
+.pele .teal rect { fill: #bfe3df; }
+.pele .tan rect { fill: #e5d9ce; }
+.pele .pink rect { fill: #ffcbe6; }
+.pele .breaks rect {
+  fill: #ffecee !important;
+  stroke: #e72e3b !important;
+  stroke-width: 2.5px !important;
+}
+.pele .breaks text {
+  fill: #cd2834 !important;
+}
+.pele .mayBreak rect {
+  fill: #fff3e6 !important;
+  stroke: #e8730c !important;
+  stroke-width: 2.5px !important;
+}
+.pele .mayBreak text {
+  fill: #b85a06 !important;
+}
+.pele .bugPath rect {
+  stroke: #1680f3 !important;
+  stroke-width: 2.5px !important;
+}
+.pele .repeats rect {
+  stroke: #9b35d6 !important;
+  stroke-width: 2.5px !important;
+  stroke-dasharray: 6 3;
+}
+@media (prefers-color-scheme: dark) {
+  .pele {
+    --pele-bg: #1f1f1f;
+    --pele-fg: #f5f5f5;
+    --pele-muted: #acacac;
+    --pele-line: #939393;
+    --pele-surface: #121212;
+    --pele-surface-alt: #2c2c2c;
+    --pele-border: #4e4e4e;
+  }
+  .pele .blue rect { fill: #1b3857; }
+  .pele .orange rect { fill: #573117; }
+  .pele .purple rect { fill: #3c2e57; }
+  .pele .yellow rect { fill: #573d17; }
+  .pele .teal rect { fill: #174641; }
+  .pele .tan rect { fill: #3d3127; }
+  .pele .pink rect { fill: #57233e; }
+  .pele .breaks rect {
+    fill: #2e2021 !important;
+    stroke: #cf2b35 !important;
+  }
+  .pele .breaks text {
+    fill: #ff6463 !important;
+  }
+  .pele .mayBreak rect {
+    fill: #2e2619 !important;
+    stroke: #d0700f !important;
+  }
+  .pele .mayBreak text {
+    fill: #ffa257 !important;
+  }
+  .pele .bugPath rect {
+    stroke: #116dd2 !important;
+  }
+  .pele .repeats rect {
+    stroke: #9a3fcf !important;
+  }
+}
+</style><text class="pele-title" font-weight="var(--_tw)" text-anchor="middle" xml:space="preserve"><tspan x="551.5" y="25.6">Ask without writing</tspan></text><g transform="translate(0,36)"><g class="pele-clusters"><g class="pele-cluster pele-state-composite" data-id="legend"><rect x="329.59" y="8" width="458.74" height="112" rx="10" fill="var(--_a)" fill-opacity="0.5" stroke="var(--_b)"/><path d="M329.59,44H788.32" fill="none" stroke="var(--_b)"/><text class="pele-cluster-label" x="558.95" y="31.6" text-anchor="middle">Legend</text></g></g><g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round"><g class="pele-edge pele-transition" data-id="edge0"><path d="M282.58,120L282.58,157"/><path class="pele-marker" d="M282.58,164L279.22,156L285.95,156Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge1"><path d="M306.58,208L306.58,216.09C306.58,218.7 704.78,223.9 704.78,226.5L704.78,285"/><path class="pele-marker" d="M704.78,292L701.42,284L708.14,284Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge2"><path d="M274.58,208L274.58,221C274.58,256.5 222.49,256.5 222.49,292L222.49,803"/><path class="pele-marker" d="M222.49,810L219.13,802L225.85,802Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge3"><path d="M290.58,208L290.58,221C290.58,256.5 513.94,256.5 513.94,292L513.94,562"/><path class="pele-marker" d="M513.94,569L510.58,561L517.3,561Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge4"><path d="M746.59,354L746.59,363.63C746.59,367.59 900.94,372.03 900.94,376L900.94,416C900.94,421.63 854.54,421.63 854.54,427.25L854.54,431"/><path class="pele-marker" d="M854.54,438L851.18,430L857.9,430Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge5"><path d="M188.68,810L188.68,797C188.68,769 103.09,769 103.09,741L103.09,292C103.09,256.5 258.58,256.5 258.58,221L258.58,215"/><path class="pele-marker" d="M258.58,208L261.95,216L255.22,216Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge6"><path d="M599.58,613L599.58,675C599.58,679.72 492.36,681.53 492.36,686.25L492.36,690"/><path class="pele-marker" d="M492.36,697L489,689L495.72,689Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge7"><path d="M422.54,697L422.54,684C422.54,674.5 342.42,674.5 342.42,665L342.42,386C342.42,381.25 662.98,371.75 662.98,367L662.98,361"/><path class="pele-marker" d="M662.98,354L666.34,362L659.62,362Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge8"><path d="M467,741L467,784.5C467,788.3 264.3,794.58 264.3,798.38L264.3,803"/><path class="pele-marker" d="M264.3,810L260.94,802L267.66,802Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge9"><path d="M438.54,697L438.54,687.38C438.54,681.19 419.45,681.19 419.45,675L419.45,635C419.45,630.04 521.42,628.71 521.42,623.75L521.42,620"/><path class="pele-marker" d="M521.42,613L524.78,621L518.06,621Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge10"><path d="M744.26,438L744.26,428.38C744.26,422.19 697.86,422.19 697.86,416L697.86,361"/><path class="pele-marker" d="M697.86,354L701.22,362L694.5,362Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge11"><path d="M831.39,500L831.39,778.25C831.39,782.94 280.3,792.31 280.3,797L280.3,803"/><path class="pele-marker" d="M280.3,810L276.94,802L283.66,802Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge12"><path d="M744.26,500C744.26,509.03 592.57,509.47 592.57,518.5L592.57,562"/><path class="pele-marker" d="M592.57,569L589.21,561L595.93,561Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge13"><path d="M647.72,613L647.72,622.63C647.72,625.72 999.84,631.91 999.84,635L999.84,690"/><path class="pele-marker" d="M999.84,697L996.48,689L1003.2,689Z" fill="var(--_l)" stroke="none"/></g><g class="pele-edge pele-transition" data-id="edge14"><path d="M999.84,741L999.84,803"/><path class="pele-marker" d="M999.84,810L996.48,802L1003.2,802Z" fill="var(--_l)" stroke="none"/></g></g><g class="pele-edge-labels" font-size="14"><g class="pele-edge-label" data-id="edge1"><rect x="614.79" y="228.5" width="179.99" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="704.78" y="242.4">you report a payment from</tspan><tspan x="704.78" y="260.4">someone with no open debt</tspan></text></g><g class="pele-edge-label" data-id="edge2"><rect x="120.82" y="458.5" width="203.33" height="21" rx="3" fill="var(--_bg)"/><text x="222.49" y="473.9" text-anchor="middle">you send an uncertain payment</text></g><g class="pele-edge-label" data-id="edge3"><rect x="446.91" y="312.5" width="134.07" height="21" rx="3" fill="var(--_bg)"/><text x="513.94" y="327.9" text-anchor="middle">you send a bare yes</text></g><g class="pele-edge-label" data-id="edge4"><rect x="807.85" y="378" width="186.18" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="900.94" y="391.9">the model answers and Tally</tspan><tspan x="900.94" y="409.9">asks, saving nothing</tspan></text></g><g class="pele-edge-label" data-id="edge5"><rect x="10" y="573" width="186.18" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="103.09" y="586.9">the model answers and Tally</tspan><tspan x="103.09" y="604.9">asks, saving nothing</tspan></text></g><g class="pele-edge-label" data-id="edge6"><rect x="506.49" y="637" width="186.18" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="599.58" y="650.9">the model answers and Tally</tspan><tspan x="599.58" y="668.9">asks, saving nothing</tspan></text></g><g class="pele-edge-label" data-id="edge7"><rect x="252.42" y="573" width="179.99" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="342.42" y="586.9">you report a payment from</tspan><tspan x="342.42" y="604.9">someone with no open debt</tspan></text></g><g class="pele-edge-label" data-id="edge8"><rect x="365.33" y="761.5" width="203.33" height="21" rx="3" fill="var(--_bg)"/><text x="467" y="776.9" text-anchor="middle">you send an uncertain payment</text></g><g class="pele-edge-label" data-id="edge9"><rect x="352.42" y="644.5" width="134.07" height="21" rx="3" fill="var(--_bg)"/><text x="419.45" y="659.9" text-anchor="middle">you send a bare yes</text></g><g class="pele-edge-label" data-id="edge10"><rect x="607.86" y="378" width="179.99" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="697.86" y="391.9">you report a payment from</tspan><tspan x="697.86" y="409.9">someone with no open debt</tspan></text></g><g class="pele-edge-label" data-id="edge11"><rect x="729.72" y="580.5" width="203.33" height="21" rx="3" fill="var(--_bg)"/><text x="831.39" y="595.9" text-anchor="middle">you send an uncertain payment</text></g><g class="pele-edge-label" data-id="edge12"><rect x="525.54" y="520.5" width="134.07" height="21" rx="3" fill="var(--_bg)"/><text x="592.57" y="535.9" text-anchor="middle">you send a bare yes</text></g><g class="pele-edge-label" data-id="edge13"><rect x="906.75" y="637" width="186.18" height="36" rx="3" fill="var(--_bg)"/><text text-anchor="middle" xml:space="preserve"><tspan x="999.84" y="650.9">the model answers and Tally</tspan><tspan x="999.84" y="668.9">saves it</tspan></text></g><g class="pele-edge-label" data-id="edge14"><rect x="946.82" y="761.5" width="106.04" height="21" rx="3" fill="var(--_bg)"/><text x="999.84" y="776.9" text-anchor="middle">you press Undo</text></g></g><g class="pele-nodes"><g class="pele-node pele-state teal" data-id="s0" transform="translate(282.58,186)"><rect x="-39.12" y="-22" width="78.24" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Ready</text></g><g class="pele-node pele-state blue" data-id="s1" transform="translate(704.78,323)"><rect x="-93.81" y="-31" width="187.62" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Waiting for the model:</tspan><tspan x="0" y="16.1">payer with no debt</tspan></text></g><g class="pele-node pele-state blue" data-id="s2" transform="translate(230.49,841)"><rect x="-93.81" y="-31" width="187.62" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Waiting for the model:</tspan><tspan x="0" y="16.1">uncertain payment</tspan></text></g><g class="pele-node pele-state blue" data-id="s3" transform="translate(584.57,591)"><rect x="-115.15" y="-22" width="230.3" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Waiting for the model: a yes</text></g><g class="pele-node pele-state yellow" data-id="s4" transform="translate(467,719)"><rect x="-77.37" y="-22" width="154.74" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Asked a question</text></g><g class="pele-node pele-state yellow" data-id="s5" transform="translate(799.4,469)"><rect x="-107.14" y="-31" width="214.29" height="62" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" text-anchor="middle" xml:space="preserve"><tspan x="0" y="-4.9">Asked: record as ordinary</tspan><tspan x="0" y="16.1">income?</tspan></text></g><g class="pele-node pele-state purple" data-id="s6" transform="translate(999.84,719)"><rect x="-82.26" y="-22" width="164.53" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Saved, Undo open</text></g><g class="pele-node pele-state purple" data-id="s7" transform="translate(999.84,832)"><rect x="-87.61" y="-22" width="175.22" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">Saved, then undone</text></g><g class="pele-node pele-state-start" data-id="root_start" transform="translate(282.58,113)"><circle r="7" fill="var(--_l)"/></g><g class="pele-node pele-state teal" data-id="lg0" transform="translate(381.59,82)"><rect x="-36.01" y="-22" width="72.02" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">ready</text></g><g class="pele-node pele-state blue" data-id="lg1" transform="translate(498.5,82)"><rect x="-40.9" y="-22" width="81.79" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">waiting</text></g><g class="pele-node pele-state yellow" data-id="lg2" transform="translate(618.51,82)"><rect x="-39.12" y="-22" width="78.24" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">asking</text></g><g class="pele-node pele-state purple" data-id="lg3" transform="translate(734.98,82)"><rect x="-37.34" y="-22" width="74.69" height="44" rx="10" fill="var(--_s)" stroke="var(--_b)"/><text class="pele-label" x="0" y="5.6" text-anchor="middle">saved</text></g></g></g></svg>
