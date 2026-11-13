@@ -5901,7 +5901,7 @@ describe("a message that is no answer to an open debt flow asks before it writes
     expect(response.status).toBe(200);
     return response.json();
   }
-  const SEPARATE_QUESTION = /^You have an open question about Ana's ₱500\.00 debt\. Do you want me to record this as a separate new entry\? Reply "yes, separate" to record it, "that debt" to continue it, or say cancel\.$/;
+  const separateQuestion = (held: string) => `You have an open question about Ana's ₱500.00 debt. Record "${held}" as a separate new entry? Reply "yes, separate" to record it, "that debt" to continue it, or say cancel.`;
   const debtArgs = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
   const expense = { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" };
   async function offerPending() {
@@ -5927,7 +5927,7 @@ describe("a message that is no answer to an open debt flow asks before it writes
         const first = await offerPending();
         const result = await say(wording, "log_transaction", expense, first.conversationId);
         expect(result.transaction).toBeNull();
-        expect(result.answer).toMatch(SEPARATE_QUESTION);
+        expect(result.answer).toBe(separateQuestion("Lunch, expense of ₱500.00 in Wallet"));
         nothingWritten(first.debt.id);
         expect(last(first.conversationId)).toMatchObject({ followup: "clarification", debtId: first.debt.id, data: { asks: "separate" } });
       });
@@ -5974,15 +5974,48 @@ describe("a message that is no answer to an open debt flow asks before it writes
       nothingWritten(first.debt.id);
     });
 
-    it("any other reply asks the same question again about the same held statement", async () => {
+    it("a newer write-shaped message replaces the hold: the question names it and \"yes, separate\" records it (round 29, bug 3)", async () => {
       const first = await offerPending();
       await say("Keep the 500 lunch out of Transactions", "log_transaction", expense, first.conversationId);
       const again = await say("Spent 900 on dinner in Wallet", "log_transaction", { ...expense, amount: "900", description: "dinner" }, first.conversationId);
       expect(again.transaction).toBeNull();
-      expect(again.answer).toMatch(SEPARATE_QUESTION);
+      expect(again.answer).toBe(separateQuestion("Dinner, expense of ₱900.00 in Wallet"));
       nothingWritten(first.debt.id);
       const yes = await say("yes, separate", "ask_clarification", { question: "what?" }, first.conversationId);
-      expect(yes.transaction).toMatchObject({ amountMinor: 50_000 });
+      expect(yes.transaction).toMatchObject({ amountMinor: 90_000, description: "Dinner" });
+      expect(store.listTransactions(user.id)).toHaveLength(1);
+    });
+
+    it("a reply that writes nothing asks again, naming the call that is still held (round 29, bug 3)", async () => {
+      const first = await offerPending();
+      await say("Keep the 500 lunch out of Transactions", "log_transaction", expense, first.conversationId);
+      const again = await say("hmm what", "ask_clarification", { question: "what?" }, first.conversationId);
+      expect(again.transaction).toBeNull();
+      expect(again.answer).toBe(separateQuestion("Lunch, expense of ₱500.00 in Wallet"));
+      const yes = await say("yes, separate", "ask_clarification", { question: "what?" }, first.conversationId);
+      expect(yes.transaction).toMatchObject({ amountMinor: 50_000, description: "Lunch" });
+    });
+
+    it("\"that debt\" after a replaced hold still asks the saved question once (round 29, bug 3)", async () => {
+      const first = await offerPending();
+      const offer = last(first.conversationId).content;
+      await say("Keep the 500 lunch out of Transactions", "log_transaction", expense, first.conversationId);
+      await say("Spent 900 on dinner in Wallet", "log_transaction", { ...expense, amount: "900", description: "dinner" }, first.conversationId);
+      const back = await say("that debt", "ask_clarification", { question: "what?" }, first.conversationId);
+      expect(back.transaction).toBeNull();
+      expect(back.answer).toContain(offer);
+      nothingWritten(first.debt.id);
+    });
+
+    it("the question names a held debt, payment and bill from their fields, from their fields (round 29, bug 3)", async () => {
+      const first = await offerPending();
+      const debt = await say("Ben owes me 200", "log_debt", { direction: "owed_to_you", counterparty: "Ben", amount: "200" }, first.conversationId);
+      expect(debt.answer).toBe(separateQuestion("Ben owes you ₱200.00"));
+      const paid = await say("Ana paid me 300", "record_debt_payment", { counterparty: "Ana", amount: "300" }, first.conversationId);
+      expect(paid.answer).toBe(separateQuestion("Ana paid you ₱300.00"));
+      const bill = await say("add a bill netflix 549 monthly", "create_bill", { name: "netflix", amount: "549", frequency: "monthly", nextDueDate: "2026-11-01", endDate: "2027-11-01" }, first.conversationId);
+      expect(bill.answer).toBe(separateQuestion("Netflix, bill of ₱549.00"));
+      nothingWritten(first.debt.id);
     });
 
     it("a turn that only reads the ledger leaves the question and the held statement in place", async () => {
@@ -6010,7 +6043,7 @@ describe("a message that is no answer to an open debt flow asks before it writes
       await say("Keep the 500 lunch out of Transactions", "log_transaction", expense, first.conversationId);
       const result = await say("another", "log_debt", debtArgs, first.conversationId);
       expect(result.debt).toBeNull();
-      expect(result.answer).toMatch(SEPARATE_QUESTION);
+      expect(result.answer).toBe(separateQuestion("Lunch, expense of ₱500.00 in Wallet"));
       nothingWritten(first.debt.id);
     });
   });

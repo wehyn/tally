@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, contextMessage, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { duplicateCallData, isBillFollowup, plainArgs, withoutSeparate, type Asks, type FollowupKind, type ReplyData, type SeparateHold } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, confirmedSeparateRun, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, confirmedSeparateRun, heldCallLabel, statesAmount, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -785,7 +785,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const separateHold = askedOf(runMessages) === "separate" ? openQuestionOf(runMessages)?.data?.separate : undefined;
     const separateOpen = separateHold !== undefined;
     const separateChoice = separateOpen ? separateEntryChoice(input.prompt) : null;
-    const earlyDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: true, shaped: false, refusal: "proceed", call: "ask" });
+    const earlyDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: true, shaped: false, refusal: "proceed", call: "ask", states: false });
     const recordSeparately = earlyDecision === "record" && separateHold !== undefined;
     const continuesFlow = earlyDecision === "continue" && separateHold !== undefined;
     const prompt = recordSeparately ? separateHold.statement : input.prompt;
@@ -1081,7 +1081,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const refusalReason = debtRefusalOnly ? "declined" : "refused";
       // Inside an open debt flow a message that is no answer to its question never writes on its own authority, however clear a new
       // statement it looks: the call is held and the user is asked once (separateEntryDecision).
-      const separateDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: debtFlowOpen, shaped: debtAnswerShaped, refusal, call: turnCallOf(call.name) });
+      const separateDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: debtFlowOpen, shaped: debtAnswerShaped, refusal, call: turnCallOf(call.name), states: statesAmount(input.prompt) });
       const asksSeparate = separateDecision === "holdNew" || separateDecision === "askAgain";
       let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
       // The account an earlier confirmation of this income question chose, when this reply names none and the turn asks again.
@@ -1093,7 +1093,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else if (refusal === "refuse") { answer = endedQuestionReply(refusalReason, "", false); followup = null; }
       else if (asksSeparate && separateHold !== undefined && separateDecision === "askAgain") {
         // The separate-entry question is open and this message answers it with neither choice: the same question, the same held call.
-        answer = separateEntryQuestion(separateDebtLabel(savedDebt)); followup = "clarification"; asks = "separate"; modelWorded = true;
+        answer = separateEntryQuestion(separateDebtLabel(savedDebt), heldCallLabel(separateHold)); followup = "clarification"; asks = "separate"; modelWorded = true;
         debtInFlow = recordedDebtId; replyData = { separate: separateHold };
       }
       else if (asksSeparate) {
@@ -1102,9 +1102,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const open = openQuestionOf(run);
         const hold: SeparateHold = {
           name: providerCall.name, args: plainArgs(providerCall.args), statement: prompt.slice(0, 2000), at: receivedAt,
-          ...(separateHold?.resume ? { resume: separateHold.resume } : open?.followup ? { resume: { kind: open.followup, text: open.content.slice(0, 2000), ...(withoutSeparate(open.data) ? { data: withoutSeparate(open.data) } : {}) } } : {}),
+          ...(separateOpen ? (separateHold?.resume ? { resume: separateHold.resume } : {}) : open?.followup ? { resume: { kind: open.followup, text: open.content.slice(0, 2000), ...(withoutSeparate(open.data) ? { data: withoutSeparate(open.data) } : {}) } } : {}),
         };
-        answer = separateEntryQuestion(separateDebtLabel(savedDebt)); followup = "clarification"; asks = "separate"; modelWorded = true;
+        answer = separateEntryQuestion(separateDebtLabel(savedDebt), heldCallLabel(hold)); followup = "clarification"; asks = "separate"; modelWorded = true;
         debtInFlow = recordedDebtId; replyData = { separate: hold };
       }
       else if (call.name === "create_bill" || call.name === "update_bill") {

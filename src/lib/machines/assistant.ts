@@ -3,6 +3,7 @@
 
 import { isBillFollowup, type Asks, type FollowupKind, type ReplyData } from "../assistant-followup";
 import { normalizeCounterparty } from "../counterparty";
+import { formatPHP, parsePHPToMinor } from "../money";
 
 // An assistant-saved transaction can be undone for this long after it is saved.
 export const UNDO_WINDOW_MS = 10_000;
@@ -439,6 +440,10 @@ const WEEKDAY_DATES = /\b(?:(?:last|next|this|on|past)\s+(?:mon|tues|wednes|thur
 const UNKNOWN_ACCOUNT = /\b(?:into|in|to|on|using|use|via|from|with)\s+(?:my\s+)?(?:[\p{L}\p{N}'’.-]+\s+){0,2}[\p{L}\p{N}'’.-]+\s+(?:account|card)\b/giu;
 const PURPOSE_INTRO: ReadonlySet<string> = new Set(["for", "was", "it's"]);
 const AMOUNT_TOKEN = /(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?(?![\d,]|\.\d)/g;
+// Whether a message states an amount at all, the minimum a new statement needs.
+export function statesAmount(message: string): boolean {
+  return new RegExp(AMOUNT_TOKEN.source).test(message);
+}
 
 function answerTokens(text: string): string[] {
   return text.split(/[^\p{L}\p{N}'’-]+/u).map((token) => token.replace(/^['’-]+|['’-]+$/g, "").replace(/’/g, "'")).filter(Boolean);
@@ -512,8 +517,48 @@ export function separateEntryChoice(reply: string): SeparateChoice | null {
 }
 
 const SEPARATE_OPENING = "You have an open question about ";
-export function separateEntryQuestion(debtLabel: string): string {
-  return `${SEPARATE_OPENING}${debtLabel}. Do you want me to record this as a separate new entry? Reply "yes, separate" to record it, "that debt" to continue it, or say cancel.`;
+const SEPARATE_REPLIES = 'Reply "yes, separate" to record it, "that debt" to continue it, or say cancel.';
+
+// The held call as the question names it, built from its structured fields (kind, amount, description, account, counterparty, bill
+// name) and never from the user's raw words: 'Lunch, expense of ₱500.00 in Wallet'. null when the call names nothing worth saying.
+export function heldCallLabel(call: { name: string; args: Record<string, unknown> }): string | null {
+  const text = (value: unknown, max = 40): string => typeof value === "string"
+    ? shortenAtWord(value.replace(/[\p{Cc}"“”]+/gu, " ").replace(/\s+/g, " ").trim(), max) : "";
+  const money = (): string => {
+    const { amount } = call.args;
+    if (typeof amount !== "string" && typeof amount !== "number") return "";
+    try { return formatPHP(parsePHPToMinor(String(amount))); } catch { return ""; }
+  };
+  const upper = (value: string) => value.replace(/\p{L}/u, (letter) => letter.toUpperCase());
+  const amount = money();
+  const person = text(call.args.counterparty);
+  switch (call.name) {
+    case "log_transaction": {
+      const kind = call.args.kind === "income" || call.args.kind === "expense" ? call.args.kind : "entry";
+      const account = text(call.args.account);
+      const description = text(call.args.description);
+      const movement = `${kind}${amount ? ` of ${amount}` : ""}${account ? ` in ${account}` : ""}`;
+      return description ? `${upper(description)}, ${movement}` : upper(movement);
+    }
+    case "log_debt": {
+      if (!person) return amount ? `Debt of ${amount}` : null;
+      return call.args.direction === "you_owe" ? `You owe ${person}${amount ? ` ${amount}` : ""}`
+        : call.args.direction === "owed_to_you" ? `${person} owes you${amount ? ` ${amount}` : ""}` : `Debt with ${person}${amount ? `, ${amount}` : ""}`;
+    }
+    case "record_debt_payment": return person ? `${person} paid you${amount ? ` ${amount}` : ""}` : null;
+    case "record_debt_repayment": return person ? `You paid ${person}${amount ? ` ${amount}` : ""}` : null;
+    case "create_bill": case "update_bill": {
+      const name = text(call.args.name);
+      return name ? `${upper(name)}, ${call.name === "create_bill" ? `bill${amount ? ` of ${amount}` : ""}` : "bill update"}` : null;
+    }
+    default: return null;
+  }
+}
+
+export function separateEntryQuestion(debtLabel: string, held: string | null = null): string {
+  return held
+    ? `${SEPARATE_OPENING}${debtLabel}. Record "${held}" as a separate new entry? ${SEPARATE_REPLIES}`
+    : `${SEPARATE_OPENING}${debtLabel}. Do you want me to record this as a separate new entry? ${SEPARATE_REPLIES}`;
 }
 
 // What a turn does with the separate-entry question. `separateOpen` is whether the run waits on that question, `choice` the exact
@@ -521,17 +566,20 @@ export function separateEntryQuestion(debtLabel: string): string {
 // and `refusal` what refusalOutcome decided (a refusal wins over everything but the explicit "yes, separate").
 //  - "record": the exact "yes, separate". The held statement is written as an ordinary new statement with no consent and no link.
 //  - "continue": the exact "that debt". The saved debt's flow goes on.
-//  - "holdNew": a message that would write, in an open debt flow, and is no answer. Ask the question about it, write nothing.
-//  - "askAgain": the separate-entry question is open and the message is neither choice. Ask it again about the same held call (a later
-//    message never replaces what is held), write nothing.
+//  - "holdNew": a message that would write and is no answer: in an open debt flow, or while the separate-entry question is open and the
+//    message states an amount (`states`), where it REPLACES the held call. Ask the question about this call, naming it, write nothing.
+//  - "askAgain": the separate-entry question is open and the message is neither choice and states no new statement (a model question, or a
+//    write the model made of a message with no amount). Ask it
+//    again about the same held call, naming it, write nothing.
 //  - "proceed": everything else runs as before.
 export type SeparateDecision = "proceed" | "record" | "continue" | "holdNew" | "askAgain";
-export function separateEntryDecision(turn: { separateOpen: boolean; choice: SeparateChoice | null; flowOpen: boolean; shaped: boolean; refusal: RefusalOutcome; call: TurnCall }): SeparateDecision {
+export function separateEntryDecision(turn: { separateOpen: boolean; choice: SeparateChoice | null; flowOpen: boolean; shaped: boolean; refusal: RefusalOutcome; call: TurnCall; states: boolean }): SeparateDecision {
   if (turn.separateOpen && turn.choice === "separate") return "record";
   if (turn.refusal !== "proceed") return "proceed";
   if (turn.separateOpen && turn.choice === "that") return "continue";
   if (turn.call === "read") return "proceed";
-  if (turn.separateOpen) return "askAgain";
+  // A call the model made out of a message that states no amount (a stray word) is no newer statement and never replaces the hold.
+  if (turn.separateOpen) return (turn.call === "write" || turn.call === "bill") && turn.states ? "holdNew" : "askAgain";
   if (!turn.flowOpen || turn.shaped) return "proceed";
   return turn.call === "write" || turn.call === "bill" ? "holdNew" : "proceed";
 }
