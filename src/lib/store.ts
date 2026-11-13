@@ -1183,20 +1183,22 @@ export function createStore(db: Database.Database) {
       WHERE m.user_id=? AND m.status='invited' AND g.status!='archived' ORDER BY m.invited_at`).all(userId);
   }
   function updateGoal(managerId: string, goalId: string, input: { name?: string; targetMinor?: number; deadline?: string | null }): void {
-    const goal = requireGoalMember(managerId, goalId);
-    if (goal.manager_id !== managerId) throw new Error("Only the goal manager can edit it.");
-    if (input.name !== undefined && (!input.name.trim() || input.name.trim().length > 100)) throw new Error("Goal name must be 1–100 characters.");
-    if (input.targetMinor !== undefined && !validMoney(input.targetMinor)) throw new Error("Goal target must be positive.");
-    if (input.deadline && !isDateOnly(input.deadline)) throw new Error("Enter a valid deadline.");
-    const updates: string[] = []; const args: (string | number | null)[] = [];
-    if (input.name !== undefined) { updates.push("name=?"); args.push(input.name.trim()); }
-    if (input.targetMinor !== undefined) { updates.push("target_minor=?"); args.push(input.targetMinor); }
-    if (input.deadline !== undefined) { updates.push("deadline=?"); args.push(input.deadline); }
-    if (!updates.length) return;
-    const target = input.targetMinor ?? Number(goal.target_minor);
-    const raised = safeGoalTotal(goalId);
-    updates.push("status=?"); args.push(nextGoalStatus(goal.status as GoalStatus, raised, target));
-    db.prepare(`UPDATE goals SET ${updates.join(",")} WHERE id=?`).run(...args, goalId);
+    db.transaction(() => {
+      const goal = requireGoalMember(managerId, goalId);
+      if (goal.manager_id !== managerId) throw new Error("Only the goal manager can edit it.");
+      if (input.name !== undefined && (!input.name.trim() || input.name.trim().length > 100)) throw new Error("Goal name must be 1–100 characters.");
+      if (input.targetMinor !== undefined && !validMoney(input.targetMinor)) throw new Error("Goal target must be positive.");
+      if (input.deadline && !isDateOnly(input.deadline)) throw new Error("Enter a valid deadline.");
+      const updates: string[] = []; const args: (string | number | null)[] = [];
+      if (input.name !== undefined) { updates.push("name=?"); args.push(input.name.trim()); }
+      if (input.targetMinor !== undefined) { updates.push("target_minor=?"); args.push(input.targetMinor); }
+      if (input.deadline !== undefined) { updates.push("deadline=?"); args.push(input.deadline); }
+      if (!updates.length) return;
+      const target = input.targetMinor ?? Number(goal.target_minor);
+      const raised = safeGoalTotal(goalId);
+      updates.push("status=?"); args.push(nextGoalStatus(goal.status as GoalStatus, raised, target));
+      db.prepare(`UPDATE goals SET ${updates.join(",")} WHERE id=?`).run(...args, goalId);
+    }).immediate();
   }
   function succession(goalId: string, outgoingUserId: string, cause: SuccessionCause): void {
     const members = (db.prepare(`SELECT m.user_id AS userId,m.status,m.accepted_at AS acceptedAt,m.invited_at AS invitedAt,u.enabled
@@ -1229,20 +1231,20 @@ export function createStore(db: Database.Database) {
     db.prepare("UPDATE goal_members SET status=? WHERE goal_id=? AND user_id=?").run(nextStatus, goalId, targetUserId);
   }
   function addContribution(userId: string, goalId: string, input: { amountMinor: number; note?: string; date: string }): string {
-    const goal = requireGoalMember(userId, goalId);
-    const refusal = contributionRefusal(goal.status as GoalStatus);
-    if (refusal === "completed") throw new Error("This goal is complete. Its manager must raise the target before continuing.");
-    if (refusal === "archived") throw new Error("This goal is archived.");
-    if (!validMoney(input.amountMinor) || !isDateOnly(input.date) || (input.note ?? "").length > 200) throw new Error("Enter a valid contribution amount, date, and note.");
-    const username = (db.prepare("SELECT username FROM users WHERE id=?").get(userId) as { username: string }).username;
-    const id = randomUUID(); const now = stamp();
-    db.transaction(() => {
+    return db.transaction(() => {
+      const goal = requireGoalMember(userId, goalId);
+      const refusal = contributionRefusal(goal.status as GoalStatus);
+      if (refusal === "completed") throw new Error("This goal is complete. Its manager must raise the target before continuing.");
+      if (refusal === "archived") throw new Error("This goal is archived.");
+      if (!validMoney(input.amountMinor) || !isDateOnly(input.date) || (input.note ?? "").length > 200) throw new Error("Enter a valid contribution amount, date, and note.");
+      const username = (db.prepare("SELECT username FROM users WHERE id=?").get(userId) as { username: string }).username;
+      const id = randomUUID(); const now = stamp();
       db.prepare("INSERT INTO goal_contributions(id,goal_id,user_id,member_name,amount_minor,note,date,created_at) VALUES(?,?,?,?,?,?,?,?)")
         .run(id, goalId, userId, username, input.amountMinor, input.note?.trim() ?? "", input.date, now);
       const status = nextGoalStatus(goal.status as GoalStatus, safeGoalTotal(goalId), Number(goal.target_minor));
       if (status !== goal.status) db.prepare("UPDATE goals SET status=? WHERE id=?").run(status, goalId);
+      return id;
     }).immediate();
-    return id;
   }
   function updateContribution(userId: string, contributionId: string, input: { amountMinor?: number; note?: string; date?: string }): void {
     db.transaction(() => {
