@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { duplicateCallData, parseReplyData } from "../src/lib/assistant-followup";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, statesNewStatement, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, separateEntryChoice, separateEntryDecision, separateEntryQuestion, holdsSeparate, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -1088,16 +1088,6 @@ describe("answerShaped", () => {
   });
 });
 
-describe("statesNewStatement", () => {
-  const accounts = ["Wallet"];
-  for (const reply of ["Spent 500 on lunch with Ben in Wallet", "Instead, record my lunch refund income of 500 using Wallet today.", "Log groceries 500 using Wallet", "Don't forget to log coffee 100 using Wallet", "Spent 200 on lunch in Wallet, and don't forget to log it", "Ben owes me 700"]) {
-    it(`is a statement: ${reply}`, () => expect(statesNewStatement(reply, accounts)).toBe(true));
-  }
-  for (const reply of ["I don't want to record it. Use Wallet.", "I don't want to record the 500 lunch. Use Wallet.", "Don't record the money. Use Wallet.", "make it 30", "use Wallet", "maybe spent 500 on lunch", "no, spent 500 on lunch", "skip the 500 lunch"]) {
-    it(`is not a statement: ${reply}`, () => expect(statesNewStatement(reply, accounts)).toBe(false));
-  }
-});
-
 describe("the choice of another debt (ReplyData)", () => {
   it("keeps only the known plain keys of a debt write, each string cut", () => {
     expect(duplicateCallData({ note: "groceries", dueDate: "2026-10-20", amount: 500, recordTransaction: true, extra: "x", description: { a: 1 }, account: "W".repeat(900) }))
@@ -1206,6 +1196,7 @@ describe("answerShaped, question by question", () => {
     { asks: "amount", yes: ["600", "₱600.00", "it's 30", "30 pesos", "1,200.50", "500"], no: ["thirty", "600 for groceries", "make it 30", "Food 600", "don't, 600"] },
     { asks: "duplicate", yes: ["another", "that one", "the same one", "another one, Wallet"], no: ["Food", "Instead, record 500"] },
     { asks: "ambiguity", yes: ["earlier, Wallet", "new one, Wallet, today", "the earlier one 2026-10-08"], no: ["Food", "lunch groceries"] },
+    { asks: "separate", yes: ["yes, separate", "Yes, separate!", "that debt", "separate", "That debt."], no: ["yes", "another", "Wallet", "yes, separate, Wallet", "that debt 500", "Spent 500 on lunch", "no", "cancel"] },
   ];
   for (const { asks, yes, no } of table) {
     for (const reply of yes) it(`${asks}: "${reply}" is an answer`, () => expect(answerShaped(reply, asks, context)).toBe(true));
@@ -1218,5 +1209,86 @@ describe("answerShaped, question by question", () => {
   it("a question that stored nothing keeps the account, date and filler vocabulary", () => {
     expect(answerShaped("use Wallet today", "detail", context)).toBe(true);
     expect(answerShaped("Food", "detail", context)).toBe(false);
+  });
+});
+
+// Finding 27c: inside an open debt flow a message that is not answer-shaped never writes on its own authority.
+describe("separateEntryChoice", () => {
+  for (const reply of ["yes, separate", "Yes, separate!", "yes separately", "separate", "separate entry"]) it(`"${reply}" is the separate entry`, () => expect(separateEntryChoice(reply)).toBe("separate"));
+  for (const reply of ["that debt", "That debt.", "use that debt", "the same debt"]) it(`"${reply}" continues the saved debt`, () => expect(separateEntryChoice(reply)).toBe("that"));
+  for (const reply of ["yes", "no", "another", "yes, separate, Wallet", "record it separately in Wallet", "that debt 500", "", "cancel", "Spent 500 on lunch"]) it(`"${reply}" is neither`, () => expect(separateEntryChoice(reply)).toBeNull());
+});
+
+describe("separateEntryDecision", () => {
+  type Turn = Parameters<typeof separateEntryDecision>[0];
+  const turn = (over: Partial<Turn>): Turn => ({ separateOpen: false, choice: null, flowOpen: true, shaped: false, refusal: "proceed", call: "write", ...over });
+  const table: { name: string; turn: Partial<Turn>; decision: ReturnType<typeof separateEntryDecision> }[] = [
+    // No separate-entry question is open.
+    { name: "a write that is no answer, in an open flow, is held however clear it looks", turn: {}, decision: "holdNew" },
+    { name: "a bill that is no answer, in an open flow, is held", turn: { call: "bill" }, decision: "holdNew" },
+    { name: "an answer-shaped write goes on", turn: { shaped: true }, decision: "proceed" },
+    { name: "a write outside any debt flow is an ordinary write", turn: { flowOpen: false }, decision: "proceed" },
+    { name: "a read is never held", turn: { call: "read" }, decision: "proceed" },
+    { name: "a question the model asks writes nothing, so nothing is held", turn: { call: "ask" }, decision: "proceed" },
+    { name: "a refusal outcome decides before the hold", turn: { refusal: "refuse" }, decision: "proceed" },
+    { name: "a refusal that asks again decides before the hold", turn: { refusal: "askAgain" }, decision: "proceed" },
+    { name: "\"yes, separate\" with no question open is no choice", turn: { choice: "separate" }, decision: "holdNew" },
+    // The separate-entry question is open.
+    { name: "\"yes, separate\" records the held call", turn: { separateOpen: true, choice: "separate", shaped: true }, decision: "record" },
+    { name: "\"yes, separate\" records even after a refusal word was seen", turn: { separateOpen: true, choice: "separate", refusal: "refuse" }, decision: "record" },
+    { name: "\"that debt\" continues the flow", turn: { separateOpen: true, choice: "that", shaped: true }, decision: "continue" },
+    { name: "a refusal still wins over \"that debt\"", turn: { separateOpen: true, choice: "that", refusal: "refuse" }, decision: "proceed" },
+    { name: "any other write asks again and never replaces the held call", turn: { separateOpen: true }, decision: "askAgain" },
+    { name: "any other bill asks again", turn: { separateOpen: true, call: "bill" }, decision: "askAgain" },
+    { name: "a model question asks again", turn: { separateOpen: true, call: "ask" }, decision: "askAgain" },
+    { name: "a read leaves the question open", turn: { separateOpen: true, call: "read" }, decision: "proceed" },
+    { name: "a refusal while the question is open is the refusal's decision", turn: { separateOpen: true, refusal: "refuse" }, decision: "proceed" },
+  ];
+  for (const row of table) it(row.name, () => expect(separateEntryDecision(turn(row.turn))).toBe(row.decision));
+  it("never writes on its own authority: no turn that is neither choice reaches record", () => {
+    for (const separateOpen of [false, true]) for (const flowOpen of [false, true]) for (const shaped of [false, true])
+      for (const refusal of ["proceed", "refuse", "askAgain", "endQuestion"] as const) for (const call of ["write", "bill", "read", "ask"] as const)
+        expect(separateEntryDecision({ separateOpen, choice: null, flowOpen, shaped, refusal, call })).not.toBe("record");
+  });
+  it("names the saved debt and both replies in its question", () => {
+    expect(separateEntryQuestion("Ana's ₱500.00 debt")).toBe('You have an open question about Ana\'s ₱500.00 debt. Do you want me to record this as a separate new entry? Reply "yes, separate" to record it, "that debt" to continue it, or say cancel.');
+  });
+});
+
+describe("the held statement (ReplyData.separate)", () => {
+  const hold = { name: "log_transaction", args: { kind: "expense", amount: "500", nested: { a: ["x", 1, true, null] } }, statement: "Keep the 500 lunch out of Transactions", at: "2026-10-09T08:00:00.000Z", resume: { kind: "debt_transaction", text: "Offer?", data: { asks: "account" } } };
+  it("round-trips through the stored JSON", () => {
+    expect(parseReplyData(JSON.stringify({ asks: "separate", separate: hold }))).toEqual({ asks: "separate", separate: hold });
+  });
+  it("ignores a held call that is not the shape written", () => {
+    expect(parseReplyData(JSON.stringify({ asks: "separate", separate: { name: 5, args: {}, statement: "x", at: "y" } }))).toEqual({ asks: "separate" });
+    expect(parseReplyData(JSON.stringify({ separate: { name: "log_debt", args: [], statement: "x", at: "y" } }))).toBeNull();
+    expect(parseReplyData(JSON.stringify({ separate: { ...hold, resume: { kind: "nonsense", text: "x" } } }))?.separate?.resume).toBeUndefined();
+  });
+  it("does not nest a hold inside the question it resumes", () => {
+    const nested = parseReplyData(JSON.stringify({ separate: { ...hold, resume: { kind: "clarification", text: "q", data: { separate: hold } } } }));
+    expect(nested?.separate?.resume?.data).toBeUndefined();
+  });
+});
+
+describe("the held exchange is no part of the flow's words", () => {
+  const hold = { name: "log_transaction", args: {}, statement: "Keep the 500 lunch out of Transactions", at: "2026-10-09T08:00:00.000Z" };
+  const run = [
+    { role: "user" as const, content: "Ana owes me 500" },
+    { role: "assistant" as const, content: "offer", followup: "debt_transaction" as const, debtId: "d1" },
+    { role: "user" as const, content: "Keep the 500 lunch out of Transactions" },
+    { role: "assistant" as const, content: "separate?", followup: "clarification" as const, debtId: "d1", data: { asks: "separate" as const, separate: hold } },
+    { role: "user" as const, content: "that debt" },
+    { role: "assistant" as const, content: "offer", followup: "debt_transaction" as const, debtId: "d1" },
+    { role: "user" as const, content: "yes, Wallet" },
+  ];
+  it("holdsSeparate is true only for a reply that carries the held statement", () => {
+    expect(run.map(holdsSeparate)).toEqual([false, false, false, true, false, false, false]);
+  });
+  it("neither the held message nor its answer is a hint message", () => {
+    expect(ownUserMessages(run).map((message) => message.content)).toEqual(["Ana owes me 500", "yes, Wallet"]);
+  });
+  it("neither adds a word to the flow's statement", () => {
+    expect(debtFlowStatement(run)).toEqual(["Ana owes me 500"]);
   });
 });

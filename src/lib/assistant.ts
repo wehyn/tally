@@ -6,8 +6,8 @@ import { todayInManila, timeInManila, isDateOnly, isTime, monthToDateRange } fro
 import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/money";
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
-import { duplicateCallData, isBillFollowup, type Asks, type FollowupKind, type ReplyData } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, SHORT_ANSWER_REPLY, DESCRIPTION_WORD_CAP, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, statesNewStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { duplicateCallData, isBillFollowup, plainArgs, withoutSeparate, type Asks, type FollowupKind, type ReplyData, type SeparateHold } from "@/lib/assistant-followup";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_WORD_CAP, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -742,6 +742,11 @@ const placeKey = (place: WritePlace) => ({ account: place.account?.id ?? `?${pla
 function describePlace(place: WritePlace): string {
   return `${place.account?.name ?? "an account I could not find"} on ${place.date ? formatAssistantDate(place.date) : "a date I could not read"}${place.timed ? ` at ${place.time}` : ""}`;
 }
+// How the separate-entry question names the saved debt.
+function separateDebtLabel(debt: Debt | undefined): string {
+  if (!debt) return "the debt you just saved";
+  return debt.direction === "owed_to_you" ? `${debt.counterparty}'s ${formatPHP(debt.amountMinor)} debt` : `your ${formatPHP(debt.amountMinor)} debt to ${debt.counterparty}`;
+}
 function commitTurn<T>(store: ReturnType<typeof getStore>, userId: string, conversationId: string | undefined, readLastMessageId: string | null, prompt: string, receivedAt: string, work: (conversationId: string) => T): T {
   return store.transaction(() => {
     assertAssistantAccess(store, userId);
@@ -773,17 +778,30 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
     }
-    const history = openRun;
-    const recordedDebtId = conversationMessages.at(-1)?.debtId ?? undefined;
+    const runMessages = openRun.length ? conversationMessages.slice(-openRun.length) : [];
+    // The separate-entry question (separateEntryQuestion) holds a statement that was no answer to the open debt flow. Its exact reply
+    // "yes, separate" writes that statement as an ordinary new statement of its own: no earlier message, no recorded yes and no debt
+    // link is read, so the turn below runs on the held words alone. "that debt" goes on with the saved debt's flow.
+    const separateHold = askedOf(runMessages) === "separate" ? openQuestionOf(runMessages)?.data?.separate : undefined;
+    const separateOpen = separateHold !== undefined;
+    const separateChoice = separateOpen ? separateEntryChoice(input.prompt) : null;
+    const earlyDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: true, shaped: false, refusal: "proceed", call: "ask" });
+    const recordSeparately = earlyDecision === "record" && separateHold !== undefined;
+    const continuesFlow = earlyDecision === "continue" && separateHold !== undefined;
+    const prompt = recordSeparately ? separateHold.statement : input.prompt;
+    const promptAt = recordSeparately ? separateHold.at : receivedAt;
+    const history = recordSeparately ? [] : openRun;
+    const recordedDebtId = recordSeparately ? undefined : conversationMessages.at(-1)?.debtId ?? undefined;
+    const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
     // The code reads the user's words two ways. Hints that choose a value (account, date, time, category, amount,
     // payer, the debt the user named, an opt-in, bill details) read userMessageText, which leaves out quiet turns.
     // Guards that can only refuse or ask (uncertain or negated wording, a declined transaction) read guardMessageText,
     // which keeps them. The model still gets the whole run in history.
-    const run = openRun.length ? conversationMessages.slice(-openRun.length) : [];
+    const run: typeof runMessages = recordSeparately ? [] : runMessages;
     const ownMessages = userMessagesFor("hint", run);
     const userMessages = [
       ...ownMessages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
-      { content: input.prompt, createdAt: receivedAt },
+      { content: prompt, createdAt: promptAt },
     ];
     const userMessageText = userMessages.map((message) => message.content);
     // A hint that chooses a value reads only the statement this write is for, so a cue word or a date said about an earlier,
@@ -792,17 +810,17 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // The text rule that decides which messages those are can be unsure about a reply (hintReadingsFor). `otherHintMessages` is
     // the reading it did not choose, null when it would not change which messages apply, and every write compares where the
     // two readings put the money before it writes (writePlaceOf, ambiguityVerdict).
-    const readings = hintReadingsFor(run, input.prompt, accounts.map((account) => account.name));
+    const readings = hintReadingsFor(run, prompt, accounts.map((account) => account.name));
     const withCurrent = (messages: readonly { content: string; createdAt?: string }[]) => [
       ...messages.map((message) => ({ content: message.content, createdAt: message.createdAt })),
-      { content: input.prompt, createdAt: receivedAt },
+      { content: prompt, createdAt: promptAt },
     ];
     // Which reading carries the earlier statement's hints: the longer list of messages. The other is the restart.
     const primaryIsEarlier = !readings.other || readings.other.length <= readings.primary.length;
     // The message answering the question that named both choices says which one it means ("earlier" or "new one"), and the
     // reading it picks is the one written. Any other message is read by the text rule's own reading.
     const answersAmbiguity = isAmbiguityQuestionOf(run);
-    const answerChoice = answersAmbiguity && readings.other ? ambiguityChoice(input.prompt) : null;
+    const answerChoice = answersAmbiguity && readings.other ? ambiguityChoice(prompt) : null;
     const chosenIsEarlier = answerChoice === null ? primaryIsEarlier : answerChoice === "earlier";
     const chosenReading = !readings.other ? readings.primary : chosenIsEarlier === primaryIsEarlier ? readings.primary : readings.other;
     const unchosenReading = !readings.other ? null : chosenReading === readings.primary ? readings.other : readings.primary;
@@ -817,9 +835,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // The message answering the question that named both choices states the account and the date it means.
     // "yes, Wallet" and "new one, Wallet, today" name their account with no cue word, so no hint reads it. The answer's account is
     // the one every write uses, as the verdict counts it.
-    const answeredAccount = answersAmbiguity ? ambiguityAnswerAccount(input.prompt, accounts) : undefined;
+    const answeredAccount = answersAmbiguity ? ambiguityAnswerAccount(prompt, accounts) : undefined;
     const answeringAmbiguity = answersAmbiguity
-      ? { namesAccount: accountHintFromMessages([input.prompt], accounts).mentioned || answeredAccount !== undefined, namesDate: dateHintFromMessage(input.prompt, requestedAt).mentioned, choice: answerChoice ?? "unmarked" as const }
+      ? { namesAccount: accountHintFromMessages([prompt], accounts).mentioned || answeredAccount !== undefined, namesDate: dateHintFromMessage(prompt, requestedAt).mentioned, choice: answerChoice ?? "unmarked" as const }
       : null;
     // The write's place under each reading. When they differ the write is not made: ask once, naming the earlier statement's
     // place, and store nothing (ambiguityVerdict).
@@ -835,11 +853,11 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       const question = (what: string) => other && ambiguityVerdict(placeKey(primary), placeKey(other), answeringAmbiguity) === "ask" ? ambiguousHintsQuestion(what, describePlace(earlier)) : null;
       return { place: primary, question };
     };
-    const guardMessageText = [...userMessagesFor("guard", run).map((message) => message.content), input.prompt];
-    const requestedMetrics = requestedFinanceMetrics(input.prompt);
-    const repaymentReportQuestion = isDebtRepaymentReportQuestion(input.prompt, requestedMetrics);
-    if (debtQuestion(input.prompt, requestedMetrics)) {
-      const answer = answerForDebts(store.listDebts(user.id), input.prompt, store.listAccounts(user.id));
+    const guardMessageText = [...userMessagesFor("guard", run).map((message) => message.content), prompt];
+    const requestedMetrics = requestedFinanceMetrics(prompt);
+    const repaymentReportQuestion = isDebtRepaymentReportQuestion(prompt, requestedMetrics);
+    if (debtQuestion(prompt, requestedMetrics)) {
+      const answer = answerForDebts(store.listDebts(user.id), prompt, store.listAccounts(user.id));
       // Reading the debt list is not an answer to a pending question, so the question and the debt it offered stay.
       const stored = followupAfterTurn(pending, null, "read");
       return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
@@ -847,7 +865,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         return { conversationId, answer, transaction: null, debt: null, undoUntil: null };
       });
     }
-    const directCapture = history.length ? null : directDebtCapture(input.prompt) ?? directCategoryCapture(input.prompt, categories);
+    const directCapture = history.length || recordSeparately ? null : directDebtCapture(prompt) ?? directCategoryCapture(prompt, categories);
     const openOwedToYouDebts = store.listDebts(user.id)
       .filter((debt) => debt.direction === "owed_to_you" && debt.status === "open")
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -856,7 +874,21 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       .filter((debt) => debt.direction === "you_owe" && debt.status === "open")
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const openYouOwe = openYouOweDebts.map(({ counterparty, amountMinor }) => ({ counterparty, amountMinor }));
-    const providerCall = directCapture ?? await askProvider({ prompt: input.prompt, history, categories, openOwedToYou, openYouOwe });
+    // "yes, separate" runs the held call. "that debt" goes on with the saved debt and never writes from the held words: a held debt write
+    // that names the saved debt with another amount is run as an answer to its flow, which can only end in the amount-mismatch question,
+    // and anything else asks the question the flow was waiting on again.
+    const heldAmount = (() => { try { return typeof separateHold?.args.amount === "string" || typeof separateHold?.args.amount === "number" ? parsePHPToMinor(String(separateHold.args.amount)) : undefined; } catch { return undefined; } })();
+    const heldNamesSavedDebt = continuesFlow && separateHold.name === "log_debt" && !!savedDebt && heldAmount !== undefined && heldAmount !== savedDebt.amountMinor
+      && separateHold.args.direction === savedDebt.direction && typeof separateHold.args.counterparty === "string"
+      && normalizeCounterparty(separateHold.args.counterparty) === normalizeCounterparty(savedDebt.counterparty);
+    // "that debt" with nothing to apply asks the saved question again. That question is never rewritten into a write.
+    const resumesQuestion = continuesFlow && !heldNamesSavedDebt;
+    const resumed = resumesQuestion ? separateHold.resume : undefined;
+    const heldCall = recordSeparately ? { name: separateHold.name, args: separateHold.args }
+      : heldNamesSavedDebt ? { name: "log_debt", args: separateHold!.args }
+      : continuesFlow ? { name: "ask_clarification", args: { question: resumed ? `Okay, I'll keep going with that debt. ${resumed.text}` : "Okay, I'll keep going with that debt. Reply with the account and date, yes or no, or say cancel." } }
+      : null;
+    const providerCall = heldCall ?? directCapture ?? await askProvider({ prompt, history, categories, openOwedToYou, openYouOwe });
     if (!providerCall) throw new Error("Assistant provider returned no action.");
     const lastFollowup: FollowupKind | null = history.at(-1)?.followup ?? null;
     const ordinaryIncomeQuestionIndex = history.map((message) => message.role === "assistant" ? message.followup : null).lastIndexOf("ordinary_income");
@@ -866,25 +898,25 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // asks. Being open authorizes nothing: only a message that is itself a yes writes (ordinaryIncomeTurn).
     const ordinaryIncomeOpen = ordinaryIncomeQuestionPending || (ordinaryIncomeQuestionIndex >= 0
       && !userMessagesFor("guard", afterOrdinaryIncomeQuestion).some((message) => hasPaymentWording(message.content)));
-    const ordinaryIncomeFlow = !hasPaymentWording(input.prompt) && ordinaryIncomeOpen;
-    const incomeTurn = ordinaryIncomeFlow ? ordinaryIncomeTurn(input.prompt, turnCallOf(providerCall.name)) : null;
+    const ordinaryIncomeFlow = !hasPaymentWording(prompt) && ordinaryIncomeOpen;
+    const incomeTurn = ordinaryIncomeFlow ? ordinaryIncomeTurn(prompt, turnCallOf(providerCall.name)) : null;
     const ordinaryIncomeAccepted = incomeTurn === "write";
     const ordinaryIncomeDeclined = incomeTurn === "decline";
     const debtTransactionQuestion = lastFollowup === "debt_transaction";
-    const debtQuestionYes = debtTransactionQuestion && isDebtOfferYes(input.prompt);
-    const debtQuestionNo = debtTransactionQuestion && isDebtOfferNo(input.prompt);
+    const debtQuestionYes = debtTransactionQuestion && isDebtOfferYes(prompt);
+    const debtQuestionNo = debtTransactionQuestion && isDebtOfferNo(prompt);
     const statedDebtIntent = latestExplicitNewDebtIntent(userMessageText);
-    const currentDebtIntent = explicitNewDebtIntent(input.prompt);
+    const currentDebtIntent = explicitNewDebtIntent(prompt);
     const uncertainNewDebt = guardMessageText.some(isUncertainNewDebtStatement) && !isConfirmedDebtFollowUp(userMessageText);
-    const repaymentContextText = ordinaryIncomeFlow ? input.prompt : userMessageText.join(" ");
+    const repaymentContextText = ordinaryIncomeFlow ? prompt : userMessageText.join(" ");
     const payerSelection = lastFollowup === "repayment_payer";
-    const repaymentMatchText = payerSelection ? input.prompt : repaymentContextText;
+    const repaymentMatchText = payerSelection ? prompt : repaymentContextText;
     const repaymentFollowup = lastFollowup === "repayment_payer" || lastFollowup === "repayment_amount";
     const unconfirmedPayment = (text: string) => isUnconfirmedIncomingDebtPayment(text) || isUnconfirmedOutgoingDebtPayment(text);
     // A refusal said in an earlier turn of the run (a quiet turn too) and one in this message are told apart, because
     // refusalOutcome decides what the turn may write from them before anything is stored.
     const refusedEarlier = !repaymentReportQuestion && userMessagesFor("guard", run).some((message) => unconfirmedPayment(message.content));
-    const refusedNow = !repaymentReportQuestion && (unconfirmedPayment(input.prompt) || repaymentFollowup && isUncertainStatement(input.prompt));
+    const refusedNow = !repaymentReportQuestion && (unconfirmedPayment(prompt) || repaymentFollowup && isUncertainStatement(prompt));
     const uncertainRepayment = refusedEarlier || refusedNow;
     // Refusal wording inside an open debt flow ("No, don't record it", isDebtRecordRefusal's small anchored set) is read from the messages
     // that answered the flow and the current message, and refusalOutcome decides the turn from it: a yes recorded earlier in the flow never overrides it. The
@@ -894,14 +926,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // Only a message that answered the debt flow's own question is read (debtFlowUserMessages): an earlier message about something else
     // never refuses for a later answer, and a plain no to the offer is the opt-out and no refusal.
     const debtRefusedEarlier = debtFlowOpen && debtFlowUserMessages(run).some(({ message, answersOffer }) => refusesToRecord(message.content) && !(answersOffer && isDebtOfferNo(message.content)));
-    const debtRefusedNow = debtFlowOpen && !debtQuestionNo && refusesToRecord(input.prompt);
+    const debtRefusedNow = debtFlowOpen && !debtQuestionNo && refusesToRecord(prompt);
     const debtRefusalOnly = (debtRefusedEarlier || debtRefusedNow) && !uncertainRepayment;
     // A debt write never duplicates a debt this open run already saved (duplicateOfRunDebt). The debts the run's replies carry are the
     // ones saved in it. When the write would repeat one, a message that states a debt again is asked about once ("another" or "that
     // one", answered by duplicateDebtChoice) and anything else goes on with the saved debt instead of creating a second.
     const savedInRunIds = new Set(runDebtIds(run));
     const savedInRun = store.listDebts(user.id).filter((item) => savedInRunIds.has(item.id));
-    const duplicateChoice = isDuplicateDebtQuestionOf(run) ? duplicateDebtChoice(input.prompt) : null;
+    const duplicateChoice = isDuplicateDebtQuestionOf(run) ? duplicateDebtChoice(prompt) : null;
     // "another" is the user's choice to add a second debt on purpose. It is recorded on the question row (ReplyData), so it holds for the
     // account or date question that follows, and the debt that question is about is never merged into the first one.
     const questionData = openQuestionData(run);
@@ -913,13 +945,12 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     // account, its date, its amount, the choice between two readings of the hints) stores that debt with it, so its answer goes on
     // with the same debt instead of saving a second one. That is the debt the answer links to and nothing more: it is never the
     // user's opt-in to add the debt to Transactions (debtTransactionRequested). A question about any other statement carries no debt.
-    const savedDebt = recordedDebtId !== undefined ? store.listDebts(user.id).find((item) => item.id === recordedDebtId) : undefined;
     // Whether the current message is answer-shaped for the debt flow's question (answerShaped): the only thing that lets it use the
     // recorded yes or the saved debt's link. A refusal, a restart or a new expense is not one, however it is worded.
     const answerContext = { accountNames: accounts.map((account) => account.name), counterparty: savedDebt?.counterparty, amountMinor: savedDebt?.amountMinor, statement: debtFlowStatement(run), categoryNames: categories.map((category) => category.name) };
     // The question's own vocabulary: what it asks for (askedOf) decides which words count, the choice words included.
     const pendingAsks = askedOf(run);
-    const debtAnswerShaped = debtFlowOpen && answerShaped(input.prompt, lastFollowup === "debt_transaction" ? "offer" : pendingAsks ?? "detail", answerContext);
+    const debtAnswerShaped = debtFlowOpen && answerShaped(prompt, lastFollowup === "debt_transaction" ? "offer" : pendingAsks ?? "detail", answerContext);
     const flowTurn = (call: DebtFlowTurn["call"]): DebtFlowTurn => ({
       pending: lastFollowup,
       carriesDebt: recordedDebtId !== undefined,
@@ -956,14 +987,14 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const accountOrDateClarificationPending = lastFollowup === "account_or_date";
     const latestRepaymentPrompt = [...ownMessages].reverse().find((message) => hasIncomingDebtRepaymentWording(message.content) || hasOutgoingDebtRepaymentWording(message.content));
     const currentAmountFollowup = lastFollowup === "repayment_amount";
-    const statedRepaymentAmount = repaymentAmountFromPrompt(input.prompt)
-      ?? (currentAmountFollowup ? bareAmountFromPrompt(input.prompt) : undefined)
-      ?? (!hasIncomingDebtRepaymentWording(input.prompt) && !hasOutgoingDebtRepaymentWording(input.prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
+    const statedRepaymentAmount = repaymentAmountFromPrompt(prompt)
+      ?? (currentAmountFollowup ? bareAmountFromPrompt(prompt) : undefined)
+      ?? (!hasIncomingDebtRepaymentWording(prompt) && !hasOutgoingDebtRepaymentWording(prompt) && (accountOrDateClarificationPending || payerSelection) && latestRepaymentPrompt
         ? repaymentAmountFromPrompt(latestRepaymentPrompt.content) : undefined);
     return commitTurn(store, user.id, input.conversationId, readLastMessageId, input.prompt, receivedAt, (conversationId) => {
       let call = providerCall;
       // Set alongside each question the code itself asks; the model's generic clarifications keep this null.
-      let clarificationKind: FollowupKind | null = null;
+      let clarificationKind: FollowupKind | null = resumed?.kind ?? null;
       // True when the question is the model's own wording, which never carries the cancel hint.
       let modelWorded = false;
       // True when the turn only read the ledger, which a pending question survives.
@@ -974,9 +1005,9 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       // with the saved one. The call is built from the saved debt, whatever the model made of a bare "another".
       const duplicateOf = duplicateChoice && savedDebt && savedDebt.status === "open" && !currentDebtIntent ? savedDebt : undefined;
       // The data stored on the reply this turn stores (ReplyData).
-      let replyData: ReplyData | null = null;
+      let replyData: ReplyData | null = resumed?.data ?? null;
       // What the question this turn asks is waiting for (Asks), stored with it so its answer is judged by that vocabulary.
-      let asks: Asks | null = null;
+      let asks: Asks | null = resumed?.data?.asks ?? null;
       if (duplicateOf) {
         // "another" adds the debt the question asked about, with the note, due date, purpose and account of that statement, which the
         // question stored. The bare word says none of it, so a model that did not understand it cannot drop them.
@@ -1029,7 +1060,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         call = uncertainNewDebt
           ? { name: "ask_clarification", args: { question: "Is this a confirmed debt? I won't record it until you confirm." } }
           : { name: "log_debt", args: { ...providerCall.args, direction: currentDebtIntent.direction, counterparty: currentDebtIntent.counterparty, recordTransaction: debtTransactionRequested } };
-      } else if (debtContinuationRewrites(turnCallOf(providerCall.name), debtAnswers, debtTransactionRequested ? "optIn" : debtTransactionOptOut ? "optOut" : null) && statedDebtIntent) {
+      } else if (debtContinuationRewrites(turnCallOf(providerCall.name), debtAnswers, debtTransactionRequested ? "optIn" : debtTransactionOptOut ? "optOut" : null) && statedDebtIntent && !resumesQuestion) {
         const matchingDebts = store.listDebts(user.id).filter((item) => item.status === "open"
           && item.direction === statedDebtIntent.direction
           && normalizeCounterparty(item.counterparty) === normalizeCounterparty(statedDebtIntent.counterparty)
@@ -1040,13 +1071,16 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       }
 
       const billFollowupPending = ownMessages.some((message) => isBillTrackingIntent(message.content)) && isBillFollowup(lastFollowup);
-      const billFlow = isBillTrackingIntent(input.prompt) || (billFollowupPending && turnCallOf(providerCall.name) !== "read");
+      const billFlow = isBillTrackingIntent(prompt) || (billFollowupPending && turnCallOf(providerCall.name) !== "read");
       if (!repaymentReportQuestion && billFlow && !["create_bill", "update_bill"].includes(providerCall.name)) call = { name: "create_bill", args: providerCall.args };
 
       // The refusal decision is taken here, on the call as it will run, before any branch below can write.
       const refusal = refusalOutcome({ earlier: refusedEarlier || debtRefusedEarlier, now: refusedNow || debtRefusedNow }, lastFollowup, turnCallOf(call.name));
       const refusalReason = debtRefusalOnly ? "declined" : "refused";
-      const debtShortAnswerOnly = refusal === "proceed" && debtFlowOpen && !debtAnswerShaped && turnCallOf(call.name) === "write" && !statesNewStatement(input.prompt, answerContext.accountNames);
+      // Inside an open debt flow a message that is no answer to its question never writes on its own authority, however clear a new
+      // statement it looks: the call is held and the user is asked once (separateEntryDecision).
+      const separateDecision = separateEntryDecision({ separateOpen, choice: separateChoice, flowOpen: debtFlowOpen, shaped: debtAnswerShaped, refusal, call: turnCallOf(call.name) });
+      const asksSeparate = separateDecision === "holdNew" || separateDecision === "askAgain";
       let answer: string; let transaction: Transaction | null = null; let debt: Debt | null = null; let bill: Bill | null = null; let postingWarning: string | undefined; let undoUntil: string | null = null; let followup: FollowupKind | null = null;
       // The account an earlier confirmation of this income question chose, when this reply names none and the turn asks again.
       let incomeEchoedAccount: string | undefined;
@@ -1055,10 +1089,21 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         answer = debtRefusalOnly ? DEBT_REFUSED_AGAIN_REPLY : REFUSED_AGAIN_REPLY; answeredReadOnly = true;
       }
       else if (refusal === "refuse") { answer = endedQuestionReply(refusalReason, "", false); followup = null; }
-      else if (debtShortAnswerOnly) {
-        // The debt flow's question is open, the message is no answer to it and no clear statement of its own, and the call would write.
-        // The question stays as it was, so the user can answer it or say cancel, and nothing is recorded.
-        answer = SHORT_ANSWER_REPLY; answeredReadOnly = true;
+      else if (asksSeparate && separateHold !== undefined && separateDecision === "askAgain") {
+        // The separate-entry question is open and this message answers it with neither choice: the same question, the same held call.
+        answer = separateEntryQuestion(separateDebtLabel(savedDebt)); followup = "clarification"; asks = "separate"; modelWorded = true;
+        debtInFlow = recordedDebtId; replyData = { separate: separateHold };
+      }
+      else if (asksSeparate) {
+        // The message is no answer to the open debt flow and the call would write. Nothing is written. The question stores the call, the
+        // words and the question it replaced, so "yes, separate" can record it and "that debt" can ask that question again.
+        const open = openQuestionOf(run);
+        const hold: SeparateHold = {
+          name: providerCall.name, args: plainArgs(providerCall.args), statement: prompt.slice(0, 2000), at: receivedAt,
+          ...(separateHold?.resume ? { resume: separateHold.resume } : open?.followup ? { resume: { kind: open.followup, text: open.content.slice(0, 2000), ...(withoutSeparate(open.data) ? { data: withoutSeparate(open.data) } : {}) } } : {}),
+        };
+        answer = separateEntryQuestion(separateDebtLabel(savedDebt)); followup = "clarification"; asks = "separate"; modelWorded = true;
+        debtInFlow = recordedDebtId; replyData = { separate: hold };
       }
       else if (call.name === "create_bill" || call.name === "update_bill") {
         const result = handleAssistantBillAction(store, user.id, call.name, call.args, userMessageText, hintText, accounts, categories, lastFollowup, requestedAt,
@@ -1083,7 +1128,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         else {
           const category = typeof call.args.category === "string" && call.args.category.trim() ? call.args.category.trim().slice(0, 40) : undefined;
           const facts = store.getFinanceFacts(user.id, start, end, category);
-          answer = answerForFacts(facts, input.prompt, requestedMetrics, requestedAt);
+          answer = answerForFacts(facts, prompt, requestedMetrics, requestedAt);
           answeredReadOnly = true;
         }
       } else if (call.name === "log_debt") {
@@ -1285,7 +1330,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
           // of this income question chose one, it asks again instead of guessing that the choice still stands (incomeAccountChoice).
           const incomeChoice = ordinaryIncomeAccepted
             ? incomeAccountChoice(
-              { confirmed: incomeConfirmationAccount(input.prompt, accounts), names: accountHintFromMessages([input.prompt], accounts).mentioned },
+              { confirmed: incomeConfirmationAccount(prompt, accounts), names: accountHintFromMessages([prompt], accounts).mentioned },
               incomeChainAccount(incomeChainAnswers(run, hasPaymentWording), (confirmation) => incomeConfirmationAccount(confirmation, accounts)))
             : { use: "none" as const };
           if (incomeChoice.use === "ask") incomeEchoedAccount = incomeChoice.earlier.name;

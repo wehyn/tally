@@ -195,6 +195,22 @@ export function isQuietReply(reply: RunMessage): boolean {
   return reply.role === "assistant" && !!reply.followup && (!!reply.billId || !!reply.readOnly);
 }
 
+// A reply that holds a statement behind the separate-entry question (ReplyData.separate). The message it answered, and the message that
+// answers it ("yes, separate", "that debt", anything else), are not words of the debt flow: they feed no hint, no filler and no
+// statement, so a held wording never changes what a later answer may say or where money goes. The reply itself is the question the
+// run waits on, as any question is.
+export function holdsSeparate(reply: RunMessage | undefined): boolean {
+  return reply?.role === "assistant" && !!reply.data?.separate;
+}
+// Whether the user message at `index` belongs to the pending question's own words: it is not answered by a quiet or holding reply and
+// does not answer a holding reply.
+function isOwnMessage(run: readonly RunMessage[], index: number): boolean {
+  if (run[index].role !== "user") return false;
+  const reply = index + 1 < run.length ? run[index + 1] : undefined;
+  if (reply && (isQuietReply(reply) || holdsSeparate(reply))) return false;
+  return !(index > 0 && holdsSeparate(run[index - 1]));
+}
+
 // What the code reads from the user's words, and which messages of the open run it may read.
 // A hint overrides a field the model chose (account, date, time, category, amount, payer, bill details, the debt
 // the user named, an opt-in) and so decides where money goes. It reads only the messages that belong to the
@@ -207,7 +223,7 @@ export type UserTextUse = "hint" | "guard";
 // answers, re-asks and corrections addressed to it. The model still gets the whole run, since it can tell a
 // handled turn from the question by its reply.
 export function ownUserMessages<T extends RunMessage>(run: readonly T[]): T[] {
-  return run.filter((message, index) => message.role === "user" && !(index + 1 < run.length && isQuietReply(run[index + 1])));
+  return run.filter((_, index) => isOwnMessage(run, index));
 }
 
 // Every user message of the open run, quiet turns included.
@@ -354,7 +370,7 @@ export function startsNewStatement(pending: FollowupKind | null, reply: string, 
 //  - the exact choice words: another, that one, the same one, earlier, new one.
 // The offer to add the debt to Transactions also asks what the money was for, so its answer may carry a short purpose after "for"
 // or "it was" (up to three words, none of them a refusal or a verb). Anything else, a verb phrase or a word the flow never used, is not an answer: it carries no
-// consent and no link, and is handled as its own statement or asked again (statesNewStatement, SHORT_ANSWER_REPLY).
+// consent and no link, and never writes on its own authority: inside an open debt flow the turn asks the separate-entry question (separateEntryDecision).
 // `question` is what the pending question asks for: "offer" (the Transactions offer), an `Asks` the question stored, or "detail" for
 // a question that stored none (an old row, the model's own question), which keeps the account, date and filler vocabulary.
 // The choice words (another, that one, earlier, new one, the same one) are answers only to a question that offers the choice.
@@ -390,8 +406,8 @@ const ANSWER_FILLER: ReadonlySet<string> = new Set((
   + "peso pesos php"
 ).split(" "));
 
-// The choice words. They answer only the duplicate and ambiguity questions (and the separate-entry question, which has its own exact
-// list), so "Record another 500 using Wallet today" under an account question is not an answer to it.
+// The choice words. They answer only the duplicate and ambiguity questions (the separate-entry question has its own exact list), so
+// "Record another 500 using Wallet today" under an account question is not an answer to it.
 const CHOICE_WORDS: ReadonlySet<string> = new Set("another that this one ones earlier new same separate".split(" "));
 function offersChoice(question: AnswerQuestion): boolean {
   return question === "duplicate" || question === "ambiguity";
@@ -415,6 +431,8 @@ function answerTokens(text: string): string[] {
 export function answerShaped(message: string, question: AnswerQuestion, context: AnswerContext): boolean {
   let text = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/₱/g, " ");
   // Each question has its own vocabulary. A description is free text, so it is a few plain words and nothing else.
+  // The separate-entry question is answered by an exact list, nothing else.
+  if (question === "separate") return separateEntryChoice(message) !== null;
   if (question === "description") return isShortDescription(text.replace(/^(?:yes|yeah|yep|sure|ok|okay)\b[\s,]*/, ""));
   // A category is one the user has. "yes, Food" is the same answer.
   if (question === "category") return answerTokens(withoutAccountNames(text, context.categoryNames ?? [])).every((token) => ANSWER_FILLER.has(token));
@@ -454,21 +472,6 @@ export function answerShaped(message: string, question: AnswerQuestion, context:
   return true;
 }
 
-// A message that is not an answer to the debt flow but is plainly a new statement of its own: it states an amount and a purpose
-// or a counterparty, and carries no refusal, hedge or reversal word. "Spent 500 on lunch with Ben in Wallet" and "Instead, record my
-// lunch refund income of 500 using Wallet today" are statements, "I don't want to record the 500 lunch. Use Wallet." is not.
-// When it is doubtful the caller asks again and writes nothing, so a wrong "not clear" costs a question and never a record.
-const STATEMENT_VETO: ReadonlySet<string> = new Set((
-  "don't dont do not never won't wont can't cant cannot no nope nah skip cancel stop without forget hindi ayoko wag huwag di maybe perhaps probably guess think might"
-).split(" "));
-export function statesNewStatement(message: string, accountNames: readonly string[]): boolean {
-  // "don't forget to log it" and "I don't know" say to record it, so they are no refusal.
-  const lowered = message.normalize("NFC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\b(?:don'?t|do not|never)\s+(?:forget|know|mind|worry)\b/g, " ");
-  if (answerTokens(lowered).some((token) => STATEMENT_VETO.has(token))) return false;
-  const dated = withoutDatesAndTimes(message);
-  return /\d/.test(withoutAccountNames(dated, accountNames)) && purposeWordsIn(dated).length > 0;
-}
-
 // The user messages that belong to a saved debt's flow: the statement that saved it and every answer to a question the flow asked
 // about it. A message belongs when the reply right after it carries a debt and is not a quiet turn, so a read or a re-ask in
 // between adds no word to the filler.
@@ -476,14 +479,47 @@ export function debtFlowStatement<T extends RunMessage & { content: string; debt
   const messages: string[] = [];
   for (let index = 0; index + 1 < run.length; index++) {
     const reply = run[index + 1];
-    if (run[index].role === "user" && reply.role === "assistant" && reply.debtId && !isQuietReply(reply)) messages.push(run[index].content);
+    if (run[index].role === "user" && reply.role === "assistant" && reply.debtId && !isQuietReply(reply) && isOwnMessage(run, index)) messages.push(run[index].content);
   }
   return messages;
 }
 
-// What the code says when a message in an open debt flow is neither an answer to its question nor a clear statement of its own,
-// and the call would write. It stores the same question again and writes nothing.
-export const SHORT_ANSWER_REPLY = "I need a short answer here: reply with the account and date, yes or no, or say cancel.";
+// SEPARATE ENTRY. A message in an open debt flow that is not answer-shaped never writes on its own authority, however clear a new
+// statement it looks, however it is worded, whatever the model made of it. When the call would write (a transaction, a debt, a
+// payment, a bill, income) the code asks ONE question and writes nothing: record it as a separate new entry, or continue the saved
+// debt's flow. The question stores the call and the words (ReplyData.separate), and only an exact reply decides.
+export type SeparateChoice = "separate" | "that";
+const SEPARATE_WORDS: readonly string[] = ["yes separate", "yes separately", "separate", "separately", "separate entry", "yes separate entry"];
+const CONTINUE_DEBT_WORDS: readonly string[] = ["that debt", "the debt", "that one", "the same debt", "use that debt", "continue that debt", "continue"];
+export function separateEntryChoice(reply: string): SeparateChoice | null {
+  const normalized = normalizedPhrase(reply);
+  return SEPARATE_WORDS.includes(normalized) ? "separate" : CONTINUE_DEBT_WORDS.includes(normalized) ? "that" : null;
+}
+
+const SEPARATE_OPENING = "You have an open question about ";
+export function separateEntryQuestion(debtLabel: string): string {
+  return `${SEPARATE_OPENING}${debtLabel}. Do you want me to record this as a separate new entry? Reply "yes, separate" to record it, "that debt" to continue it, or say cancel.`;
+}
+
+// What a turn does with the separate-entry question. `separateOpen` is whether the run waits on that question, `choice` the exact
+// reply to it, `flowOpen` whether a debt flow is open, `shaped` whether the message is answer-shaped for the question being asked,
+// and `refusal` what refusalOutcome decided (a refusal wins over everything but the explicit "yes, separate").
+//  - "record": the exact "yes, separate". The held statement is written as an ordinary new statement with no consent and no link.
+//  - "continue": the exact "that debt". The saved debt's flow goes on.
+//  - "holdNew": a message that would write, in an open debt flow, and is no answer. Ask the question about it, write nothing.
+//  - "askAgain": the separate-entry question is open and the message is neither choice. Ask it again about the same held call (a later
+//    message never replaces what is held), write nothing.
+//  - "proceed": everything else runs as before.
+export type SeparateDecision = "proceed" | "record" | "continue" | "holdNew" | "askAgain";
+export function separateEntryDecision(turn: { separateOpen: boolean; choice: SeparateChoice | null; flowOpen: boolean; shaped: boolean; refusal: RefusalOutcome; call: TurnCall }): SeparateDecision {
+  if (turn.separateOpen && turn.choice === "separate") return "record";
+  if (turn.refusal !== "proceed") return "proceed";
+  if (turn.separateOpen && turn.choice === "that") return "continue";
+  if (turn.call === "read") return "proceed";
+  if (turn.separateOpen) return "askAgain";
+  if (!turn.flowOpen || turn.shaped) return "proceed";
+  return turn.call === "write" || turn.call === "bill" ? "holdNew" : "proceed";
+}
 
 // The user messages of the open run whose hints may apply to the write the current message is for, and the other reading
 // of the same run when the text rule was uncertain about it. `primary` is the rule's own verdict at every message, quiet
@@ -493,7 +529,7 @@ export const SHORT_ANSWER_REPLY = "I need a short answer here: reply with the ac
 export type HintReadings<T> = { primary: T[]; other: T[] | null };
 
 export function hintReadingsFor<T extends RunMessage & { content: string }>(run: readonly T[], current: string, accountNames: readonly string[] = []): HintReadings<T> {
-  const own = run.flatMap((message, index) => message.role === "user" && !(index + 1 < run.length && isQuietReply(run[index + 1]))
+  const own = run.flatMap((message, index) => isOwnMessage(run, index)
     ? [{ message, pending: index > 0 ? run[index - 1].followup ?? null : null }] : []);
   const statementEnd = (start: number, end: number) => own.slice(start, end).map(({ message }) => message.content);
   const walk = (turnOver: boolean): T[] => {
