@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { duplicateCallData, parseReplyData } from "../src/lib/assistant-followup";
-import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, separateEntryChoice, heldCallLabel, statesAmount, confirmedSeparateRun, shortenAtWord, separateEntryDecision, separateEntryQuestion, holdsSeparate, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
+import { DECLINED_REPLY, MAX_OPEN_RUN_MESSAGES, REFUSED_AGAIN_REPLY, REFUSED_REPLY, UNDO_WINDOW_MS, cancelHint, cancelReply, debtContinuationRewrites, debtFlowContinues, debtFlowAnswers, debtOfferChainAnswer, debtFlowUserMessages, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestion, isDuplicateDebtQuestionOf, runDebtIds, keepsAnotherChoice, openQuestionData, answerShaped, separateEntryChoice, heldCallLabel, RESUME_PREFIX, resumedQuestion, savedQuestionText, statesAmount, confirmedSeparateRun, shortenAtWord, separateEntryDecision, separateEntryQuestion, holdsSeparate, debtFlowStatement, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, DEBT_REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, isAmbiguityQuestionOf, openQuestionOf, ambiguousHints, ambiguousHintsQuestion, canUndo, endedQuestionReply, expiredReply, followupAfterTurn, guardUserMessages, hasRestartWording, hintMessagesFor, hintReadingsFor, isAmbiguousHintsQuestion, readStatementStart, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, isIncomeConfirmation, isOrdinaryIncomeDecline, isQuietReply, ordinaryIncomeTurn, ownUserMessages, pendingOutcome, refusalOutcome, runExpired, runSaved, startsNewStatement, turnCallOf, turnMayCommit, undoUntilFor, userMessagesFor, type DebtFlowTurn, type DebtRef, type RunDebt, type DebtTransactionAnswer, type RefusalOutcome, type RunMessage, type TurnCall, type AnswerQuestion, askedOf } from "../src/lib/machines/assistant";
 import { FOLLOWUP_KINDS, type FollowupKind } from "../src/lib/assistant-followup";
 
 const now = Date.parse("2026-10-09T08:00:00.000Z");
@@ -1360,4 +1360,21 @@ describe("heldCallLabel", () => {
 describe("statesAmount", () => {
   for (const [text, yes] of [["Spent 900 on dinner", true], ["another", false], ["that debt", false], ["₱1,200.50 for rent", true], ["lunch", false]] as const)
     it(`"${text}" ${yes ? "states" : "states no"} amount`, () => expect(statesAmount(text)).toBe(yes));
+});
+
+// Round 29, bugs 4 and 5: "that debt" gives the saved question back whole behind one prefix.
+describe("the resumed question", () => {
+  const long = "I couldn't find the account “Nowhere”. Choose one of your listed accounts: " + "Savings account, ".repeat(10) + "Wallet.";
+  it("puts the prefix once before a saved question of any length", () => {
+    expect(long.length).toBeGreaterThan(240);
+    expect(resumedQuestion(long)).toBe(`${RESUME_PREFIX}${long}`);
+  });
+  it("strips every stacked prefix from a stored question", () => {
+    expect(savedQuestionText(`${RESUME_PREFIX}${RESUME_PREFIX}${long}`)).toBe(long);
+    expect(resumedQuestion(`${RESUME_PREFIX}${long}`)).toBe(`${RESUME_PREFIX}${long}`);
+    expect(savedQuestionText("What date should I use?")).toBe("What date should I use?");
+  });
+  it("falls back to the generic reply when nothing was saved", () => {
+    expect(resumedQuestion(undefined)).toBe(`${RESUME_PREFIX}Reply with the account and date, yes or no, or say cancel.`);
+  });
 });

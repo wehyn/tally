@@ -6088,6 +6088,26 @@ describe("a confirmed separate entry is its own statement (round 29, bugs 2 and 
   const debtArgs = { direction: "owed_to_you", counterparty: "Ana", amount: "500", category: "Food", description: "lunch" };
   const expense = { kind: "expense", amount: "500", category: "Food", description: "lunch", account: "Wallet" };
 
+  describe("bugs 4 and 5: \"that debt\" gives back the saved question whole, with one prefix", () => {
+    const PREFIX = "Okay, I'll keep going with that debt. ";
+    it("a long saved question survives the resume and the prefix does not stack across two hold and resume cycles", async () => {
+      for (let index = 1; index <= 7; index++) store.createAccount(user.id, { name: `Savings account number ${index}`, type: "bank", openingMinor: 0 });
+      const first = await say("Ana owes me 500", "log_debt", debtArgs);
+      await say("yes, for lunch using Nowhere account", "log_debt", { ...debtArgs, account: "Nowhere" }, first.conversationId);
+      const saved = last(first.conversationId);
+      expect(saved).toMatchObject({ followup: "account_or_date", data: { asks: "account" } });
+      expect(saved.content.length).toBeGreaterThan(190);
+      for (const cycle of [1, 2]) {
+        const held = await say("Keep the 500 lunch out of Transactions", "log_transaction", expense, first.conversationId);
+        expect(held.transaction).toBeNull();
+        const back = await say("that debt", "ask_clarification", { question: "what?" }, first.conversationId);
+        expect(back.answer, `cycle ${cycle}`).toBe(`${PREFIX}${saved.content}`);
+        expect(last(first.conversationId)).toMatchObject({ followup: "account_or_date", debtId: first.debt.id, data: { asks: "account" } });
+      }
+      expect(store.listTransactions(user.id)).toHaveLength(0);
+    });
+  });
+
   describe("bug 2: the open debt flow's hints never reach the separate entry", () => {
     it("the account answer after 'yes, separate' keeps the separate request's own date, not the debt's", async () => {
       const first = await say("Ana owes me 500 for lunch yesterday", "log_debt", { ...debtArgs, note: "lunch" });

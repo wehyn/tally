@@ -555,6 +555,18 @@ export function heldCallLabel(call: { name: string; args: Record<string, unknown
   }
 }
 
+// "that debt" asks the saved question again behind one fixed prefix. The saved question is stored without it (savedQuestionText), so a
+// question that is held and resumed again carries the prefix once, and it is the question's own text whatever its length.
+export const RESUME_PREFIX = "Okay, I'll keep going with that debt. ";
+export function savedQuestionText(content: string): string {
+  let text = content;
+  while (text.startsWith(RESUME_PREFIX)) text = text.slice(RESUME_PREFIX.length);
+  return text;
+}
+export function resumedQuestion(saved: string | undefined): string {
+  return `${RESUME_PREFIX}${saved !== undefined ? savedQuestionText(saved) : "Reply with the account and date, yes or no, or say cancel."}`;
+}
+
 export function separateEntryQuestion(debtLabel: string, held: string | null = null): string {
   return held
     ? `${SEPARATE_OPENING}${debtLabel}. Record "${held}" as a separate new entry? ${SEPARATE_REPLIES}`

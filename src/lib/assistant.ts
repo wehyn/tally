@@ -7,7 +7,7 @@ import { formatPHP, formatPHPFromMinorString, parsePHPToMinor } from "@/lib/mone
 import type { Account, Bill, BillInput, Debt, Transaction } from "@/lib/store";
 import { askProvider, contextMessage, minimalFollowUpContext, providerConfig, providerDisclosureHash } from "@/lib/provider";
 import { duplicateCallData, isBillFollowup, plainArgs, withoutSeparate, type Asks, type FollowupKind, type ReplyData, type SeparateHold } from "@/lib/assistant-followup";
-import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, confirmedSeparateRun, heldCallLabel, statesAmount, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
+import { DEBT_REFUSED_AGAIN_REPLY, REFUSED_AGAIN_REPLY, ambiguityChoice, ambiguityVerdict, ambiguousHintsQuestion, cancelHint, cancelReply, debtContinuationRewrites, DESCRIPTION_MAX_LENGTH, confirmedSeparateRun, heldCallLabel, resumedQuestion, savedQuestionText, statesAmount, shortenAtWord, separateEntryChoice, separateEntryDecision, separateEntryQuestion, openQuestionOf, answerShaped, askedOf, debtFlowAnswers, debtFlowContinues, debtFlowStatement, debtFlowUserMessages, debtOfferChainAnswer, duplicateDebtChoice, duplicateDebtQuestion, duplicateOfRunDebt, isDuplicateDebtQuestionOf, keepsAnotherChoice, openQuestionData, runDebtIds, isDebtOfferNo, isDebtOfferYes, isDebtRecordRefusal, endedQuestionReply, expiredReply, followupAfterTurn, hintReadingsFor, incomeAccountChoice, incomeChainAccount, incomeChainAnswers, incomeConfirmHint, isAmbiguityQuestionOf, ordinaryIncomeTurn, pendingOutcome, refusalOutcome, runExpired, runSaved, turnCallOf, turnMayCommit, userMessagesFor, withoutAmbiguityChoice, type DebtFlowTurn, type DebtRef } from "@/lib/machines/assistant";
 
 export const assistantPromptSchema = z.object({ prompt: z.string().trim().min(1).max(2000), conversationId: z.string().uuid().optional() });
 export type AssistantPromptInput = z.infer<typeof assistantPromptSchema>;
@@ -888,7 +888,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
     const resumed = resumesQuestion ? separateHold.resume : undefined;
     const heldCall = recordSeparately ? { name: separateHold.name, args: separateHold.args }
       : heldNamesSavedDebt ? { name: "log_debt", args: separateHold!.args }
-      : continuesFlow ? { name: "ask_clarification", args: { question: resumed ? `Okay, I'll keep going with that debt. ${resumed.text}` : "Okay, I'll keep going with that debt. Reply with the account and date, yes or no, or say cancel." } }
+      : continuesFlow ? { name: "ask_clarification", args: { question: resumedQuestion(resumed?.text) } }
       : null;
     const providerCall = heldCall ?? directCapture ?? await askProvider({ prompt, history, categories, openOwedToYou, openYouOwe });
     if (!providerCall) throw new Error("Assistant provider returned no action.");
@@ -1102,7 +1102,7 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
         const open = openQuestionOf(run);
         const hold: SeparateHold = {
           name: providerCall.name, args: plainArgs(providerCall.args), statement: prompt.slice(0, 2000), at: receivedAt,
-          ...(separateOpen ? (separateHold?.resume ? { resume: separateHold.resume } : {}) : open?.followup ? { resume: { kind: open.followup, text: open.content.slice(0, 2000), ...(withoutSeparate(open.data) ? { data: withoutSeparate(open.data) } : {}) } } : {}),
+          ...(separateOpen ? (separateHold?.resume ? { resume: separateHold.resume } : {}) : open?.followup ? { resume: { kind: open.followup, text: savedQuestionText(open.content).slice(0, 2000), ...(withoutSeparate(open.data) ? { data: withoutSeparate(open.data) } : {}) } } : {}),
         };
         answer = separateEntryQuestion(separateDebtLabel(savedDebt), heldCallLabel(hold)); followup = "clarification"; asks = "separate"; modelWorded = true;
         debtInFlow = recordedDebtId; replyData = { separate: hold };
@@ -1115,7 +1115,8 @@ export async function runAssistantPrompt(store: ReturnType<typeof getStore>, use
       else if (call.name === "ask_clarification") {
         // A repayment with no amount yet expects the amount next, whatever wording the model used.
         const expectedRepaymentAmount: FollowupKind | null = repaymentIntent && !statedRepaymentAmount ? "repayment_amount" : null;
-        answer = safeClarification(call.args.question);
+        // "that debt" gives the saved question back as it was, whatever its length: it is the code's own text and not a model question.
+        answer = continuesFlow && call === providerCall ? String(call.args.question) : safeClarification(call.args.question);
         followup = clarificationKind ?? expectedRepaymentAmount ?? "clarification";
         modelWorded = call === providerCall;
         // A question the debt flow asks about its saved debt keeps that debt, so its answer links to it and a later opt-in never saves a
